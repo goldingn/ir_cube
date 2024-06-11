@@ -89,7 +89,7 @@ ir_mtm_africa_ts_plot %>%
       group = SITE_CODE
     )
   ) +
-  geom_line() +
+  geom_point() +
   facet_wrap( ~ COUNTRY_NAME)
 
 m <- ir_mtm_africa_ts_plot %>%
