@@ -45,7 +45,7 @@ ir_mtm_africa <- read_xlsx(
     # impute the number of mosquitoes from mortality rates where needed
     MOSQUITO_NUMBER = case_when(
       is.na(MOSQUITO_NUMBER) ~ infer_sample_size(MORTALITY_ADJUSTED),
-      .default = MOSQUITO_NUMBER
+      .default = round(MOSQUITO_NUMBER)
     ), 
     # compute the integer number that died, for model
     DIED = round(MOSQUITO_NUMBER * MORTALITY_ADJUSTED / 100)
