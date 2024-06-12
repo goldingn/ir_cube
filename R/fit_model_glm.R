@@ -60,8 +60,11 @@
 source("R/packages.R")
 source("R/functions.R")
 
-# load data
+# load and prep bioassay data
 ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
+
+# set the start of the tiemseries considered
+baseline_year <- 1995
 
 df <- ir_mtm_africa %>%
   filter(
@@ -69,35 +72,72 @@ df <- ir_mtm_africa %>%
     species %in% c("An. gambiae s.l.", "An. gambiae s.s."),
     # subset to WHO tube tests (most of data)
     test_type == "WHO tube test",
-    # drop DDT (the only organochlorine tested) and the minor classes: pyrroles and
-    # neonicotinoids
+    # drop the minor classes: pyrroles and neonicotinoids, and Dieldrin
     insecticide_class %in% c("Pyrethroids",
                              "Carbamates",
                              "Organochlorines",
-                             "Organophosphates")
+                             "Organophosphates"),
+    # drop Dieldrin as it has two concentrations in the dataset, and those with
+    # fewer than 200 observations (manually as I'm being lazy)
+    !(insecticide_type %in% c("Dieldrin",
+                              "Carbosulfan",
+                              "Cyfluthrin",
+                              "Etofenprox",
+                              "Propoxur")),
+    # drop any from before when we have data on net coverage
+    year_start >= baseline_year
   ) %>%
-  # convert concentrations into numeric values
   mutate(
-    concentration = as.numeric(str_remove(insecticide_conc, "%"))
-  ) %>%
-  # subset to Burkina Faso for debugging
-  filter(
-    country_name == "Burkina Faso"
-  )
-
-# fit a model to these data, intercept-only to start
+    # convert concentrations into numeric values
+    concentration = as.numeric(str_remove(insecticide_conc, "%")),
+    # add in time variable, in years since start of timeseries
+    time = year_start - baseline_year
+  ) # %>%
+  # # subset to Burkina Faso for debugging
+  # filter(
+  #   country_name == "Burkina Faso"
+  # )
 
 # map the data to the insecticide classes and types
 classes <- unique(df$insecticide_class)
 types <- unique(df$insecticide_type)
 
+# load and temporally average raster data
+nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
+nets_flat <- terra::app(nets_cube, mean)
 
-# add in time variable, in years since 2000
-baseline_year <- 2000
-df$time <- df$year_start - baseline_year
+# extract at coordinates
+coords <- df %>%
+  select(longitude, latitude) %>%
+  as.matrix()
+
+# nets_lookup <- terra::extract(nets_cube, coords) %>%
+#   mutate(
+#     row = row_number(),
+#     .before = everything()
+#   ) %>%
+#   pivot_longer(cols = starts_with("nets_"),
+#                names_prefix = "nets_",
+#                names_to = "year",
+#                values_to = "net_coverage") %>%
+#   mutate(
+#     year = as.numeric(year)
+#   )
+
+
 
 # create response data and covariates for modelling
 df_glmer <- df %>%
+  # add on spatial covariates
+  mutate(
+    net_coverage = terra::extract(nets_flat, coords)$mean
+  ) %>%
+  # # add on spatiotemporal covariates
+  # mutate(
+  #   row = row_number()
+  # ) %>%
+  # left_join(nets_lookup,
+  #           by = c("row", year_start = "year")) %>%
   # add on the success/failure columns for R's binomial interface
   mutate(
     survived = mosquito_number - died
@@ -109,7 +149,7 @@ df_glmer <- df %>%
   # interact covariates with time to get fitness submodel covariates factors
   mutate(
     across(
-      c(intercept),
+      c(intercept, net_coverage),
       ~time * .,
       .names = "fitness_{.col}"
     )
@@ -117,14 +157,16 @@ df_glmer <- df %>%
 
 # fit a glm to this
 m <- glmer(cbind(died, survived) ~ (1| insecticide_type) +
-        (fitness_intercept | insecticide_type),
+             # (fitness_intercept | insecticide_type) +
+             (fitness_net_coverage | insecticide_type),
       family = stats::binomial,
       data = df_glmer)
 
 # plot predicted and observed mortality rates
 df_plot <- expand_grid(
   year = 1990:2024,
-  insecticide_type = types
+  insecticide_type = types,
+  net_coverage = c(0.05, 0.5, 0.95)
 ) %>%
   mutate(
     intercept = 1,
@@ -132,7 +174,7 @@ df_plot <- expand_grid(
   ) %>%
   mutate(
     across(
-      c(intercept),
+      c(intercept, net_coverage),
       ~time * .,
       .names = "fitness_{.col}"
     )
@@ -151,7 +193,8 @@ df_plot %>%
     aes(
       x = year,
       y = `mortality (%)`,
-      group = insecticide_type
+      group = net_coverage,
+      colour = net_coverage
     )
   ) +
   geom_line() +
@@ -160,10 +203,83 @@ df_plot %>%
     aes(
       x = year_start,
       y = mortality_adjusted,
+      colour = net_coverage
     ),
-    data = df,
+    data = df_glmer,
     alpha = 0.1
   ) +
   theme_minimal()
 
-# now redo this with a spatial covariate of ITN access
+# now predict back to rasters
+
+# get all cells in mastergrids, and extract the values there
+cells <- terra::cells(nets_flat)
+# nets_cube_dataframe <- terra::extract(nets_cube, cells) %>%
+#   mutate(
+#     cell = cells,
+#     .before = everything()
+#   ) %>%
+#   pivot_longer(cols = starts_with("nets_"),
+#                names_prefix = "nets_",
+#                names_to = "year",
+#                values_to = "net_coverage") %>%
+#   mutate(
+#     year = as.numeric(year)
+#   )
+
+nets_flat_dataframe <- terra::extract(nets_flat, cells) %>%
+  rename(
+    net_coverage = mean
+  ) %>%
+  mutate(
+    cell = cells,
+    .before = everything()
+  )
+
+# loop through insecticides and years, making predictions
+years <- 2000:2030
+template_raster <- nets_cube$nets_2000 * 0
+types_plot <- c("Deltamethrin",
+                "Permethrin",
+                "Alpha-cypermethrin")
+for (this_insecticide in types_plot) {
+  for (this_year in years) {
+    
+    # extract the nets data for this year and prepare for prediction
+    df_predict <- nets_flat_dataframe %>%
+      mutate(
+        insecticide_type = this_insecticide,
+        year = this_year,
+        intercept = 1,
+        time = year - baseline_year
+      ) %>%
+      mutate(
+        across(
+          c(intercept, net_coverage),
+          ~time * .,
+          .names = "fitness_{.col}"
+        )
+      ) %>%
+      mutate(
+        mortality = predict(m,
+                            newdata = .,
+                            type = "response")
+      )
+    
+    # stick this in a raster
+    this_ir_raster <- template_raster
+    this_ir_raster[cells] <- df_predict$mortality
+    write_path <- file.path("outputs/ir_maps",
+                            this_insecticide,
+                            sprintf("ir_%s_susceptibility.tif",
+                                    this_year))
+    
+    # make sure the directory exists
+    dir.create(dirname(write_path))
+    writeRaster(this_ir_raster,
+                write_path)
+    
+  }
+}
+
+# now redo this with more spatial covariates
