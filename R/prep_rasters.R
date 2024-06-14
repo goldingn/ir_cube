@@ -75,7 +75,6 @@ scale_logit_crops <- scale(logit_crops)
 
 # now PCA
 pca <- terra::princomp(scale_logit_crops, maxcell = 1e6)
-pca$loadings
 crop_pc <- predict(scale_logit_crops, pca, index = 1:5)
 
 # rescale these for modelling
@@ -85,17 +84,21 @@ crop_pc_scale <- scale(crop_pc)
 names(crop_pc_scale) <- paste0("crop_pc_",
                                seq_len(nlyr(crop_pc_scale)))
 
-# # plot them
-# ggplot() +
-#   geom_spatraster(
-#     data = crop_pc_scale
-#   ) +
-#   scale_fill_viridis_c(
-#     na.value = "transparent"
-#   ) +
-#   facet_wrap(~lyr) +
-#   theme_minimal()
-
+# plot them
+ggplot() +
+  geom_spatraster(
+    data = crop_pc_scale
+  ) +
+  scale_fill_viridis_c(
+    na.value = "transparent"
+  ) +
+  facet_wrap(~lyr) +
+  theme_minimal()
+ggsave("figures/cov_crop_pcs.png",
+       bg = "white",
+       width = 8,
+       height = 6,
+       dpi = 300)
 
 # combine these into a multiband geotiff of flat (not temporally static)
 # covariates
