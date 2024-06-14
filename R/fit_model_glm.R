@@ -63,7 +63,7 @@ source("R/functions.R")
 # load and prep bioassay data
 ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
 
-# set the start of the tiemseries considered
+# set the start of the timeseries considered
 baseline_year <- 1995
 
 df <- ir_mtm_africa %>%
@@ -105,12 +105,21 @@ types <- unique(df$insecticide_type)
 # load and temporally average raster data
 nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
 nets_flat <- terra::app(nets_cube, mean)
+names(nets_flat) <- "itn_percap"
+
+# load the other layers
+covs_flat_orig <- rast("data/clean/flat_covariates.tif")
+
+# add on the flat nets
+covs_flat <- c(nets_flat, covs_flat_orig)
+
 
 # extract at coordinates
 coords <- df %>%
   select(longitude, latitude) %>%
   as.matrix()
 
+# # extract from the cube
 # nets_lookup <- terra::extract(nets_cube, coords) %>%
 #   mutate(
 #     row = row_number(),
@@ -125,12 +134,11 @@ coords <- df %>%
 #   )
 
 
-
 # create response data and covariates for modelling
 df_glmer <- df %>%
   # add on spatial covariates
-  mutate(
-    net_coverage = terra::extract(nets_flat, coords)$mean
+  bind_cols(
+    terra::extract(covs_flat, coords)
   ) %>%
   # # add on spatiotemporal covariates
   # mutate(
@@ -149,32 +157,67 @@ df_glmer <- df %>%
   # interact covariates with time to get fitness submodel covariates factors
   mutate(
     across(
-      c(intercept, net_coverage),
+      c(intercept,
+        itn_percap,
+        crop_pc_1,
+        crop_pc_2, 
+        crop_pc_3, 
+        crop_pc_4, 
+        crop_pc_5),
       ~time * .,
       .names = "fitness_{.col}"
     )
-  )
+  ) %>%
+  # drop some observations outside the covariate rasters
+  filter(!is.na(itn_percap))
 
 # fit a glm to this
-m <- glmer(cbind(died, survived) ~ (1| insecticide_type) +
-             # (fitness_intercept | insecticide_type) +
-             (fitness_net_coverage | insecticide_type),
-      family = stats::binomial,
-      data = df_glmer)
+m <- glmer(cbind(died, survived) ~
+             (1 + #fitness_intercept +
+                fitness_itn_percap | insecticide_type),
+                # fitness_crop_pc_1 +
+                # fitness_crop_pc_2 +
+                # fitness_crop_pc_3 +
+                # fitness_crop_pc_4 +
+                # fitness_crop_pc_5 + 
+           family = stats::binomial,
+           data = df_glmer)
 
-# plot predicted and observed mortality rates
+print(m)
+summary(m)
+ranef(m)
+
+# plot fitted vs observed (but noisy AF) bioassay data
+plot((I(100 - df_glmer$mortality_adjusted)) ~ I(100 * (1 - fitted(m))),
+     xlab = "predicted resistance",
+     ylab = "bioassay resistance",
+     cex = 0.5,
+     lwd = 0.2)
+
+# plot predicted and observed mortality rates over time
 df_plot <- expand_grid(
   year = 1990:2024,
   insecticide_type = types,
-  net_coverage = c(0.05, 0.5, 0.95)
+  itn_percap = c(0.05, 0.5, 0.95)
 ) %>%
   mutate(
     intercept = 1,
-    time = year - baseline_year
+    time = year - baseline_year,
+    crop_pc_1 = 0,
+    crop_pc_2 = 0,
+    crop_pc_3 = 0,
+    crop_pc_4 = 0,
+    crop_pc_5 = 0
   ) %>%
   mutate(
     across(
-      c(intercept, net_coverage),
+      c(intercept,
+        itn_percap,
+        crop_pc_1,
+        crop_pc_2, 
+        crop_pc_3, 
+        crop_pc_4, 
+        crop_pc_5),
       ~time * .,
       .names = "fitness_{.col}"
     )
@@ -193,8 +236,8 @@ df_plot %>%
     aes(
       x = year,
       y = `mortality (%)`,
-      group = net_coverage,
-      colour = net_coverage
+      group = itn_percap,
+      colour = itn_percap
     )
   ) +
   geom_line() +
@@ -203,7 +246,7 @@ df_plot %>%
     aes(
       x = year_start,
       y = mortality_adjusted,
-      colour = net_coverage
+      colour = itn_percap
     ),
     data = df_glmer,
     alpha = 0.1
@@ -213,7 +256,7 @@ df_plot %>%
 # now predict back to rasters
 
 # get all cells in mastergrids, and extract the values there
-cells <- terra::cells(nets_flat)
+cells <- terra::cells(covs_flat)
 # nets_cube_dataframe <- terra::extract(nets_cube, cells) %>%
 #   mutate(
 #     cell = cells,
@@ -227,10 +270,7 @@ cells <- terra::cells(nets_flat)
 #     year = as.numeric(year)
 #   )
 
-nets_flat_dataframe <- terra::extract(nets_flat, cells) %>%
-  rename(
-    net_coverage = mean
-  ) %>%
+covs_flat_dataframe <- terra::extract(covs_flat, cells) %>%
   mutate(
     cell = cells,
     .before = everything()
@@ -242,11 +282,14 @@ template_raster <- nets_cube$nets_2000 * 0
 types_plot <- c("Deltamethrin",
                 "Permethrin",
                 "Alpha-cypermethrin")
+
+mask <- covs_flat$itn_percap > 0
+mask[mask == 0] <- NA
 for (this_insecticide in types_plot) {
   for (this_year in years) {
     
     # extract the nets data for this year and prepare for prediction
-    df_predict <- nets_flat_dataframe %>%
+    df_predict <- covs_flat_dataframe %>%
       mutate(
         insecticide_type = this_insecticide,
         year = this_year,
@@ -255,7 +298,13 @@ for (this_insecticide in types_plot) {
       ) %>%
       mutate(
         across(
-          c(intercept, net_coverage),
+          c(intercept,
+            itn_percap,
+            crop_pc_1,
+            crop_pc_2, 
+            crop_pc_3, 
+            crop_pc_4, 
+            crop_pc_5),
           ~time * .,
           .names = "fitness_{.col}"
         )
@@ -269,11 +318,13 @@ for (this_insecticide in types_plot) {
     # stick this in a raster
     this_ir_raster <- template_raster
     this_ir_raster[cells] <- df_predict$mortality
+    this_ir_raster <- this_ir_raster * mask
+    
     write_path <- file.path("outputs/ir_maps",
                             this_insecticide,
                             sprintf("ir_%s_susceptibility.tif",
                                     this_year))
-    
+
     # make sure the directory exists
     dir.create(dirname(write_path))
     writeRaster(this_ir_raster,
@@ -281,5 +332,11 @@ for (this_insecticide in types_plot) {
     
   }
 }
+
+# ggplot() +
+#   geom_spatraster(data = this_ir_raster) +
+#   scale_fill_gradient(limits = c(0, 1),
+#                       na.value = "transparent") +
+#   theme_minimal()
 
 # now redo this with more spatial covariates
