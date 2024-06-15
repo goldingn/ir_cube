@@ -4,6 +4,20 @@
 source("R/packages.R")
 source("R/functions.R")
 
+# load covariate rasters
+
+# load and temporally average raster data
+nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
+nets_flat <- terra::app(nets_cube, mean)
+names(nets_flat) <- "itn_percap"
+nets_flat_scaled <- scale(nets_flat)
+
+# load the other layers
+covs_flat_orig <- rast("data/clean/flat_covariates.tif")
+
+# add on the scaled, flat nets layer
+covs_flat <- c(nets_flat_scaled, covs_flat_orig)
+
 # load data
 ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
 
@@ -38,7 +52,31 @@ df <- ir_mtm_africa %>%
                               "Propoxur")),
     # drop any from before when we have data on net coverage
     year_start >= baseline_year
+  ) %>%
+  # extract non-temporal covariates at coordinates
+  bind_cols(
+    terra::extract(covs_flat,
+                   select(., longitude, latitude) %>%
+                     as.matrix())
+  ) %>%
+  # drop a handful of points mossing covariates
+  filter(
+    !is.na(itn_percap)
   )
+
+# # extract spatiotemporal covariates from the cube
+# nets_lookup <- terra::extract(nets_cube, coords) %>%
+#   mutate(
+#     row = row_number(),
+#     .before = everything()
+#   ) %>%
+#   pivot_longer(cols = starts_with("nets_"),
+#                names_prefix = "nets_",
+#                names_to = "year",
+#                values_to = "net_coverage") %>%
+#   mutate(
+#     year = as.numeric(year)
+#   )
 
 # # summarise the data
 # df %>%
@@ -57,7 +95,19 @@ df <- ir_mtm_africa %>%
 #           insecticide_class,
 #           insecticide_type)
 
-# fit a model to these data, intercept-only to start
+# create design matrix
+x <- df %>%
+  select(itn_percap,
+         crop_pc_1,
+         crop_pc_2,
+         crop_pc_3,
+         crop_pc_4,
+         crop_pc_5) %>%
+  bind_cols(intercept = 1, .) %>%
+  as.matrix()
+
+# subset to debug
+# x <- x[, 1:4, drop = FALSE]
 
 # map the data to the insecticide classes and types
 classes <- unique(df$insecticide_class)
@@ -83,41 +133,38 @@ type_concentrations <- df %>%
   
 # dimensions
 n_obs <- nrow(df)
-n_covs <- 1
+n_covs <- ncol(x)
 n_classes <- length(classes)
 n_types <- length(types)
 
-# create design matrix
-x <- matrix(1, nrow = n_obs, ncol = n_covs)
-
 # hierarchical regression parameters
 
-# # doubly hierarchical version
-# 
-# # between-classes
+# doubly hierarchical version
+
+# between-classes
+beta_overall <- normal(0, 1, dim = n_covs)
+sigma_overall <- normal(0, 1, dim = n_covs, truncation = c(0, Inf))
+sigma_class <- normal(0, 1, dim = n_covs, truncation = c(0, Inf))
+
+# between-types
+beta_class_raw <- normal(0, 1, dim = c(n_covs, n_classes))
+beta_class_sigma <- sweep(beta_class_raw, 1, sigma_overall, FUN = "*")
+beta_class <- sweep(beta_class_sigma, 1, beta_overall, FUN = "+")
+
+# betas for types
+beta_type_raw <- normal(0, 1, dim = c(n_covs, n_types))
+beta_type_sigma <- sweep(beta_type_raw, 1, sigma_class, FUN = "*")
+beta_type <- beta_class[, classes_index] + beta_type_sigma
+
+
+# # simpler single-level hierarchy
 # beta_overall <- normal(0, 1, dim = n_covs) * 10
 # sigma_overall <- normal(0, 1, dim = n_covs, truncation = c(0, Inf))
-# sigma_class <- normal(0, 1, dim = n_covs, truncation = c(0, Inf))
 # 
-# # between-types
-# beta_class_raw <- normal(0, 1, dim = c(n_covs, n_classes))
-# beta_class_sigma <- sweep(beta_class_raw, 1, sigma_overall, FUN = "*")
-# beta_class <- sweep(beta_class_sigma, 1, beta_overall, FUN = "+")
-# 
-# # betas for types
+# # hierarchical decentring implementation
 # beta_type_raw <- normal(0, 1, dim = c(n_covs, n_types))
-# beta_type_sigma <- sweep(beta_type_raw, 1, sigma_class, FUN = "*")
-# beta_type <- beta_class[, classes_index] + beta_type_sigma
-
-
-# simpler single-level hierarchy
-beta_overall <- normal(0, 1, dim = n_covs) * 10
-sigma_overall <- normal(0, 1, dim = n_covs, truncation = c(0, Inf))
-
-# hierarchical decentring implementation
-beta_type_raw <- normal(0, 1, dim = c(n_covs, n_types))
-beta_type_sigma <- sweep(beta_type_raw, 1, sigma_overall, FUN = "*")
-beta_type <- sweep(beta_type_sigma, 1, beta_overall, FUN = "+")
+# beta_type_sigma <- sweep(beta_type_raw, 1, sigma_overall, FUN = "*")
+# beta_type <- sweep(beta_type_sigma, 1, beta_overall, FUN = "+")
 
 
 # remove hierarchy for debugging
@@ -138,18 +185,19 @@ eta_vec <- greta:::rowSums(eta_mat)
 # data_index <- cbind(seq_len(n_obs), df$type_id)
 # eta_vec <- eta[data_index]
 
-# switch this to just modelling the fraction susceptible in 2000
+# model fractions susceptible in 2000
 
-# relax this prior - DDT was pretty resistant by then
+# # hierarchical prior (with hierarchical decentring) on the 
+# logit_init_overall <- normal(qlogis(0.999), 1)
+# logit_init_sd <- normal(0, 0.5, truncation = c(0, Inf))
+# logit_init_raw <- normal(0, 1, dim = n_types)
+# logit_init <- logit_init_overall + logit_init_raw * logit_init_sd
+# init_fraction_susceptible <- ilogit(logit_init)
+
+# more straightforward prior with a harder limit
 init_fraction_susceptible <- normal(1, 0.01,
                                     dim = n_types,
                                     truncation = c(0.9, 1))
-# init_sims <- calculate(init_fraction_susceptible[1], nsim = 1e5)[[1]]
-# hist(init_sims, xlim = c(0.8, 1))
-# mean(init_sims)
-# mean(init_sims < 0.9)
-# quantile(init_sims, 0.25)
-
 
 # compute the fraction susceptible over time against each insecticide
 
@@ -199,23 +247,52 @@ population_mortality_vec <- fraction_susceptible_vec
 # need to constrain this error for now, until there are covariates to explain it
 # better
 # observation_extra_error <- normal(0, 0.1, truncation = c(0, Inf))
-# a <- ((1 - population_mortality_vec) / observation_extra_error ^ 2 - 1 / population_mortality_vec) * population_mortality_vec ^ 2
-# b <- a * (1 / population_mortality_vec - 1)
-# distribution(df$died) <- beta_binomial(df$mosquito_number, a, b)
 
-# just use binomial for now
-distribution(df$died) <- binomial(df$mosquito_number, population_mortality_vec)
+# compute the expected sd of the binomial (assuming independent samples)
+binomial_sd <- sqrt(df$mosquito_number *
+                      population_mortality_vec *
+                      (1 - population_mortality_vec))
+
+# model the observation (betabinomial) sd as a multiplier on the binomial sd
+observation_sd_multiplier_raw <- normal(0, 0.1, truncation = c(0, Inf))
+observation_sd_multiplier <- 1 + observation_sd_multiplier_raw
+
+# summary(calculate(observation_sd_multiplier, nsim = 1e6)[[1]])
+# observation_sd_multiplier <- 1
+observation_sd <- binomial_sd * observation_sd_multiplier
+
+a <- ((1 - population_mortality_vec) / observation_sd ^ 2 - 1 / population_mortality_vec) * population_mortality_vec ^ 2
+b <- a * (1 / population_mortality_vec - 1)
+distribution(df$died) <- beta_binomial(df$mosquito_number, a, b)
+
+# or just use binomial
+# distribution(df$died) <- binomial(df$mosquito_number, population_mortality_vec)
 
 m <- model(
   beta_overall,
-  init_fraction_susceptible,
+  sigma_overall,
   beta_type_raw,
-  sigma_overall
+  init_fraction_susceptible,
+  observation_sd_multiplier
 )
 
+# set the inits for observation_sd_multiplier to be large (more params will fit
+# OK to data to start with, then chains can move towards better parts of
+# parameter space)
+n_chains <- 4
+inits <- replicate(n_chains,
+                   initials(
+                     observation_sd_multiplier_raw = 15
+                   ),
+                   simplify = FALSE)
+
 system.time(
-  draws <- mcmc(m)
+  draws <- mcmc(m,
+                initial_values = inits,
+                chains = n_chains)
 )
+# user  system elapsed 
+# 605.339  71.699 162.177 
 
 # check convergence
 coda::gelman.diag(draws,
@@ -232,7 +309,6 @@ frac_susc_post_mean <- colMeans(sims$fraction_susceptible_vec[, , 1]) * 100
 par(mfrow = c(1, 1))
 plot(frac_susc_post_mean ~ df$year_start)
 
-
 # calculate expected bioassay mortalities over time for each insecticide, and
 # overplot the data
 
@@ -241,7 +317,7 @@ type_idx <- 1
 times_plot <- seq(1990, max(df$year_start), length.out = n_plot)
 time_diff_plot <- sweep(matrix(times_plot, n_plot, n_types), 2, 2000, FUN = "-")
 
-eta_plot <- beta_type
+eta_plot <- beta_type[1, ]
 cumulative_fitnesses_plot <- exp(sweep(time_diff_plot, 2, t(eta_plot), FUN = "*"))
 
 # compute the fraction susceptible over time against each insecticide
@@ -355,8 +431,14 @@ for (i in seq_len(n_types)) {
 # plot posteriors
 posteriors <- calculate(init_fraction_susceptible,
                         beta_type,
+                        observation_sd_multiplier,
                         values = draws,
                         nsim = 1000)
+
+par(mfrow = c(1, 1),
+    mar = c(5, 4, 4, 2) + 0.1)
+hist(posteriors$observation_sd_multiplier,
+     breaks = 100)
 
 par(mfrow = n2mfrow(n_types))
 for (i in seq_len(n_types)) {
@@ -376,10 +458,12 @@ for (i in seq_len(n_types)) {
 }
 
 # things to do next:
-# - add in the temporally-static LLIN and crop covariates
-# - add in code for spatial predictions
 # - add in time-varying nets
+# - add in code for spatial predictions
 # - set up code for posterior predictive checking
 # - set up code for out of sample (future timesteps, spatial blocks) evaluation of model fit.
 # - add in more discriminating bioassay data
 # - add in intensity bioassay data (with LD50 model, including possibility of complete but imperfect resistance)
+
+# things to do after deadline
+# - model fitness advantage as a hierarchical GP over covariates (incl. ARD)
