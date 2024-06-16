@@ -10,13 +10,13 @@ source("R/functions.R")
 nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
 nets_flat <- terra::app(nets_cube, mean)
 names(nets_flat) <- "itn_percap"
-nets_flat_scaled <- scale(nets_flat)
+nets_flat_std <- nets_flat / global(nets_flat, "max", na.rm = TRUE)[1, 1]
 
 # load the other layers
 covs_flat_orig <- rast("data/clean/flat_covariates.tif")
 
 # add on the scaled, flat nets layer
-covs_flat <- c(nets_flat_scaled, covs_flat_orig)
+covs_flat <- c(nets_flat_std, covs_flat_orig)
 
 # load data
 ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
@@ -101,7 +101,6 @@ covariate_names <- names(covs_flat)
 # create design matrix
 x <- df %>%
   select(any_of(covariate_names)) %>%
-  bind_cols(intercept = 1, .) %>%
   as.matrix()
 
 # map the data to the insecticide classes and types
@@ -169,14 +168,17 @@ beta_type <- beta_class[, classes_index] + beta_type_sigma
 # multiply through to get log relative fitness of resistance for each
 # insecticide type
 
+# convert beta to positive effect sizes
+effect_type <- exp(beta_type)
+
 # this way is marginally faster and probably quite a lot less memory intensive
 # than the matrix multiply
-beta_mat <- t(beta_type)[df$type_id,]
-eta_mat <- x * beta_mat
+effect_mat <- t(effect_type)[df$type_id,]
+eta_mat <- x * effect_mat
 eta_vec <- greta:::rowSums(eta_mat)
 
 # pull out the etas (observations, by insecticides) corresponding to data
-# eta <- x %*% beta_type
+# eta <- x %*% effect_type
 # data_index <- cbind(seq_len(n_obs), df$type_id)
 # eta_vec <- eta[data_index]
 
@@ -192,8 +194,10 @@ eta_vec <- greta:::rowSums(eta_mat)
 # more straightforward prior with a harder limit
 init_fraction_susceptible <- normal(1, 0.01,
                                     dim = n_types,
-                                    truncation = c(0.9, 1))
-
+                                    truncation = c(0, 1))
+# sims <- calculate(init_fraction_susceptible[1], nsim = 1e4)[[1]]
+# hist(sims, xlim = c(0.8, 1))
+# range(sims)
 # compute the fraction susceptible over time against each insecticide
 
 # more stable version of this:
@@ -305,43 +309,23 @@ par(mfrow = c(1, 1))
 plot(frac_susc_post_mean ~ jitter(df$year_start),
      cex = 0.1)
 
-# calculate expected bioassay mortalities over time for each insecticide, and
-# overplot the data
+# calculate expected bioassay mortalities over time for each insecticide, with
+# fixed assumption about covariate values, and overplot the data
 
 n_plot <- 100
 type_idx <- 1
 times_plot <- seq(1990, max(df$year_start), length.out = n_plot)
 time_diff_plot <- sweep(matrix(times_plot, n_plot, n_types), 2, 2000, FUN = "-")
 
-eta_plot <- beta_type[1, ]
+x_fixed <- t(c(0.5, rep(0, n_covs - 1)))
+eta_plot <- x_fixed %*% exp(beta_type)
 cumulative_fitnesses_plot <- exp(sweep(time_diff_plot, 2, t(eta_plot), FUN = "*"))
 
 # compute the fraction susceptible over time against each insecticide
 init_mat <- sweep(zeros(n_plot, n_types), 2, init_fraction_susceptible, FUN = "+")
 fraction_susceptible_plot <- init_mat /
   (init_mat + (1 - init_mat) * cumulative_fitnesses_plot)
-
-# # get the population-level LD50s for plotting
-# LD50_susceptible_weighted_plot <- sweep(fraction_susceptible_plot,
-#                                         2,
-#                                         LD50_susceptible,
-#                                         FUN = "*")
-# LD50_resistant_weighted_plot <- sweep(1 - fraction_susceptible_plot,
-#                                       2,
-#                                       LD50_resistant,
-#                                       FUN = "*")
-# LD50_plot <- LD50_susceptible_weighted_plot + LD50_resistant_weighted_plot
-# 
-# # convert to proportional mortality expected with random population sampling
-# probit_plot <- sweep(-LD50_plot, 2, type_concentrations, FUN = "+") / population_LD50_sd
-# population_mortality_plot <- iprobit(probit_plot)
 population_mortality_plot <- fraction_susceptible_plot
-
-# # define betabinomial sampling model
-# a_plot <- ((1 - population_mortality_plot) / observation_extra_error ^ 2 - 1 / population_mortality_plot) * population_mortality_plot ^ 2
-# b_plot <- a_plot * (1 / population_mortality_plot - 1)
-# died_plot <- beta_binomial(matrix(1000, n_plot, n_types), a_plot, b_plot)
-# assay_mortality_plot <- died_plot / 1000
 
 post_plot_sims <- calculate(
   population_mortality_plot,
@@ -395,7 +379,7 @@ hist(posteriors$observation_sd_multiplier,
 par(mfrow = n2mfrow(n_types))
 for (i in seq_len(n_types)) {
   hist(posteriors$init_fraction_susceptible[, i, ],
-       xlim = c(0.9, 1),
+       xlim = c(0.7, 1),
        breaks = 100,
        main = types[i])
   
@@ -430,7 +414,6 @@ cells <- terra::cells(covs_flat[[1]])
 x_predict <- terra::extract(covs_flat, cells) %>%
   as_tibble() %>%
   select(any_of(covariate_names)) %>%
-  bind_cols(intercept = 1, .) %>%
   as.matrix()
 
 # years to predict to
@@ -487,11 +470,11 @@ for (this_insecticide in types_save) {
     
     type_id_predict <- match(this_insecticide, types)
     
-system.time({    
     # get log fitness for population resistant to this insecticide, at these
     # cells
     x_predict_batch <- x_predict[x_batch, ]
-    eta_predict <- x_predict_batch %*% beta_type[, type_id_predict]
+    effect_type <- exp(beta_type)
+    eta_predict <- x_predict_batch %*% effect_type[, type_id_predict]
     
     # accumulate over time and convert to fitness
     times_predict_mat <- outer(rep(1, length(cell_batch)),
@@ -525,7 +508,6 @@ system.time({
       this_ir_cube[[y]][cell_batch] <- batch_pred_mean[, y]
     }
 
-})
   }
   
   # now write out the raster
@@ -547,7 +529,3 @@ system.time({
 # - set up code for out of sample (future timesteps, spatial blocks) evaluation of model fit.
 # - add in more discriminating bioassay data
 # - add in intensity bioassay data (with LD50 model, including possibility of complete but imperfect resistance)
-
-# things to do after deadline
-# - model fitness advantage as a hierarchical GP over covariates (incl. ARD)
-

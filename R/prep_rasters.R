@@ -25,85 +25,142 @@ terra::writeRaster(nets_per_capita,
 # following mac terminal command (from inside data/raw):
 # ln -s ~/Dropbox/sharing/ir_pred_rasters ./
 
-# load crops, standardised to 0-1
-crops_std <- rast("data/raw/ir_pred_rasters/crop_2010_std.tif")
+# load crops, both as-is and standardised to 0-1
+crops <- rast("data/raw/ir_pred_rasters/crop_2010.tif")
 
-# subset to main staple crops (more likely to be used in subsistence farming and
-# therefore influence rural malaria vectors): cereals, roots, and bananas/plantains. Exclude 'other' categories, and any with comparative low coverage
-crop_type_keep <- c(
-  # cereals
-  # "wheat",  # too sparse 
-  "rice",
-  "maize",
-  # "barley",  # too sparse 
-  "pearl millet",
-  # "small millet",  # too sparse 
-  "sorghum",
-  "potato", # roots
-  "sweet potato",
-  "yams",
-  "cassava",
-  "banana",
-  "plantain"
-)
+# # subset to main staple crops (more likely to be used in subsistence farming and
+# # therefore influence rural malaria vectors): cereals, roots, and bananas/plantains. Exclude 'other' categories, and any with comparative low coverage
+# crop_type_staple <- c(
+#   # cereals
+#   # "wheat",  # too sparse 
+#   "rice",
+#   "maize",
+#   # "barley",  # too sparse 
+#   "pearl millet",
+#   # "small millet",  # too sparse 
+#   "sorghum",
+#   "potato", # roots
+#   "sweet potato",
+#   "yams",
+#   "cassava",
+#   "banana",
+#   "plantain"
+# )
+# 
+# # subset to staples
+# crop_codes_staples <- crop_info %>%
+#   filter(
+#     crop %in% crop_type_staple
+#   ) %>%
+#   pull(code)
+# 
+# crops_staples <- crops[[crop_codes_staples]]
+# crops_std_staples <- crops_std[[crop_codes_staples]]
 
-crop_codes <- geodata::spamCrops() %>%
+cereals <- c("wheat", "rice", "maize", "barley", "pearl millet", "small millet",
+             "sorghum", "other cereals")
+
+roots <- c("potato", "sweet potato", "yams", "cassava", "other roots")
+
+pulses <- c("bean", "chickpea",  "cowpea", "pigeonpea", "lentil",
+            "other pulses")
+
+oilcrops <- c("soybean", "groundnut", "coconut", "oilpalm", "sunflower",
+              "rapeseed", "sesameseed", "other oil crops")
+
+fibrecrops <- c("sugarcane", "sugarbeet", "cotton", "other fibre crops")
+
+othercrops <- c("arabica coffee", "robusta coffee", "cocoa", "tea", "tobacco",
+                "banana", "plantain", "tropical fruit", "temperate fruit",
+                "vegetables", "rest of crops")
+
+crop_info <- geodata::spamCrops() %>%
   as_tibble() %>%
   mutate(
-    code = toupper(code)
-  ) %>%
-  filter(
-    crop %in% crop_type_keep
-  ) %>%
-  pull(code)
+    code = toupper(code),
+    type = case_when(
+      crop %in% cereals ~ "cereal",
+      crop %in% roots ~ "root",
+      crop %in% pulses ~ "pulse",
+      crop %in% oilcrops ~ "oil crop",
+      crop %in% fibrecrops ~ "fibre crop",
+      crop %in% othercrops ~ "other"
+    )
+  )
 
-crops_std_sub <- crops_std[[crop_codes]]
+# compute and standardise the yield of all crops
+crops_group <- app(crops, sum)
+crops_group <- crops_group / global(crops_group, "max", na.rm = TRUE)[1, 1]
+names(crops_group) <- "all"
 
-# do a pca on these to 
-
-# add an epsilon and logit transform these layers
-logit_eps <- function(x, epsilon = 1e-6) {
-  scale <- 1 - 2 * epsilon
-  z <- epsilon + x * scale
-  # remove 0s and 1s
-  qlogis(z)
+# do the same for groups of these and append them
+for (crop_type in unique(crop_info$type)) {
+  
+  crop_codes_type <- crop_info %>%
+    filter(
+      type == crop_type
+    ) %>%
+    pull(code)
+  
+  crops_type <- app(crops[[crop_codes_type]], sum)
+  crops_type <- crops_type / global(crops_type, "max", na.rm = TRUE)[1, 1]
+  names(crops_type) <- crop_type
+  crops_group <- c(crops_group, crops_type)
+  
 }
 
-logit_crops <- app(crops_std_sub, logit_eps)
-scale_logit_crops <- scale(logit_crops)
+names(crops_group) <- paste0("crops_", names(crops_group))
 
-
-# now PCA
-pca <- terra::princomp(scale_logit_crops, maxcell = 1e6)
-crop_pc <- predict(scale_logit_crops, pca, index = 1:5)
-
-# rescale these for modelling
-crop_pc_scale <- scale(crop_pc)
-
-# give them names
-names(crop_pc_scale) <- paste0("crop_pc_",
-                               seq_len(nlyr(crop_pc_scale)))
-
-# plot them
-ggplot() +
-  geom_spatraster(
-    data = crop_pc_scale
-  ) +
-  scale_fill_viridis_c(
-    na.value = "transparent"
-  ) +
-  facet_wrap(~lyr) +
-  theme_minimal()
-ggsave("figures/cov_crop_pcs.png",
-       bg = "white",
-       width = 8,
-       height = 6,
-       dpi = 300)
+# 
+# 
+# 
+# 
+# 
+# # do a pca on these to 
+# 
+# # add an epsilon and logit transform these layers
+# logit_eps <- function(x, epsilon = 1e-6) {
+#   scale <- 1 - 2 * epsilon
+#   z <- epsilon + x * scale
+#   # remove 0s and 1s
+#   qlogis(z)
+# }
+# 
+# logit_crops <- app(crops_std, logit_eps)
+# scale_logit_crops <- scale(logit_crops)
+# 
+# 
+# # now PCA
+# pca <- terra::princomp(scale_logit_crops, maxcell = 1e6)
+# crop_pc <- predict(scale_logit_crops, pca, index = 1:5)
+# 
+# # rescale these for modelling
+# crop_pc_scale <- scale(crop_pc)
+# 
+# # give them names
+# names(crop_pc_scale) <- paste0("crop_pc_",
+#                                seq_len(nlyr(crop_pc_scale)))
+# 
+# # plot them
+# ggplot() +
+#   geom_spatraster(
+#     data = crop_pc_scale
+#   ) +
+#   scale_fill_viridis_c(
+#     na.value = "transparent"
+#   ) +
+#   facet_wrap(~lyr) +
+#   theme_minimal()
+# ggsave("figures/cov_crop_pcs.png",
+#        bg = "white",
+#        width = 8,
+#        height = 6,
+#        dpi = 300)
 
 # combine these into a multiband geotiff of flat (not temporally static)
 # covariates
 
-flat_covs <- c(crop_pc_scale)
+flat_covs <- c(crops_group)
 
 # save these out
 terra::writeRaster(flat_covs,
