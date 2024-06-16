@@ -95,19 +95,14 @@ df <- ir_mtm_africa %>%
 #           insecticide_class,
 #           insecticide_type)
 
+# which covariates to use (all by default)
+covariate_names <- names(covs_flat)
+
 # create design matrix
 x <- df %>%
-  select(itn_percap,
-         crop_pc_1,
-         crop_pc_2,
-         crop_pc_3,
-         crop_pc_4,
-         crop_pc_5) %>%
+  select(any_of(covariate_names)) %>%
   bind_cols(intercept = 1, .) %>%
   as.matrix()
-
-# subset to debug
-# x <- x[, 1:4, drop = FALSE]
 
 # map the data to the insecticide classes and types
 classes <- unique(df$insecticide_class)
@@ -307,7 +302,8 @@ fitted_post_mean <- colMeans(sims$population_mortality_vec[, , 1]) * 100
 frac_susc_post_mean <- colMeans(sims$fraction_susceptible_vec[, , 1]) * 100
 
 par(mfrow = c(1, 1))
-plot(frac_susc_post_mean ~ df$year_start)
+plot(frac_susc_post_mean ~ jitter(df$year_start),
+     cex = 0.1)
 
 # calculate expected bioassay mortalities over time for each insecticide, and
 # overplot the data
@@ -348,21 +344,11 @@ population_mortality_plot <- fraction_susceptible_plot
 # assay_mortality_plot <- died_plot / 1000
 
 post_plot_sims <- calculate(
-  fraction_susceptible_plot,
   population_mortality_plot,
-  # assay_mortality_plot,
   values = draws,
   nsim = 1000)
 
 # summarise these for plotting
-frac_susc_post_mean <- apply(post_plot_sims$fraction_susceptible_plot,
-                            2:3,
-                            mean)
-frac_susc_post_ci <- apply(post_plot_sims$fraction_susceptible_plot,
-                          2:3,
-                          quantile,
-                          c(0.025, 0.975))
-
 pop_mort_post_mean <- apply(post_plot_sims$population_mortality_plot,
                             2:3,
                             mean)
@@ -370,39 +356,6 @@ pop_mort_post_ci <- apply(post_plot_sims$population_mortality_plot,
                           2:3,
                           quantile,
                           c(0.025, 0.975))
-
-# assay_mort_post_mean <- apply(post_plot_sims$assay_mortality_plot,
-#                             2:3,
-#                             mean)
-# assay_mort_post_ci <- apply(post_plot_sims$assay_mortality_plot,
-#                           2:3,
-#                           quantile,
-#                           c(0.025, 0.975))
-# do posterior predictive simulations
-
-par(mfrow = n2mfrow(n_types),
-    mar = c(2, 2, 4, 2))
-for (i in seq_len(n_types)) {
-  plot(frac_susc_post_mean[, i] ~ times_plot,
-       ylim = c(0, 1),
-       type = "l")
-  lines(frac_susc_post_ci[1, , i] ~ times_plot,
-        lty = 2)
-  lines(frac_susc_post_ci[2, , i] ~ times_plot,
-        lty = 2)
-  title(main = sprintf("%s\n(%s)",
-                       types[i],
-                       classes[classes_index[i]]))
-  
-  # overplot all the data for this type
-  df %>%
-    filter(type_id == i) %>%
-    mutate(mortality = died / mosquito_number) %>%
-    select(year_start, mortality) %>%
-    points(cex = 0.5, lwd = 0.1)
-  
-}
-
 
 par(mfrow = n2mfrow(n_types),
     mar = c(2, 2, 4, 2))
@@ -426,7 +379,6 @@ for (i in seq_len(n_types)) {
     points(cex = 0.5, lwd = 0.1)
   
 }
-
 
 # plot posteriors
 posteriors <- calculate(init_fraction_susceptible,
@@ -457,9 +409,140 @@ for (i in seq_len(n_types)) {
   
 }
 
+# make prediction rasters
+
+# get all cells in mastergrids, and extract the values there
+cells <- terra::cells(covs_flat[[1]])
+
+# nets_cube_dataframe <- terra::extract(nets_cube, cells) %>%
+#   mutate(
+#     cell = cells,
+#     .before = everything()
+#   ) %>%
+#   pivot_longer(cols = starts_with("nets_"),
+#                names_prefix = "nets_",
+#                names_to = "year",
+#                values_to = "net_coverage") %>%
+#   mutate(
+#     year = as.numeric(year)
+#   )
+
+x_predict <- terra::extract(covs_flat, cells) %>%
+  as_tibble() %>%
+  select(any_of(covariate_names)) %>%
+  bind_cols(intercept = 1, .) %>%
+  as.matrix()
+
+# years to predict to
+years_predict <- 2000:2030
+times_predict <- years_predict - baseline_year
+
+# loop through insecticides making predictions in batches of cells for multiple years simultaneously
+template_raster <- nets_cube$nets_2000 * 0
+template_cube <- template_raster %>%
+  replicate(length(years_predict),
+            .,
+            simplify = FALSE) %>%
+  do.call(c, .)
+
+names(template_cube) <- years_predict
+
+# create batches of cells for processing
+
+# NOTE due to a weird-as-hell greta bug, this object must not be called
+# batch_size: https://github.com/greta-dev/greta/issues/634
+# batch_bigness <- length(cells) + 1
+batch_bigness <- 1e5
+batch_idx <- seq_along(cells) %/% batch_bigness
+# index to raster, for setting cell values
+cell_batches <- split(cells, batch_idx)
+# index to x_predict
+x_batches <- split(seq_along(cells), batch_idx)
+n_batches <- length(cell_batches)
+
+# insecticide types to save
+types_save <- c("Deltamethrin",
+                "Permethrin",
+                "Alpha-cypermethrin")
+
+# loop through insecticides
+for (this_insecticide in types_save) {
+  
+  # make a raster cube to stick predictions into
+  this_ir_cube <- template_cube
+  
+  # grab the current seed, so we can do calculate in batches but not shuffle
+  # parameters over space
+  this_seed <- greta::.internals$utils$misc$get_seed()
+  
+  # loop through batches of cells
+  for (batch_index in seq_len(n_batches)) {
+    
+    print(sprintf("processing batch %i of %i",
+                  batch_index,
+                  n_batches))
+    
+    cell_batch <- cell_batches[[batch_index]]
+    x_batch <- x_batches[[batch_index]]
+    
+    type_id_predict <- match(this_insecticide, types)
+    
+system.time({    
+    # get log fitness for population resistant to this insecticide, at these
+    # cells
+    x_predict_batch <- x_predict[x_batch, ]
+    eta_predict <- x_predict_batch %*% beta_type[, type_id_predict]
+    
+    # accumulate over time and convert to fitness
+    times_predict_mat <- outer(rep(1, length(cell_batch)),
+                               times_predict,
+                               FUN = "*")
+    cumulative_eta_predict <- sweep(as_data(times_predict_mat),
+                                    1,
+                                    eta_predict,
+                                    FUN = "*")
+    cumulative_fitnesses_predict <- exp(cumulative_eta_predict)
+    
+    # compute the fraction susceptible to this insecticide over time
+    init_predict <- init_fraction_susceptible[type_id_predict]
+    fraction_susceptible_predict <- init_predict / 
+      (init_predict + (1 - init_predict) * cumulative_fitnesses_predict)
+    population_mortality_predict <- fraction_susceptible_predict
+    
+    # get posterior draws of these, fixing the RNG seed so it's the same
+    # collection of posterior samples for all batches
+    # set.seed(this_seed)
+    pred_mat <- calculate(population_mortality_predict,
+                          values = draws,
+                          seed = this_seed,
+                          nsim = 1e2)[[1]]
+    
+    # compute posterior mean
+    batch_pred_mean <- apply(pred_mat, 2:3, mean)
+    
+    # stick this batch of predictions in the raster cube, one year at a time
+    for (y in seq_along(years_predict)) {
+      this_ir_cube[[y]][cell_batch] <- batch_pred_mean[, y]
+    }
+
+})
+  }
+  
+  # now write out the raster
+  write_path <- file.path("outputs/ir_maps",
+                          this_insecticide,
+                          sprintf("ir_%s_susceptibility.tif",
+                                  this_year))
+  
+  # make sure the directory exists
+  dir.create(dirname(write_path))
+  writeRaster(this_ir_raster,
+              write_path)  
+}
+
+
 # things to do next:
 # - add in time-varying nets
-# - add in code for spatial predictions
 # - set up code for posterior predictive checking
 # - set up code for out of sample (future timesteps, spatial blocks) evaluation of model fit.
 # - add in more discriminating bioassay data
@@ -467,3 +550,4 @@ for (i in seq_len(n_types)) {
 
 # things to do after deadline
 # - model fitness advantage as a hierarchical GP over covariates (incl. ARD)
+
