@@ -237,41 +237,30 @@ population_mortality_vec <- fraction_susceptible_vec
 
 # define observation model
 
-# compute the expected sd of a binomial distribution (ie. assuming independent
-# samples)
-binomial_sd <- sqrt(df$mosquito_number *
-                      population_mortality_vec *
-                      (1 - population_mortality_vec))
+# model overdispersion in the data via an overdispersion parameter rho. This
+# prior makes rho approximately uniform, but fairly nicely behaved
+logit_rho <- normal(0, 1.6)
+rho <- ilogit(logit_rho)
 
-# model the observation (betabinomial) sd as a multiplier on the binomial sd,
-# accounting for additional error due to nonindependent sampling of individuals
-# from the population
-observation_sd_multiplier_raw <- normal(0, 0.1, truncation = c(0, Inf))
-observation_sd_multiplier <- 1 + observation_sd_multiplier_raw
-observation_sd <- binomial_sd * observation_sd_multiplier
-
-# compute parameters of the beta-binomial that match this mean and sd
-a <- ((1 - population_mortality_vec) / observation_sd ^ 2 - 1 / population_mortality_vec) * population_mortality_vec ^ 2
-b <- a * (1 / population_mortality_vec - 1)
-
-# define the distribution over the observations
-distribution(df$died) <- beta_binomial(df$mosquito_number, a, b)
+distribution(df$died) <- betabinomial_p_rho(N = df$mosquito_number,
+                                            p = population_mortality_vec,
+                                            rho = rho)
 
 m <- model(
   beta_overall,
   sigma_overall,
   beta_type_raw,
   init_fraction_susceptible,
-  observation_sd_multiplier
+  logit_rho
 )
 
-# set the inits for observation_sd_multiplier to be large (more params will fit
-# OK to data to start with, then chains can move towards better parts of
-# parameter space)
+# set the inits for obs_var_multiplier to be large (more params will fit OK to
+# data to start with, then chains can move towards better parts of parameter
+# space)
 n_chains <- 4
 inits <- replicate(n_chains,
                    initials(
-                     observation_sd_multiplier_raw = 15
+                     logit_rho = 10
                    ),
                    simplify = FALSE)
 
@@ -281,110 +270,191 @@ system.time(
                 chains = n_chains)
 )
 # user   system  elapsed 
-# 4243.033 2195.452 1795.518 
+# 4121.944 2225.062 1789.773 
 
 # check convergence
 coda::gelman.diag(draws,
                   autoburnin = FALSE,
                   multivariate = FALSE)
 
-# compute fitted population mortality rates, and plot with bioassay data
-sims <- calculate(population_mortality_vec,
-                  fraction_susceptible_vec,
-                  values = draws, nsim = 100)
-fitted_post_mean <- colMeans(sims$population_mortality_vec[, , 1]) * 100
-frac_susc_post_mean <- colMeans(sims$fraction_susceptible_vec[, , 1]) * 100
+# find some locations with lots of years of data and plot predictions and data
+# for these
+locations_plot <- df %>%
+  group_by(latitude, longitude) %>%
+  filter(
+    n_distinct(year_start) >= 8
+  ) %>%
+  select(
+    country_name,
+    latitude,
+    longitude,
+    cell_id
+  ) %>%
+  distinct() %>%
+  # geocode then find more interpretable names (google to see if this is how
+  # they are referred to in IR papers)
+  reverse_geocode(
+    lat = latitude,
+    long = longitude,
+    method = 'osm',
+    full_results = TRUE
+  ) %>%
+  mutate(
+    place = case_when(
+      address == "Soumousso, Houet, Hauts-Bassins, Burkina Faso" ~ "Soumousso, Burkina Faso",
+      address == "Katito-Kendu Bay-Homa Bay road, Oriang, Central ward, Karachuonyo, Homa Bay, Nyanza, Kenya" ~ "Homa Bay, Kenya",
+      address == "RNIE 7, Kandi 3, Kandi, Alibori, Bénin" ~ "Kandi, Benin",
+      address == "Aménagement de périmètre maraîcher, Djougou, Donga, Bénin" ~ "Djougou, Benin"
+    )
+  ) %>%
+  select(
+    place,
+    country_name,
+    latitude,
+    longitude,
+    cell_id
+  )
 
-par(mfrow = c(1, 1))
-plot(frac_susc_post_mean ~ jitter(df$year_start),
-     cex = 0.1)
+# pull these out for plotting
+preds_plot_setup <- expand_grid(
+  cell_id = locations_plot$cell_id,
+  year_start = baseline_year:max(df$year_start),
+  insecticide_type = types
+) %>%
+  mutate(
+    year_id = year_start - baseline_year + 1,
+    type_id = match(insecticide_type, types)
+  )
 
-# calculate expected bioassay mortalities over time for each insecticide, with
-# fixed assumption about covariate values, and overplot the data
+index_plot <- preds_plot_setup %>%
+  select(cell_id,
+         type_id,
+         year_id) %>%
+  as.matrix()
 
-x_fixed <- t(c(0.5, rep(0, n_covs - 1)))
-selection_plot <- t(x_fixed %*% exp(beta_type))
-fitness_plot <- 1 + selection_plot
-times_plot <- baseline_year + seq_len(n_times) - 1
-
-dynamic_outputs_plot <- iterate_dynamic_function(
-  transition_function = haploid_next,
-  initial_state = init_fraction_susceptible,
-  niter = n_times,
-  w = fitness_plot,
-  tol = 0)
-
-# pull out the data locations
-fraction_susceptible_plot <- t(dynamic_outputs_plot$all_states)
+fraction_susceptible_plot <- dynamic_cells$all_states[index_plot]
 population_mortality_plot <- fraction_susceptible_plot
 
-post_plot_sims <- calculate(
-  population_mortality_plot,
-  fitness_plot,
-  values = draws,
-  nsim = 1000)
+# simulate mortalities under binomial sampling
+sample_size_plot <- 100
+binomial_died <- binomial(sample_size_plot, population_mortality_plot)
+binomial_mortality <- binomial_died / sample_size_plot
 
-# summarise these for plotting
-pop_mort_post_mean <- apply(post_plot_sims$population_mortality_plot,
-                            2:3,
-                            mean)
-pop_mort_post_ci <- apply(post_plot_sims$population_mortality_plot,
-                          2:3,
+# simulate mortalities under betabinomial sampling
+betabinomial_died <- betabinomial_p_rho(N = sample_size_plot,
+                                              p = population_mortality_plot,
+                                              rho = rho)
+betabinomial_mortality <- betabinomial_died / sample_size_plot
+
+sims <- calculate(population_mortality_plot,
+                  binomial_mortality,
+                  betabinomial_mortality,
+                  values = draws,
+                  nsim = 1000)
+
+# posterior mean mortality rate, and intervals for the population value
+# (posterior uncertainty), and posterior predictive intervals (posterior
+# uncertainty and sampling error) for observed mortality from binomial sampling,
+# and from betabinomial sampling
+pop_mort_mean <- colMeans(sims$population_mortality_plot[, , 1])
+pop_mort_ci <- apply(sims$population_mortality_plot[, , 1],
+                     2,
+                     quantile,
+                     c(0.025, 0.975))
+binomial_mort_ci <- apply(sims$binomial_mortality[, , 1],
+                          2,
                           quantile,
                           c(0.025, 0.975))
+betabinomial_mort_ci <- apply(sims$betabinomial_mortality[, , 1],
+                              2,
+                              quantile,
+                              c(0.025, 0.975))
 
-par(mfrow = n2mfrow(n_types),
-    mar = c(2, 2, 4, 2))
-for (i in seq_len(n_types)) {
-  plot(pop_mort_post_mean[, i] ~ times_plot,
-       ylim = c(0, 1),
-       type = "l")
-  lines(pop_mort_post_ci[1, , i] ~ times_plot,
-        lty = 2)
-  lines(pop_mort_post_ci[2, , i] ~ times_plot,
-        lty = 2)
-  title(main = sprintf("%s\n(%s)",
-                       types[i],
-                       classes[classes_index[i]]))
+insecticides_plot <- c("Deltamethrin", "Permethrin", "Bendiocarb")
+
+preds_plot <- preds_plot_setup %>%
+  mutate(
+    mortality = pop_mort_mean,
+    pop_lower = pop_mort_ci[1, ],
+    pop_upper = pop_mort_ci[2, ],
+    binomial_lower = binomial_mort_ci[1, ],
+    binomial_upper = binomial_mort_ci[2, ],
+    betabinomial_lower = betabinomial_mort_ci[1, ],
+    betabinomial_upper = betabinomial_mort_ci[2, ],
+  ) %>%
+  filter(
+    insecticide_type %in% insecticides_plot
+  ) %>%
+  left_join(
+    locations_plot,
+    by = "cell_id"
+  )
+
+points_plot <- df %>%
+  filter(
+    cell_id %in% locations_plot$cell_id,
+    insecticide_type %in% insecticides_plot
+  ) %>%
+  mutate(
+    mortality = died / mosquito_number
+  ) %>%
+  left_join(
+    locations_plot,
+    by = "cell_id"
+  )
   
-  # overplot all the data for this type
-  df %>%
-    filter(type_id == i) %>%
-    mutate(mortality = died / mosquito_number) %>%
-    select(year_start, mortality) %>%
-    points(cex = 0.5, lwd = 0.1)
-  
-}
 
-# plot posteriors
-posteriors <- calculate(init_fraction_susceptible,
-                        effect_type,
-                        observation_sd_multiplier,
-                        values = draws,
-                        nsim = 1000)
-
-par(mfrow = c(1, 1),
-    mar = c(5, 4, 4, 2) + 0.1)
-hist(posteriors$observation_sd_multiplier,
-     breaks = 100)
-
-par(mfrow = n2mfrow(n_types))
-for (i in seq_len(n_types)) {
-  hist(posteriors$init_fraction_susceptible[, i, ],
-       xlim = c(0.7, 1),
-       breaks = 100,
-       main = types[i])
-  
-}
-
-# only shown for ITNs
-par(mfrow = n2mfrow(n_types))
-for (i in seq_len(n_types)) {
-  hist(posteriors$effect_type[, 1, i],
-       breaks = 100,
-       main = types[i])
-  
-}
+# plot these, then add cell data over the top
+preds_plot %>%
+  ggplot(
+    aes(
+      x = year_start,
+      y = mortality,
+      group = place
+    )
+  ) +
+  # betabinomial posterior predictive intervals on bioassay data (captures
+  # sample size and non-independence effect)
+  geom_ribbon(
+    aes(
+      ymax = betabinomial_lower,
+      ymin = betabinomial_upper,
+    ),
+    colour = grey(0.4),
+    linewidth = 0.25,
+    linetype = 2,
+    fill = grey(0.9)
+  ) +
+  # binomial posterior predictive intervals on bioassay data (captures sample
+  # size but assumes independence, so underestimates variance)
+  geom_ribbon(
+    aes(
+      ymax = binomial_lower,
+      ymin = binomial_upper,
+    ),
+    fill = grey(0.6)
+  ) +
+  # credible intervals on population-level proportion (our best guess at the
+  # 'truth')
+  geom_ribbon(
+    aes(
+      ymax = pop_lower,
+      ymin = pop_upper,
+    ),
+    fill = grey(0.4)
+  ) +
+  scale_y_continuous(labels = scales::percent) +
+  facet_grid(place ~ insecticide_type) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme_minimal() +
+  geom_point(
+    aes(
+      x = year_start,
+      y = mortality,
+      group = place
+    ),
+    data = points_plot,
+  )
 
 # make prediction rasters
 
@@ -510,8 +580,14 @@ for (this_insecticide in types_save) {
 
 
 # things to do next:
+# - add in plotting of a few specific data timeseries
 # - add in time-varying nets
+# - maybe add a resistance cost parameter
+#    (positive, as fitness = 1 + selection - cost)
 # - set up code for posterior predictive checking
-# - set up code for out of sample (future timesteps, spatial blocks) evaluation of model fit.
+# - set up code for out of sample (future timesteps, spatial blocks) evaluation
+#    of model fit.
 # - add in more discriminating bioassay data
-# - add in intensity bioassay data (with LD50 model, including possibility of complete but imperfect resistance)
+# - add in intensity bioassay data using LD50 model, including possibility of
+#    complete but imperfect resistance (trait fixation, not leading to 100%
+#    survival in the test)
