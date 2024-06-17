@@ -119,3 +119,6 @@ betabinomial_p_rho <- function(N, p, rho) {
   beta_binomial(size = N, alpha = a, beta = b)
   
 }
+nearish <- function(x, y) {
+  dplyr::near(x, y, tol = 1e-2)
+}

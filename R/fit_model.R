@@ -290,29 +290,39 @@ locations_plot <- df %>%
     longitude,
     cell_id
   ) %>%
-  distinct() %>%
-  # geocode then find more interpretable names (google to see if this is how
-  # they are referred to in IR papers)
-  reverse_geocode(
-    lat = latitude,
-    long = longitude,
-    method = 'osm',
-    full_results = TRUE
-  ) %>%
+  distinct()
+
+# # geocode then find more interpretable names (google to see if this is how
+# # they are referred to in IR papers)
+# locations_plot_geocoded <- locations_plot %>%
+#   reverse_geocode(
+#     lat = latitude,
+#     long = longitude,
+#     method = 'osm',
+#     full_results = TRUE
+#   ) %>%
+#   mutate(
+#     place = case_when(
+#       address == "Soumousso, Houet, Hauts-Bassins, Burkina Faso" ~ "Soumousso, Burkina Faso",
+#       address == "Katito-Kendu Bay-Homa Bay road, Oriang, Central ward, Karachuonyo, Homa Bay, Nyanza, Kenya" ~ "Homa Bay, Kenya",
+#       address == "RNIE 7, Kandi 3, Kandi, Alibori, Bénin" ~ "Kandi, Benin",
+#       address == "Aménagement de périmètre maraîcher, Djougou, Donga, Bénin" ~ "Djougou, Benin"
+#     )
+#   ) %>%
+#   select(
+#     place,
+#     country_name,
+#     latitude, longitude
+#   )
+
+locations_plot <- locations_plot %>%
   mutate(
     place = case_when(
-      address == "Soumousso, Houet, Hauts-Bassins, Burkina Faso" ~ "Soumousso, Burkina Faso",
-      address == "Katito-Kendu Bay-Homa Bay road, Oriang, Central ward, Karachuonyo, Homa Bay, Nyanza, Kenya" ~ "Homa Bay, Kenya",
-      address == "RNIE 7, Kandi 3, Kandi, Alibori, Bénin" ~ "Kandi, Benin",
-      address == "Aménagement de périmètre maraîcher, Djougou, Donga, Bénin" ~ "Djougou, Benin"
+      nearish(latitude, 11.011) & nearish(longitude, -4.056) ~ "Soumousso, Burkina Faso",
+      nearish(latitude, -0.392) & nearish(longitude, 34.626) ~ "Homa Bay, Kenya",
+      nearish(latitude, 11.134) & nearish(longitude, 2.938) ~ "Kandi, Benin",
+      nearish(latitude, 9.705) & nearish(longitude, 1.667) ~ "Djougou, Benin"
     )
-  ) %>%
-  select(
-    place,
-    country_name,
-    latitude,
-    longitude,
-    cell_id
   )
 
 # pull these out for plotting
