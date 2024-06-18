@@ -306,19 +306,16 @@ m <- model(
 # data to start with, then chains can move towards better parts of parameter
 # space)
 n_chains <- 4
-# inits <- replicate(n_chains,
-#                    initials(
-#                      logit_rho = 10
-#                    ),
-#                    simplify = FALSE)
 
 system.time(
   draws <- mcmc(m,
-                # initial_values = inits,
                 chains = n_chains)
 )
 # user   system  elapsed 
 # 7937.520 3529.599 2452.889 
+
+save.image(file = "temporary/fitted_model.RData")
+# load(file = "temporary/fitted_model.RData")
 
 # # check convergence
 # coda::gelman.diag(draws,
