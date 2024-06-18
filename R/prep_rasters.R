@@ -5,7 +5,7 @@ source("R/packages.R")
 source("R/functions.R")
 
 # ITN cube
-itn_files <- list.files("data/raw/nets_per_capita/",
+itn_files <- list.files("data/raw/itn/nets_per_capita/",
                         pattern = ".tif",
                         full.names = TRUE)
 itn_years <- itn_files %>%
@@ -18,6 +18,40 @@ names(nets_per_capita) <- paste0("nets_", itn_years)
 terra::writeRaster(nets_per_capita,
                    "data/clean/nets_per_capita_cube.tif",
                    overwrite = TRUE)
+
+mask <- nets_per_capita[[1]] * 0
+
+# IRS cube
+# these are admin-level IRS coverage copied from
+# GBD2023/Processing/Stages/14_IRS_Coverage_Africa/Intermediary_Outputs/admin_cov/20231107
+irs_files <- list.files("data/raw/irs/admin_coverage",
+                        pattern = ".tif",
+                        full.names = TRUE)
+irs_years <- irs_files %>%
+  basename() %>%
+  str_remove("admin_coverage_") %>%
+  str_remove(".tif")
+irs_coverage <- rast(irs_files)
+
+# extend these to the ITN mask
+irs_coverage <- terra::extend(irs_coverage, mask)
+
+# # crop them to the ITN mask
+# irs_coverage <- terra::crop(irs_coverage, mask)
+
+# pad them with zeros (where distribution data missing)
+irs_coverage[is.na(irs_coverage)] <- 0
+
+# mask them
+irs_coverage <- mask(irs_coverage, mask)
+
+# set their names
+names(irs_coverage) <- paste0("irs_", irs_years)
+
+terra::writeRaster(irs_coverage,
+                   "data/clean/irs_coverage_cube.tif",
+                   overwrite = TRUE)
+
 
 # other static ones
 
