@@ -4,6 +4,9 @@
 source("R/packages.R")
 source("R/functions.R")
 
+# load the fitted model objects here, to set up predictions
+load(file = "temporary/fitted_model.RData")
+
 # load time-varying net coverage data and flatten it
 nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
 years_sub <- 2005:2015
@@ -16,10 +19,17 @@ ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
 # set the start of the timeseries considered
 baseline_year <- 1990
 
-insecticides_plot <- c(
-  "Deltamethrin",
-  "Permethrin",
-  "Alpha-cypermethrin")
+pyrethroids_plot <- tibble(
+  insecticide = types,
+  class = classes[classes_index]
+) %>%
+  arrange(desc(class), insecticide) %>%
+  filter(
+    !(insecticide %in% c("DDT")) 
+  ) %>%
+  filter(class == "Pyrethroids") %>%
+  pull(insecticide)
+
 
 df <- ir_mtm_africa %>%
   filter(
@@ -72,11 +82,11 @@ df_country_plot <- df %>%
     insecticide = insecticide_type
   ) %>%
   filter(
-    insecticide %in% insecticides_plot
+    insecticide %in% pyrethroids_plot
   ) %>%
   mutate(
     insecticide = factor(insecticide,
-                         levels = insecticides_plot)
+                         levels = pyrethroids_plot)
   )
 
 df_overall_plot <- df_country_plot %>%
@@ -120,6 +130,9 @@ df_country_plot %>%
                         override.aes = list(size = 4)),
     size = guide_legend(title = "No. tested")
   ) +
+  scale_fill_manual(
+      values = scales::pal_hue(direction = -1)(8)[1:4]
+  ) +
   scale_y_continuous(
     labels = scales::percent) +
   scale_size_continuous(
@@ -137,57 +150,6 @@ ggsave("figures/bioassay_raw.png",
        scale = 0.8,
        width = 8,
        height = 6)
-
-# Pool pyrethroids and plot by level of ITN use
-df_country_plot %>%
-  group_by(year, country) %>%
-  summarise(
-    died = sum(died),
-    mosquito_number = sum(mosquito_number),
-    net_coverage = mean(net_coverage),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    Susceptibility = died / mosquito_number
-  ) %>%
-  ggplot(
-    aes(
-      x = year,
-      y = Susceptibility,
-    )
-  ) +
-  geom_point(
-    aes(
-      group = country,
-      size = mosquito_number,
-      colour = net_coverage
-    ),
-  ) +
-  guides(
-    colour = guide_legend(title = "LLIN coverage",
-                        order = 1,
-                        override.aes = list(size = 4)),
-    size = guide_legend(title = "No. tested")
-  ) +
-  scale_colour_steps2(
-    midpoint = median(df$net_coverage)
-    # low = grey(0.8),
-    # high = grey(0.2),
-    # breaks = 
-  ) +
-  scale_y_continuous(
-    labels = scales::percent) +
-  scale_size_continuous(
-    labels = scales::number_format(accuracy = 1000, big.mark = ",")) +
-  xlab("") +
-  coord_cartesian(xlim = c(1998, 2022)) +
-  theme_minimal() +
-  ggtitle(
-    "Growth of pyrethroid resistance across Africa",
-    "Annual aggregate bioassay results across countries (grey) and all of Africa (colour)"
-  )
-
-
 
 # for model validation, group data by predicted value, and pool all the data
 # within those quantiles?
