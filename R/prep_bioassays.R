@@ -651,8 +651,8 @@ ir_distinct_gambiae <- ir_distinct_gambiae %>%
 # check contributions from each database
 table(ir_distinct_gambiae$source) %>% sort(decreasing = TRUE)
 
-# save the diagnostic interactive map
-mapshot(mapview(ir_distinct_sf,zcol = "insecticide_type"),url = "distinct_pts.html")
+# # save the diagnostic interactive map
+# mapshot(mapview(ir_distinct_sf,zcol = "insecticide_type"),url = "distinct_pts.html")
 # save these out as an RDS
 saveRDS(ir_distinct_gambiae,
         file = "data/clean/all_gambiae_complex_data.RDS")
