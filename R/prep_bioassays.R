@@ -111,7 +111,7 @@ ir_int_mtm_africa <- read_xlsx(
     # impute the number of mosquitoes from mortality rates where needed
     MOSQUITO_NUMBER = case_when(
       is.na(MOSQUITO_NUMBER) ~ infer_sample_size(MORTALITY_ADJUSTED),
-      .default = MOSQUITO_NUMBER
+      .default = round(MOSQUITO_NUMBER)
     ), 
     # compute the integer number that died, for model
     DIED = round(MOSQUITO_NUMBER * MORTALITY_ADJUSTED / 100)
@@ -173,7 +173,7 @@ ir_mapper_dis_species_africa <- read_csv("data/raw/2_standard-WHO-susc-test_spec
     # impute the number of mosquitoes from mortality rates where needed
     `No. mosquitoes tested` = case_when(
       is.na(`No. mosquitoes tested`) ~ infer_sample_size(`Percent mortality`),
-      .default = `No. mosquitoes tested`
+      .default = round(`No. mosquitoes tested`)
     ), 
     # compute the integer number that died, for model
     `No. mosquitoes dead` = round(`No. mosquitoes tested` * `Percent mortality` / 100),
@@ -257,7 +257,7 @@ ir_mapper_dis_complex <- read_csv("data/raw/1_standard-WHO-susc-test_complex-sub
     # impute the number of mosquitoes from mortality rates where needed
     `No. mosquitoes tested` = case_when(
       is.na(`No. mosquitoes tested`) ~ infer_sample_size(`Percent mortality`),
-      .default = `No. mosquitoes tested`
+      .default = round(`No. mosquitoes tested`)
     ), 
     # compute the integer number that died, for model
     `No. mosquitoes dead` = round(`No. mosquitoes tested` * `Percent mortality` / 100),
@@ -343,7 +343,7 @@ ir_mapper_int_complex <- read_csv("data/raw/5_intensity-bioassays_complex-subgro
     # impute the number of mosquitoes from mortality rates where needed
     `No. mosquitoes tested` = case_when(
       is.na(`No. mosquitoes tested`) ~ infer_sample_size(`Percent mortality`),
-      .default = `No. mosquitoes tested`
+      .default = round(`No. mosquitoes tested`)
     ), 
     # compute the integer number that died, for model
     `No. mosquitoes dead` = round(`No. mosquitoes tested` * `Percent mortality` / 100),
@@ -442,7 +442,7 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
     # impute the number of mosquitoes from mortality rates where needed
     `mosquitoes tested_n` = case_when(
       is.na(`mosquitoes tested_n`) ~ infer_sample_size(`percent mortality`),
-      .default = `mosquitoes tested_n`
+      .default = round(`mosquitoes tested_n`)
     ), 
     # compute the integer number that died, for model
     `mosquitoes dead_n` = round(`mosquitoes tested_n` * `percent mortality` / 100)
