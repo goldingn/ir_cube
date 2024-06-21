@@ -119,6 +119,42 @@ betabinomial_p_rho <- function(N, p, rho) {
   beta_binomial(size = N, alpha = a, beta = b)
   
 }
+
 nearish <- function(x, y) {
   dplyr::near(x, y, tol = 1e-2)
 }
+
+# given a raster file, force it to be written to disk and not in memory (save to
+# disk and reload). filename is the name fo the file to write it to, dots is any
+# other arguments for writeraster
+force_to_disk <- function(raster, filename = tempfile(fileext = ".tif"), ...) {
+  terra::writeRaster(x = raster,
+                     filename = filename,
+                     overwrite = TRUE,
+                     ...)
+  terra::rast(filename)
+}
+
+# random RNG seed (copied from greta, used to fix downstream seeds, conditional
+# on top-level randomness)
+get_seed <- function ()  {
+  sample.int(n = 2^30, size = 1)
+}
+
+# get rid of all the craps in plotting the IR maps
+theme_ir_maps <- function() {
+  theme_minimal() +
+    theme(axis.line=element_blank(),
+          axis.text.x=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks=element_blank(),
+          axis.title.x=element_blank(),
+          axis.title.y=element_blank(),
+          # legend.position="none",
+          panel.background=element_blank(),
+          panel.border=element_blank(),
+          panel.grid.major=element_blank(),
+          panel.grid.minor=element_blank(),
+          plot.background=element_blank())
+}
+

@@ -19,7 +19,20 @@ terra::writeRaster(nets_per_capita,
                    "data/clean/nets_per_capita_cube.tif",
                    overwrite = TRUE)
 
+# and scale it to 0-1
+nets_per_capita_max <- max(global(nets_per_capita,
+                                  "max",
+                                  na.rm = TRUE))
+nets_per_capita_scaled <- nets_per_capita / nets_per_capita_max
+terra::writeRaster(nets_per_capita_scaled,
+                   "data/clean/nets_per_capita_scaled_cube.tif",
+                   overwrite = TRUE)
+
 mask <- nets_per_capita[[1]] * 0
+names(mask) <- "mask" 
+terra::writeRaster(mask,
+                   "data/clean/raster_mask.tif",
+                   overwrite = TRUE)
 
 # IRS cube
 # these are admin-level IRS coverage copied from
@@ -35,9 +48,6 @@ irs_coverage <- rast(irs_files)
 
 # extend these to the ITN mask
 irs_coverage <- terra::extend(irs_coverage, mask)
-
-# # crop them to the ITN mask
-# irs_coverage <- terra::crop(irs_coverage, mask)
 
 # pad them with zeros (where distribution data missing)
 irs_coverage[is.na(irs_coverage)] <- 0

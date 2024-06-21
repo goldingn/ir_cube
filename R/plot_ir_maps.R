@@ -5,7 +5,7 @@ source("R/packages.R")
 source("R/functions.R")
 
 this_insecticide <- "Deltamethrin"
-plot_years <- c(2000, 2010, 2020, 2029)
+plot_years <- c(2000, 2005, 2010, 2015, 2020, 2025, 2030)
 
 directory <- file.path("outputs/ir_maps", this_insecticide)
 files <- file.path(directory,
@@ -23,12 +23,12 @@ ggplot() +
     name = "Susceptibility",
     limits = c(0, 1),
     na.value = "transparent") +
-  facet_wrap(~lyr, nrow = 2) +
-  theme_minimal() +
+  facet_wrap(~lyr, nrow = 2, ncol = 5) +
   ggtitle(
     label = this_insecticide,
     subtitle = "Susceptibility of An. gambiae (s.l./s.s.) in WHO bioassays"
-  )
+  ) +
+  theme_ir_maps()
 
 figure_name <- file.path(
   "figures",
@@ -38,6 +38,6 @@ figure_name <- file.path(
 
 ggsave(figure_name,
        bg = "white",
-       width = 8,
+       width = 18,
        height = 8,
        dpi = 300)

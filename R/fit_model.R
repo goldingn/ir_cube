@@ -4,18 +4,15 @@
 source("R/packages.R")
 source("R/functions.R")
 
-# load covariate rasters
+# load the mask
+mask <- rast("data/clean/raster_mask.tif")
 
 # load time-varying net coverage data
 nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
-# and scale it to 0-1
-nets_cube <- nets_cube / max(global(nets_cube, "max", na.rm = TRUE))
-# names(nets_cube) <- str_remove(names(nets_cube), "nets_")
 
 # load the other layers
 covs_flat <- rast("data/clean/flat_covariates.tif")
 
-mask <- covs_flat[[1]] * 0
 
 # load bioassay data
 ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
@@ -50,7 +47,7 @@ df <- ir_mtm_africa %>%
     # create an index to the simulation year (in 1-indexed integers)
     year_id = year_start - baseline_year + 1,
     # add on cell ids corresponding to these observations,
-    cell = cellFromXY(mask, 
+    cell = cellFromXY(mask,
                       as.matrix(select(., longitude, latitude)))
   ) %>%
   # drop a handful of datapoints missing covariates
@@ -168,7 +165,7 @@ beta_type <- beta_class[, classes_index] + beta_type_sigma
 # # simpler single-level hierarchy
 # beta_overall <- normal(0, 1, dim = n_covs) * 10
 # sigma_overall <- normal(0, 1, dim = n_covs, truncation = c(0, Inf))
-# 
+#
 # # hierarchical decentring implementation
 # beta_type_raw <- normal(0, 1, dim = c(n_covs, n_types))
 # beta_type_sigma <- sweep(beta_type_raw, 1, sigma_overall, FUN = "*")
@@ -257,26 +254,26 @@ fraction_susceptible_vec <- dynamic_cells$all_states[index]
 # # for single concentration data, fix the variance to 1 and fix the LD50 for
 # # susceptibles to correspond to mortality rate of 99% (98% is resistant)
 # population_LD50_sd <- 1
-# LD50_susceptible <- type_concentrations - population_LD50_sd * qnorm(0.99) 
-# 
+# LD50_susceptible <- type_concentrations - population_LD50_sd * qnorm(0.99)
+#
 # # define a reasonable prior for the difference in LD50s: resistants have mortality ~1% (95% CI goes up to 25% mortality))
 # # LD50_resistant_lower <- type_concentrations - population_LD50_sd * qnorm(0.25)
 # LD50_resistant_mean <- type_concentrations - population_LD50_sd * qnorm(0.01)
 # # LD50_resistant_sd <- LD50_resistant_mean - LD50_resistant_lower / 1.96
 # # LD50_difference_mean <- LD50_resistant_mean - LD50_susceptible
-# 
+#
 # # this is a chore
 # # LD50_difference_raw <- normal(0, 1, dim = n_types)
 # # LD50_difference <- LD50_difference_mean + LD50_difference_raw * LD50_resistant_sd
-# 
+#
 # # compute LD50 for resistant genotype
 # # LD50_resistant <- LD50_susceptible + LD50_difference
 # LD50_resistant <- LD50_resistant_mean
-# 
+#
 # # get the population-level LD50s for the observations
 # LD50_vec <- fraction_susceptible_vec * LD50_susceptible[df$type_id] +
 #   (1 - fraction_susceptible_vec) * LD50_resistant[df$type_id]
-# 
+#
 # probit_vec <- (df$concentration - LD50_vec) / population_LD50_sd
 # population_mortality_vec <- iprobit(probit_vec)
 
@@ -311,11 +308,10 @@ system.time(
   draws <- mcmc(m,
                 chains = n_chains)
 )
-# user   system  elapsed 
-# 7937.520 3529.599 2452.889 
+# user   system  elapsed
+# 7937.520 3529.599 2452.889
 
 save.image(file = "temporary/fitted_model.RData")
-# load(file = "temporary/fitted_model.RData")
 
 # # check convergence
 # coda::gelman.diag(draws,
@@ -576,214 +572,9 @@ save.image(file = "temporary/fitted_model.RData")
 # ggsave("figures/fit_subset.png",
 #        bg = "white")
 
-# make prediction rasters
-# (split this into a separate function, to be run on multiple scenarios, in
-# parallel, without refitting)
-
-# years to predict to
-years_predict <- 2000:2030
-n_times_predict <- length(years_predict)
-
-# cells to predict to
-cells_predict <- terra::cells(mask)
-n_cells_predict <- length(cells_predict)
-
-# pad out the nets cube, repeating the final year into the future
-n_future <- n_times_predict - n_times
-nets_cube_future <- nets_cube[[n_times]] %>%
-  replicate(n_future,
-            .,
-            simplify = FALSE) %>%
-  do.call(c, .)
-years_future <- baseline_year + n_times + seq_len(n_future) - 1
-names(nets_cube_future) <- paste0("nets_", years_future)
-nets_cube_predict <- c(nets_cube, nets_cube_future)
-
-# pull out temporally-static covariates for all cells
-flat_extract_predict <- covs_flat %>%
-  extract(cells_predict) %>%
-  mutate(
-    cell = cells_predict,
-    .before = everything()
-  )
-
-# extract spatiotemporal covariates from the cube
-all_extract_predict <- nets_cube_predict %>%
-  terra::extract(cells_predict) %>%
-  mutate(
-    cell = cells_predict,
-    .before = everything()
-  ) %>%
-  pivot_longer(
-    cols = starts_with("nets_"),
-    names_prefix = "nets_",
-    names_to = "year",
-    values_to = "net_coverage"
-  ) %>%
-  mutate(
-    year = as.numeric(year)
-  ) %>%
-  left_join(
-    flat_extract_predict,
-    by = "cell"
-  ) %>%
-  mutate(
-    cell_id = match(cell, cells_predict),
-    year_id = year - baseline_year + 1,
-    .before = everything()
-  ) %>%
-  select(
-    -cell,
-    -year
-  )
-
-# pull out index to cells and years
-cell_years_predict_index <- all_extract_predict %>%
-  select(cell_id, year_id)
-
-# get covariates for these cell-years as a matrix
-x_cell_years_predict <- all_extract_predict %>%
-  select(-cell_id,
-         -year_id) %>%
-  as.matrix()
-
-# loop through insecticides making predictions in batches of cells for multiple years simultaneously
-template_raster <- nets_cube$nets_2000 * 0
-template_cube <- template_raster %>%
-  replicate(length(years_predict),
-            .,
-            simplify = FALSE) %>%
-  do.call(c, .)
-
-names(template_cube) <- years_predict
-
-# create batches of cells for processing
-
-# NOTE due to a weird-as-hell greta bug, this object must not be called
-# batch_size: https://github.com/greta-dev/greta/issues/634
-batch_bigness <- 3e5
-batch_idx <- seq_along(cells_predict) %/% batch_bigness
-# index to raster, for setting cell values
-cell_batches <- split(cells_predict, batch_idx)
-# index to cells vector, for getting covariate values
-cell_id_batches <- split(seq_along(cells_predict), batch_idx)
-n_batches <- length(cell_batches)
-
-# insecticide types to save
-types_save <- c("Deltamethrin",
-                "Permethrin",
-                "Alpha-cypermethrin")
-
-# loop through insecticides
-for (this_insecticide in types_save) {
-  
-  # make a raster cube to stick predictions into
-  this_ir_cube <- template_cube
-  
-  # grab the current seed, so we can do calculate in batches but not shuffle
-  # parameters over space
-  this_seed <- greta::.internals$utils$misc$get_seed()
-  
-  # loop through batches of cells
-  for (batch_index in seq_len(n_batches)) {
-    
-    print(sprintf("processing batch %i of %i for %s",
-                  batch_index,
-                  n_batches,
-                  this_insecticide))
-    
-    # index to this insecticide
-    type_id_predict <- match(this_insecticide, types)
-    
-    # find cells to write to    
-    cell_batch <- cell_batches[[batch_index]]
-    batch_n <- length(cell_batch)
-    
-    # pull out the index to rows of x_cell_years_predict that correspond to this
-    # batch of cells
-    cell_id_batch <- cell_id_batches[[batch_index]]
-    
-    # need to find the elements that match the cell_id, but return them in the
-    # correct year order
-    x_rows_batch <- which(cell_years_predict_index$cell_id %in% cell_id_batch)
-
-    # compute selection coefficients for cell-years in this batch and convert to
-    # relative fitness
-    x_cell_years_batch <- x_cell_years_predict[x_rows_batch, ]
-    selection_cell_years_batch <- x_cell_years_batch %*% effect_type[, type_id_predict]
-    fitness_cell_years_batch <- 1 + selection_cell_years_batch
-    
-    # reformat this in to a 3D array with dimensions:
-    #   n_times x n_unique_cells x (n_types = 1) x 1
-    # to solve dynamics with time-varying fitness (time must be first, then other
-    # two must match state variable, which has a trailing dimension of size 1)
-    fitness_array_batch <- fitness_cell_years_batch
-    dim(fitness_array_batch) <- c(n_times_predict, batch_n, 1, 1)
-    
-    # # check this is the right orientation!
-    # which_cell_id <- 3
-    # array_subset <- fitness_array_batch[, which_cell_id, 1, ]
-    # cell_years_index_batch <- cell_years_predict_index[x_rows_batch, ]
-    # cell_idx <- cell_years_index_batch$cell_id == which_cell_id
-    # matrix_subset <- fitness_cell_years_batch[cell_idx, 1]
-    # sims <- calculate(
-    #   array_subset,
-    #   matrix_subset,
-    #   nsim = 1)
-    # identical(sims$array_subset[1, , 1, 1, 1],
-    #           sims$matrix_subset[1, , 1])
-    
-    # expand initial conditions out to all cells with data (plus a trailing
-    # dimension to match greta.dynamics interface)
-    init_array_batch <- init_fraction_susceptible[type_id_predict] * ones(batch_n)
-    dim(init_array_batch) <- c(dim(init_array_batch), 1)
-    
-    # iterate through time to get fraction susceptible for all years at all
-    # prediction cells
-    dynamic_cells_batch <- iterate_dynamic_function(
-      transition_function = haploid_next,
-      initial_state = init_array_batch,
-      niter = n_times_predict,
-      w = fitness_array_batch,
-      parameter_is_time_varying = c("w"),
-      tol = 0)
-    
-    fraction_susceptible_batch <- dynamic_cells_batch$all_states
-    population_mortality_batch <- fraction_susceptible_batch
-    
-    # get posterior draws of these, fixing the RNG seed so it's the same
-    # collection of posterior samples for all batches
-    # set.seed(this_seed)
-    pred_batch <- calculate(population_mortality_batch,
-                            values = draws,
-                            seed = this_seed,
-                            nsim = 50)[[1]]
-    
-    # compute posterior mean over the draws, for cells and years
-    batch_pred_mean <- apply(pred_batch, 2:4, mean)
-    
-    # stick this batch of predictions in the raster cube, one year at a time
-    for (y in seq_along(years_predict)) {
-      this_ir_cube[[y]][cell_batch] <- batch_pred_mean[, 1, y]
-    }
-
-  }
-  
-  # now write out the raster
-  write_path <- file.path("outputs/ir_maps",
-                          this_insecticide,
-                          sprintf("ir_%s_susceptibility.tif",
-                                  this_year))
-  
-  # make sure the directory exists
-  dir.create(dirname(write_path))
-  writeRaster(this_ir_raster,
-              write_path)  
-}
-
 
 # things to do next:
-# - save fitted model and run raster predictions separately
+# - split validation apart form model fitting
 # - maybe add a resistance cost parameter
 #    (positive, as fitness = 1 + selection - cost)
 # - set up code for posterior predictive checking
