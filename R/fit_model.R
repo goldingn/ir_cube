@@ -13,7 +13,6 @@ nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
 # load the other layers
 covs_flat <- rast("data/clean/flat_covariates.tif")
 
-
 # load bioassay data
 ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
 
@@ -210,7 +209,7 @@ dim(fitness_array) <- c(n_times, n_unique_cells, n_types, 1)
 #           sims$matrix_subset[1, , 1])
 
 # model fractions susceptible prior to 2000
-init_fraction_susceptible <- normal(1, 0.01,
+init_fraction_susceptible <- normal(1, 0.005,
                                     dim = n_types,
                                     truncation = c(0, 1))
 
@@ -284,19 +283,25 @@ population_mortality_vec <- fraction_susceptible_vec
 
 # model overdispersion in the data via an overdispersion parameter rho. This
 # prior makes rho approximately uniform, but fairly nicely behaved
-logit_rho <- normal(0, 1.6)
-rho <- ilogit(logit_rho)
+# normal(0, 1.6) is similar to logit distribution; with hierarcichal prior, set
+# overall sd to: sqrt((1.6 ^ 2) - 1)
+logit_rho_mean <- normal(0, 1.3)
+logit_rho_sd <- normal(0, 1, truncation = c(0, Inf))
+logit_rho_raw <- normal(0, 1, dim = n_classes)
+logit_rho_classes <- logit_rho_mean + logit_rho_raw * logit_rho_sd
+rho_classes <- ilogit(logit_rho_classes)
 
 distribution(df$died) <- betabinomial_p_rho(N = df$mosquito_number,
                                             p = population_mortality_vec,
-                                            rho = rho)
+                                            rho = rho_classes[df$class_id])
 
 m <- model(
   beta_overall,
   sigma_overall,
   beta_type_raw,
   init_fraction_susceptible,
-  logit_rho
+  logit_rho_mean,
+  logit_rho_raw
 )
 
 # set the inits for obs_var_multiplier to be large (more params will fit OK to
@@ -572,9 +577,14 @@ save.image(file = "temporary/fitted_model.RData")
 # ggsave("figures/fit_subset.png",
 #        bg = "white")
 
+# run local with ITN use
 
 # things to do next:
-# - split validation apart form model fitting
+# - constrain prior on initial conditions to higher susceptibility
+# - Use variable rho by insecticide class.
+# - try ITN 'use' covariate
+# - add in updated data from August
+# - add in Gerry's insecticide covariates
 # - maybe add a resistance cost parameter
 #    (positive, as fitness = 1 + selection - cost)
 # - set up code for posterior predictive checking

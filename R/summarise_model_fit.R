@@ -20,7 +20,7 @@ round(effect_sizes, 2)
 # get posterior predictive simulations of observations
 died_sim <- betabinomial_p_rho(N = df$mosquito_number,
                                p = population_mortality_vec,
-                               rho = rho)
+                               rho = rho_classes[df$class_id])
 mortality_sim <- died_sim / df$mosquito_number
 
 # summarise fit to data
@@ -34,12 +34,11 @@ dharma <- DHARMa::createDHARMa(
   integerResponse = TRUE
 )
 
-# some statistical evidence ofmospecification, but it's a very large sample size
-# and a very small deviation
+# some statistical evidence of misspecification, but it's a very large sample
+# size and a very small deviation
 plot(dharma)
 
 # looks relatively uniform for each insecticide
-length(types)
 par(mfrow = n2mfrow(length(types)))
 for (type in types) {
   hist(dharma$scaledResiduals[df$insecticide_type == type],
