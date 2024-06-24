@@ -8,7 +8,7 @@ source("R/functions.R")
 mask <- rast("data/clean/raster_mask.tif")
 
 # load time-varying net coverage data
-nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
+nets_cube <- rast("data/clean/net_use_cube.tif")
 
 # load the other layers
 covs_flat <- rast("data/clean/flat_covariates.tif")
@@ -159,21 +159,6 @@ beta_class <- sweep(beta_class_sigma, 1, beta_overall, FUN = "+")
 beta_type_raw <- normal(0, 1, dim = c(n_covs, n_types))
 beta_type_sigma <- sweep(beta_type_raw, 1, sigma_class, FUN = "*")
 beta_type <- beta_class[, classes_index] + beta_type_sigma
-
-
-# # simpler single-level hierarchy
-# beta_overall <- normal(0, 1, dim = n_covs) * 10
-# sigma_overall <- normal(0, 1, dim = n_covs, truncation = c(0, Inf))
-#
-# # hierarchical decentring implementation
-# beta_type_raw <- normal(0, 1, dim = c(n_covs, n_types))
-# beta_type_sigma <- sweep(beta_type_raw, 1, sigma_overall, FUN = "*")
-# beta_type <- sweep(beta_type_sigma, 1, beta_overall, FUN = "+")
-
-
-# remove hierarchy for debugging
-# beta_type <- beta_type_raw
-
 
 # multiply through to get relative fitness of resistance for each insecticide
 # type at each cell
@@ -577,12 +562,15 @@ save.image(file = "temporary/fitted_model.RData")
 # ggsave("figures/fit_subset.png",
 #        bg = "white")
 
-# run local with ITN use
+# compute weightings for effective resistance to nets
+
+# modify prediction code to compute effective resistance to nets
+
+# run prediction code across scenario net cubes (bash batching to prevent
+# restarts and memory leaks?)
 
 # things to do next:
-# - constrain prior on initial conditions to higher susceptibility
-# - Use variable rho by insecticide class.
-# - try ITN 'use' covariate
+# - run predictions across multiple scenario cubes
 # - add in updated data from August
 # - add in Gerry's insecticide covariates
 # - maybe add a resistance cost parameter

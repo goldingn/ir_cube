@@ -17,7 +17,7 @@ load(file = "temporary/fitted_model.RData")
 mask <- rast("data/clean/raster_mask.tif")
 
 # load time-varying net coverage data
-nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
+nets_cube <- rast("data/clean/net_use_cube.tif")
 
 # load the other layers
 covs_flat <- rast("data/clean/flat_covariates.tif")
