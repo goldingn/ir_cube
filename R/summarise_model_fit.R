@@ -177,10 +177,6 @@ type_years <- indices %>%
   )  %>%
   select(row, year, insecticide)
 
-# insecticides_plot <- c(
-#   "Deltamethrin",
-#   "Permethrin",
-#   "Alpha-cypermethrin")
 insecticides_plot <- tibble(
   insecticide = types,
   class = classes[classes_index]
@@ -373,18 +369,31 @@ place_lookup <- exemplar_cells %>%
 
 # pull the IR and ITN timeseries for these, and plot
 
+# do predictions of the effective resistance to ITNS
+ingredient_weights <- readRDS("temporary/ingredient_weights.RDS")
+
 # now do predictions for these, for deltamethrin
-deltamethrin_id <- match("Deltamethrin", types)
+ingredient_ids <- match(names(ingredient_weights), types)
+# deltamethrin_id <- match("Deltamethrin", types)
 
-pred_index <- all_extract %>%
-  filter(cell_id %in% place_lookup$cell_id) %>%
-  mutate(type_id = deltamethrin_id) %>%
-  select(cell_id, type_id, year_id) %>%
+# compute a matrix of effective susceptibilities over these cells and years
+effective_susc <- zeros(nrow(place_lookup), 1, n_times)
+for (i in seq_along(ingredient_weights)) {
+  ingredient_susc <- dynamic_cells$all_states[place_lookup$cell_id,
+                                              ingredient_ids[i], ]
+  effective_susc <- effective_susc + ingredient_susc * ingredient_weights[[i]]
+}
+
+pred_index <- expand_grid(
+  cell_id = seq_len(nrow(place_lookup)),
+  type_id = 1,
+  year_id = seq_len(n_times)
+) %>%
   as.matrix()
-pred_vec <- dynamic_cells$all_states[pred_index]
-pred_vec_sims <- calculate(pred_vec, values = draws, nsim = 1e3)
 
-deltamethrin_colour <- scales::pal_hue(direction = -1)(8)[deltamethrin_id]
+# subset the susceptibilities to these cells and insecitcides
+pred_vec <- effective_susc[pred_index]
+pred_vec_sims <- calculate(pred_vec, values = draws, nsim = 1e3)
 
 ir_plot <- all_extract %>%
   filter(
@@ -410,9 +419,9 @@ ir_plot <- all_extract %>%
   facet_wrap(~place) +
   scale_y_continuous(limits = c(0, 1),
                      labels = scales::percent) +
-  ylab("Susceptibility (Deltamethrin)") +
+  ylab("Susceptibility to LLIN insecticides") +
   xlab("") +
-  geom_ribbon(fill = deltamethrin_colour) +
+  geom_ribbon(fill = "#56B1F7") +
   theme_minimal()
 
 itns_plot <- all_extract %>%

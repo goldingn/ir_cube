@@ -570,9 +570,11 @@ save.image(file = "temporary/fitted_model.RData")
 # restarts and memory leaks?)
 
 # things to do next:
+# - move and update summary plots against raw data at specific locations
 # - run predictions across multiple scenario cubes
 # - add in updated data from August
 # - add in Gerry's insecticide covariates
+# - make plots demonstrating the inherent variability of bioassay data
 # - maybe add a resistance cost parameter
 #    (positive, as fitness = 1 + selection - cost)
 # - set up code for posterior predictive checking
