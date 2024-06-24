@@ -4,16 +4,18 @@
 source("R/packages.R")
 source("R/functions.R")
 
-# ITN cube
-itn_files <- list.files("data/raw/itn/nets_per_capita/",
+# ITN cubes
+
+# nets per capita
+itn_pc_files <- list.files("data/raw/itn/nets_per_capita/",
                         pattern = ".tif",
                         full.names = TRUE)
-itn_years <- itn_files %>%
+itn_pc_years <- itn_pc_files %>%
   basename() %>%
   str_remove("ITN_") %>%
   str_remove("_percapita_nets_mean.tif")
-nets_per_capita <- rast(itn_files)
-names(nets_per_capita) <- paste0("nets_", itn_years)
+nets_per_capita <- rast(itn_pc_files)
+names(nets_per_capita) <- paste0("nets_", itn_pc_years)
 
 terra::writeRaster(nets_per_capita,
                    "data/clean/nets_per_capita_cube.tif",
@@ -28,6 +30,31 @@ terra::writeRaster(nets_per_capita_scaled,
                    "data/clean/nets_per_capita_scaled_cube.tif",
                    overwrite = TRUE)
 
+# net use
+itn_use_files <- list.files("data/raw/itn/net_use/",
+                        pattern = ".tif",
+                        full.names = TRUE)
+itn_use_years <- itn_use_files %>%
+  basename() %>%
+  str_remove("ITN_") %>%
+  str_remove("_use_mean.tif")
+net_use <- rast(itn_use_files)
+names(net_use) <- paste0("nets_", itn_use_years)
+
+terra::writeRaster(net_use,
+                   "data/clean/net_use_cube.tif",
+                   overwrite = TRUE)
+
+# and scale it to 0-1
+net_use_max <- max(global(net_use,
+                          "max",
+                          na.rm = TRUE))
+net_use_scaled <- net_use / net_use_max
+terra::writeRaster(net_use_scaled,
+                   "data/clean/net_use_scaled_cube.tif",
+                   overwrite = TRUE)
+
+# make a mask for later use
 mask <- nets_per_capita[[1]] * 0
 names(mask) <- "mask" 
 terra::writeRaster(mask,
@@ -62,6 +89,14 @@ terra::writeRaster(irs_coverage,
                    "data/clean/irs_coverage_cube.tif",
                    overwrite = TRUE)
 
+# scale this
+irs_coverage_max <- max(global(irs_coverage,
+                               "max",
+                               na.rm = TRUE))
+irs_coverage_scaled <- irs_coverage / irs_coverage_max
+terra::writeRaster(irs_coverage_scaled,
+                   "data/clean/irs_coverage_scaled_cube.tif",
+                   overwrite = TRUE)
 
 # other static ones
 
