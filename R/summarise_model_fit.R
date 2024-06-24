@@ -17,6 +17,15 @@ effect_sizes <- summary(calculate(exp(beta_class[, 1]), values = draws))$statist
 rownames(effect_sizes) <- c("itn_coverage", names(covs_flat))
 round(effect_sizes, 2)
 
+# get RMSE and MAE for observed data and posterior mean within-sample predictions
+pop_susc_sim <- calculate(population_mortality_vec,
+                          values = draws,
+                          nsim = 1e3)
+pop_susc_post_mean <- colMeans(pop_susc_sim$population_mortality_vec[, , 1])
+obs <- df$died / df$mosquito_number
+rmse <- sqrt(mean((pop_susc_post_mean - obs) ^ 2))
+mae <- mean(abs(pop_susc_post_mean - obs))
+
 # get posterior predictive simulations of observations
 died_sim <- betabinomial_p_rho(N = df$mosquito_number,
                                p = population_mortality_vec,
