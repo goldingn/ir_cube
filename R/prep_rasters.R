@@ -190,52 +190,6 @@ for (crop_type in unique(crop_info$type)) {
 
 names(crops_group) <- paste0("crops_", names(crops_group))
 
-# 
-# 
-# 
-# 
-# 
-# # do a pca on these to 
-# 
-# # add an epsilon and logit transform these layers
-# logit_eps <- function(x, epsilon = 1e-6) {
-#   scale <- 1 - 2 * epsilon
-#   z <- epsilon + x * scale
-#   # remove 0s and 1s
-#   qlogis(z)
-# }
-# 
-# logit_crops <- app(crops_std, logit_eps)
-# scale_logit_crops <- scale(logit_crops)
-# 
-# 
-# # now PCA
-# pca <- terra::princomp(scale_logit_crops, maxcell = 1e6)
-# crop_pc <- predict(scale_logit_crops, pca, index = 1:5)
-# 
-# # rescale these for modelling
-# crop_pc_scale <- scale(crop_pc)
-# 
-# # give them names
-# names(crop_pc_scale) <- paste0("crop_pc_",
-#                                seq_len(nlyr(crop_pc_scale)))
-# 
-# # plot them
-# ggplot() +
-#   geom_spatraster(
-#     data = crop_pc_scale
-#   ) +
-#   scale_fill_viridis_c(
-#     na.value = "transparent"
-#   ) +
-#   facet_wrap(~lyr) +
-#   theme_minimal()
-# ggsave("figures/cov_crop_pcs.png",
-#        bg = "white",
-#        width = 8,
-#        height = 6,
-#        dpi = 300)
-
 # combine these into a multiband geotiff of flat (not temporally static)
 # covariates
 
