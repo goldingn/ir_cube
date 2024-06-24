@@ -106,8 +106,14 @@ cell_batches <- split(cells_predict, batch_idx)
 cell_id_batches <- split(seq_along(cells_predict), batch_idx)
 n_batches <- length(cell_batches)
 
-# loop through these batches of cells/years and save a file of the batch
-# predictions to disk
+# which to predict - just effective LLIN susceptibility for now
+types_save <- c("llin_effective")
+#   "Deltamethrin",
+#   "Permethrin",
+#   "Alpha-cypermethrin")
+
+# loop through these batches of cells/years and insecticide outputs, and save a
+# file of the batch predictions to disk
 
 predict_batch <- function(
     # number to iterate over
@@ -127,6 +133,9 @@ predict_batch <- function(
     # data extracted for all cells and years
     x_cell_years_predict,
     
+    # the insecticide type to predict for
+    insecticide_type,
+    
     # an RNG seed to make sure all batches use the same posterior samples of
     # parameters
     rng_seed,
@@ -138,12 +147,25 @@ predict_batch <- function(
   # load all the objects from the fitted model image here
   load(fitted_model_image_file)
   
-  # load the proportional weights of different insecticides in single-AI LLINs
-  ingredient_weights <- readRDS("temporary/ingredient_weights.RDS")
-  
-  # do predictions for these insecticides
-  ingredient_ids <- match(names(ingredient_weights), types)
-  n_ingredients <- length(ingredient_weights)
+  # if the output is the llin_effective susceptibility, get IDs for the multiple
+  # active ingredients used, and the weights to combine them
+  if (insecticide_type == "llin_effective") {
+    
+    # load the proportional weights of different insecticides in single-AI LLINs
+    ingredient_weights <- readRDS("temporary/ingredient_weights.RDS")
+    
+    # do predictions for these insecticides
+    ingredient_ids <- match(names(ingredient_weights), types)
+    
+  } else {
+    
+    # otherwise, pull out the single ingredient ID we are modelling
+    ingredient_ids <- match(insecticide_type, types)
+    
+  }
+
+  # how many to process
+  n_ingredients <- length(ingredient_ids)
   
   # find cells to write to    
   cell_batch <- cell_batches[[batch_index]]
@@ -172,7 +194,7 @@ predict_batch <- function(
   
   # # check this is the right orientation!
   # which_cell_id <- 3
-  # which_type_id <- 2
+  # which_type_id <- 1
   # array_subset <- fitness_array_batch[, which_cell_id, which_type_id, ]
   # cell_years_index_batch <- cell_years_predict_index[x_rows_batch, ]
   # cell_idx <- cell_years_index_batch$cell_id == which_cell_id
@@ -186,12 +208,10 @@ predict_batch <- function(
   
   # expand initial conditions out to all cells with data (plus a trailing
   # dimension to match greta.dynamics interface)
-  stop("to fix dims")
   init_array_batch <- sweep(ones(batch_n, n_ingredients),
                             2,
                             init_fraction_susceptible[ingredient_ids],
                             FUN = "*")
-    # init_fraction_susceptible[ingredient_ids] * ones(batch_n, length(ingredient_ids))
   dim(init_array_batch) <- c(dim(init_array_batch), 1)
   
   # iterate through time to get fraction susceptible for all years at all
@@ -207,17 +227,26 @@ predict_batch <- function(
   fraction_susceptible_batch <- dynamic_cells_batch$all_states
   population_mortality_batch <- fraction_susceptible_batch
   
-  # compute a weighted sum of these mortalities to get effective susceptibility
-  # to LLIN insecticides
-  effective_susc_batch <- zeros(batch_n, 1, n_times_predict)
-  for (i in seq_along(ingredient_weights)) {
-    ingredient_susc <- population_mortality_batch[, i, ]
-    effective_susc_batch <- effective_susc_batch + ingredient_susc * ingredient_weights[[i]]
-  }
+  # if we want the effective susceptibility against LLINs, compute a weighted
+  # sum of the active ingredients
+  if (insecticide_type == "llin_effective") {
+  
+    # compute a weighted sum of these mortalities to get effective susceptibility
+    # to LLIN insecticides
+    effective_susc_batch <- zeros(batch_n, 1, n_times_predict)
+    for (i in seq_along(ingredient_weights)) {
+      ingredient_susc <- population_mortality_batch[, i, ]
+      effective_susc_batch <- effective_susc_batch + ingredient_susc * ingredient_weights[[i]]
+    }
+    
+    # overwrite this with the weighted sum
+    population_mortality_batch <- effective_susc_batch
+  
+  }  
   
   # get posterior draws of these, fixing the RNG seed so it's the same
   # collection of posterior samples for all batches
-  pred_batch <- calculate(effective_susc_batch,
+  pred_batch <- calculate(population_mortality_batch,
                           values = draws,
                           seed = rng_seed,
                           trace_batch_size = 25,
@@ -240,8 +269,8 @@ predict_batch <- function(
       values_to = "mean"
     ) %>%
     write.csv(
-      sprintf("temporary/prediction_files/pred_mean_effective_batch_%i.csv",
-              batch_index),
+      sprintf("temporary/prediction_files/pred_mean_%s_batch_%i.csv",
+              insecticide_type, batch_index),
       row.names = FALSE
     )
   
@@ -275,6 +304,8 @@ for (this_insecticide in types_save) {
                   cell_years_predict_index = cell_years_predict_index,
                   # data extracted for all cells and years
                   x_cell_years_predict = x_cell_years_predict,
+                  # the insecticide to compute for
+                  insecticide_type = this_insecticide,
                   # an RNG seed to make sure all batches use the same posterior samples of
                   # parameters
                   rng_seed = seed,
@@ -282,63 +313,69 @@ for (this_insecticide in types_save) {
                   # level of TF, but it stops a warning from future
                   future.seed = TRUE)
 
-    
-  # }
-
 }
+
+for (this_insecticide in types_save) {
 
 # write code to reassemble these and save rasters to disk
 # load all the prediction files for this insecticide
-prediction_files <- list.files("temporary/prediction_files/",
-                               pattern = "pred_mean_effective_batch",
-                               full.names = TRUE)
+  this_pattern <- sprintf("pred_mean_%s_batch_",
+                          this_insecticide)
+  prediction_files <- list.files("temporary/prediction_files",
+                                 pattern = this_pattern,
+                                 full.names = TRUE)
 
-for (this_year in years_predict) {
-  
-  print(year)
-  
-  # loop through these, loading, subsetting to this year, and returning (to
-  # minimise memory usage)
-  load_year <- function(file, this_year) {
-    read_csv(file,
-             show_col_types = FALSE) %>%
-      filter(year == this_year) %>%
-      select(cell, mean)
+  for (this_year in years_predict) {
+    
+    print(this_year)
+    
+    # loop through these, loading, subsetting to this year, and returning (to
+    # minimise memory usage)
+    load_year <- function(file, this_year) {
+      read_csv(file,
+               show_col_types = FALSE) %>%
+        filter(year == this_year) %>%
+        select(cell, mean)
+    }
+    
+    prediction_data_this_year <- lapply(prediction_files,
+                                        load_year,
+                                        this_year)
+    
+    # combine into a single tibble of all the predictions for this insecticide
+    # and year
+    prediction_this_year <- do.call(bind_rows,
+                                    prediction_data_this_year)
+    
+    
+    # create a raster for this year
+    this_ir_raster <- mask
+    
+    # insert all the values in it
+    this_ir_raster[prediction_this_year$cell] <- prediction_this_year$mean
+    
+    # save to disk in the appropriate place
+    write_path <- file.path("outputs/ir_maps",
+                            this_insecticide,
+                            sprintf("ir_%s_susceptibility.tif",
+                                    this_year))
+    
+    dir.create(dirname(write_path))
+    writeRaster(this_ir_raster,
+                write_path,
+                overwrite = TRUE)
+    
   }
-  
-  prediction_data_this_year <- lapply(prediction_files,
-                                      load_year,
-                                      this_year)
-  
-  # combine into a single tibble of all the predictions for this insecticide
-  # and year
-  prediction_this_year <- do.call(bind_rows,
-                                  prediction_data_this_year)
-  
-  
-  # create a raster for this year
-  this_ir_raster <- mask
-  
-  # insert all the values in it
-  this_ir_raster[prediction_this_year$cell] <- prediction_this_year$mean
-  
-  # save to disk in the appropriate place
-  write_path <- file.path("outputs/ir_maps/effective_susceptibility_llin",
-                          sprintf("ir_%s_susceptibility.tif",
-                                  this_year))
-  
-  dir.create(dirname(write_path))
-  writeRaster(this_ir_raster,
-              write_path,
-              overwrite = TRUE)
   
 }
 
 # copy files over to Tas
-source_string <- "outputs/ir_maps/effective_susceptibility_llin"
+this_insecticide <- "llin_effective"
+source_string <- sprintf("outputs/ir_maps/%s",
+                         this_insecticide)
 tifs <- list.files(source_string, pattern = "*.tif", full.names = TRUE)
 new_dest <- "/mnt/Z/gfatm_scenarios/data/IR_rasters"
-new_dir <- file.path(new_dest, "effective_susceptibility_llin")
+new_dir <- file.path(new_dest, this_insecticide)
 dir.create(new_dir, showWarnings = FALSE)  
 lapply(tifs,
        file.copy,
