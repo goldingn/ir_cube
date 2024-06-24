@@ -360,40 +360,24 @@ exemplar_cells <- all_extract %>%
     full_results = TRUE
   )
 
-
-# pull the ITN timeseries for these, and plot
-
-itns_plot <- all_extract %>%
-  filter(
-    cell_id %in% exemplar_cells$cell_id
-  ) %>%
-  left_join(exemplar_cells,
-            by = "cell_id") %>%
+# find a short name for these places
+place_lookup <- exemplar_cells %>%
   mutate(
-    year = baseline_year + year_id - 1,
+    precise_place = str_split_i(address, ",", 1),
+    place = paste(precise_place, country, sep = ", ")
   ) %>%
-  ggplot(
-    aes(
-      x = year,
-      y = net_coverage,
-      group = which
-    )
-  ) +
-  facet_wrap(~which) +
-  scale_y_continuous(limits = c(0, 0.7)) +
-  ylab("LLINs per capita") +
-  xlab("") +
-  geom_line(
-    colour = grey(0.5),
-    linewidth = 1.2
-  ) + 
-  theme_minimal()
+  select(
+    cell_id,
+    which,
+    place)
+
+# pull the IR and ITN timeseries for these, and plot
 
 # now do predictions for these, for deltamethrin
 deltamethrin_id <- match("Deltamethrin", types)
 
 pred_index <- all_extract %>%
-  filter(cell_id %in% exemplar_cells$cell_id) %>%
+  filter(cell_id %in% place_lookup$cell_id) %>%
   mutate(type_id = deltamethrin_id) %>%
   select(cell_id, type_id, year_id) %>%
   as.matrix()
@@ -404,9 +388,9 @@ deltamethrin_colour <- scales::pal_hue(direction = -1)(8)[deltamethrin_id]
 
 ir_plot <- all_extract %>%
   filter(
-    cell_id %in% exemplar_cells$cell_id
+    cell_id %in% place_lookup$cell_id
   ) %>%
-  left_join(exemplar_cells,
+  left_join(place_lookup,
             by = "cell_id") %>%
   mutate(
     year = baseline_year + year_id - 1,
@@ -420,17 +404,47 @@ ir_plot <- all_extract %>%
       y = post_mean,
       ymax = post_upper,
       ymin = post_lower,
-      group = which
+      group = place
     )
   ) +
-  facet_wrap(~which) +
+  facet_wrap(~place) +
   scale_y_continuous(limits = c(0, 1),
                      labels = scales::percent) +
   ylab("Susceptibility (Deltamethrin)") +
   xlab("") +
   geom_ribbon(fill = deltamethrin_colour) +
-  # geom_line() + 
   theme_minimal()
+
+itns_plot <- all_extract %>%
+  filter(
+    cell_id %in% place_lookup$cell_id
+  ) %>%
+  left_join(place_lookup,
+            by = "cell_id") %>%
+  mutate(
+    year = baseline_year + year_id - 1,
+  ) %>%
+  ggplot(
+    aes(
+      x = year,
+      y = net_coverage,
+      group = place
+    )
+  ) +
+  facet_wrap(~place) +
+  scale_y_continuous(limits = c(0, 1),
+                     labels = scales::percent) +
+  ylab("LLIN use") +
+  xlab("") +
+  geom_line(
+    colour = grey(0.5),
+    linewidth = 1.2
+  ) + 
+  theme_minimal() +
+  # suppress facet labels for bottom row
+  theme(
+    strip.text.x = element_blank()
+  )
 
 # # patchwork is bugging out with recent ggplot, use 3.4.4:
 # remotes::install_version("ggplot2", version = "3.4.4", repos = "http://cran.us.r-project.org")
@@ -441,6 +455,3 @@ ggsave("figures/exemplar_itn_susc.png",
        bg = "white",
        width = 8,
        height = 5)
-
-exemplar_cells %>%
-  select(which, address, country)
