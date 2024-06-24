@@ -285,7 +285,11 @@ pop_mort_sry %>%
     labels = scales::percent,
     limits = c(0, 1)) +
   scale_size_continuous(
-    labels = scales::number_format(accuracy = 1000, big.mark = ",")) +
+    labels = scales::number_format(
+      accuracy = 1000,
+      big.mark = ","
+    )
+  ) +
   scale_fill_discrete(
     direction = -1,
     guide = FALSE) +
@@ -464,3 +468,247 @@ ggsave("figures/exemplar_itn_susc.png",
        bg = "white",
        width = 8,
        height = 5)
+
+
+insecticides_plot_small <- c("Deltamethrin",
+                             "Permethrin",
+                             "Alpha-cypermethrin")
+
+# find some locations with lots of bioassay data for the pyrethroids and plot
+# predictions and data for these
+locations_plot <- df %>%
+  filter(
+    insecticide_type %in% insecticides_plot_small
+  ) %>%
+  group_by(cell) %>%
+  filter(
+    n() >= 25,
+    n_distinct(year_start) >= 5
+  ) %>%
+  select(
+    country_name,
+    cell_id,
+    cell
+  ) %>%
+  distinct() %>%
+  bind_cols(
+    xyFromCell(mask, .$cell)
+  ) %>%
+  rename(
+    longitude = x,
+    latitude = y
+  ) %>%
+  # geocode then find more interpretable names (google to see if this is how
+  # they are referred to in IR papers)
+  reverse_geocode(
+    lat = latitude,
+    long = longitude,
+    method = 'osm',
+    full_results = TRUE
+  ) %>%
+  mutate(
+    precise_place = str_split_i(address, ",", 1),
+    # tidy up some of these where possible
+    precise_place = case_when(
+      grepl("Soumousso", address) ~ "Soumousso",
+      grepl("Busia", address) ~ "Busia",
+      grepl("Homa Bay", address) ~ "Homa Bay",
+      grepl("Pitoa", address) ~ "Pitoa",
+      grepl("Garoua", address) ~ "Garoua",
+      .default = precise_place
+    ),
+    place = paste(precise_place, country_name, sep = ", ")
+  ) %>%
+  select(
+    place,
+    latitude,
+    longitude,
+    cell_id
+  )
+
+# pull these out for plotting
+preds_plot_setup <- expand_grid(
+  cell_id = locations_plot$cell_id,
+  year_start = baseline_year:max(df$year_start),
+  insecticide_type = types
+) %>%
+  mutate(
+    year_id = year_start - baseline_year + 1,
+    type_id = match(insecticide_type, types)
+  )
+
+index_plot <- preds_plot_setup %>%
+  select(cell_id,
+         type_id,
+         year_id) %>%
+  as.matrix()
+
+fraction_susceptible_plot <- dynamic_cells$all_states[index_plot]
+population_mortality_plot <- fraction_susceptible_plot
+
+# simulate mortalities under binomial sampling
+sample_size_plot <- 100
+binomial_died <- binomial(sample_size_plot, population_mortality_plot)
+binomial_mortality <- binomial_died / sample_size_plot
+
+rho_index <- classes_index[index_plot[, "type_id"]]
+
+# simulate mortalities under betabinomial sampling
+betabinomial_died <- betabinomial_p_rho(N = sample_size_plot,
+                                        p = population_mortality_plot,
+                                        rho = rho_classes[rho_index])
+betabinomial_mortality <- betabinomial_died / sample_size_plot
+
+sims <- calculate(population_mortality_plot,
+                  binomial_mortality,
+                  betabinomial_mortality,
+                  values = draws,
+                  nsim = 2000)
+
+# posterior mean mortality rate, and intervals for the population value
+# (posterior uncertainty), and posterior predictive intervals (posterior
+# uncertainty and sampling error) for observed mortality from binomial sampling,
+# and from betabinomial sampling
+pop_mort_mean <- colMeans(sims$population_mortality_plot[, , 1])
+pop_mort_ci <- apply(sims$population_mortality_plot[, , 1],
+                     2,
+                     quantile,
+                     c(0.025, 0.975))
+binomial_mort_ci <- apply(sims$binomial_mortality[, , 1],
+                          2,
+                          quantile,
+                          c(0.025, 0.975))
+betabinomial_mort_ci <- apply(sims$betabinomial_mortality[, , 1],
+                              2,
+                              quantile,
+                              c(0.025, 0.975))
+
+preds_plot <- preds_plot_setup %>%
+  mutate(
+    Susceptibility = pop_mort_mean,
+    pop_lower = pop_mort_ci[1, ],
+    pop_upper = pop_mort_ci[2, ],
+    binomial_lower = binomial_mort_ci[1, ],
+    binomial_upper = binomial_mort_ci[2, ],
+    betabinomial_lower = betabinomial_mort_ci[1, ],
+    betabinomial_upper = betabinomial_mort_ci[2, ],
+  ) %>%
+  filter(
+    insecticide_type %in% insecticides_plot_small
+  ) %>%
+  left_join(
+    locations_plot,
+    by = "cell_id"
+  ) %>%
+  mutate(
+    insecticide_type = factor(insecticide_type,
+                              levels = insecticides_plot_small)
+  )
+
+points_plot <- df %>%
+  filter(
+    cell_id %in% locations_plot$cell_id,
+    insecticide_type %in% insecticides_plot_small
+  ) %>%
+  mutate(
+    Susceptibility = died / mosquito_number
+  ) %>%
+  left_join(
+    locations_plot,
+    by = "cell_id"
+  ) %>%
+  mutate(
+    insecticide_type = factor(insecticide_type,
+                              levels = insecticides_plot_small)
+  )
+  
+
+# set the colours for these insecticides
+colour_types <- scales::hue_pal(direction = -1)(8)
+types_plot_id <- match(insecticides_plot_small, insecticides_plot)
+colours_plot <- colour_types[types_plot_id]
+
+# plot these, then add cell data over the top
+preds_plot %>%
+  ggplot(
+    aes(
+      x = year_start,
+      y = Susceptibility,
+      group = place,
+      fill = insecticide_type
+    )
+  ) +
+  # betabinomial posterior predictive intervals on bioassay data (captures
+  # sample size and non-independence effect)
+  geom_ribbon(
+    aes(
+      ymax = betabinomial_lower,
+      ymin = betabinomial_upper,
+    ),
+    colour = grey(0.4),
+    linewidth = 0.25,
+    linetype = 2,
+    alpha = 0.1
+  ) +
+  # binomial posterior predictive intervals on bioassay data (captures sample
+  # size but assumes independence, so underestimates variance)
+  geom_ribbon(
+    aes(
+      ymax = binomial_lower,
+      ymin = binomial_upper,
+    ),
+    alpha = 0.4
+  ) +
+  # credible intervals on population-level proportion (our best guess at the
+  # 'truth')
+  geom_ribbon(
+    aes(
+      ymax = pop_lower,
+      ymin = pop_upper,
+    ),
+  ) +
+  geom_point(
+    aes(
+      x = year_start,
+      y = Susceptibility,
+      group = place,
+      size = mosquito_number
+    ),
+    shape = 21,
+    data = points_plot,
+  ) +
+  scale_fill_manual(
+    values = colours_plot,
+    guide = FALSE
+  ) +
+  scale_y_continuous(
+    labels = scales::percent,
+    limits = c(0, 1)
+  ) +
+  scale_size_binned(
+    range = c(1, 4),
+    n.breaks = 6
+  ) +
+  facet_grid(insecticide_type ~ place) +
+  guides(
+    size = guide_legend(title = "No. tested")
+  ) +
+  xlab("") +
+  coord_cartesian(
+    xlim = c(1998, 2022),
+    ylim = c(0, 1)
+  ) +
+  theme_minimal() +
+  ggtitle(
+    "Modelled population-level susceptibility and bioassay results at heavily sampled locations"
+  )
+
+ggsave("figures/fit_subset.png",
+       bg = "white",
+       scale = 0.8,
+       width = 16,
+       height = 7)
+
+# these are the only sites with at least 25 pyrethroid bioassay datapoints,
+# spanning at least 5 years
+
