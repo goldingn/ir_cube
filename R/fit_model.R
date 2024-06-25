@@ -312,10 +312,17 @@ save.image(file = "temporary/fitted_model.RData")
 # restarts and memory leaks?)
 
 # things to do next:
-# - move and update summary plots against raw data at specific locations
+# - visualise and code up functions for validation method
 # - run predictions across multiple scenario cubes
 # - add in updated data from August
 # - add in Gerry's insecticide covariates
+# - maybe extend nets to pre-2000 to find a start point with flat resistance
+# - maybe use diploid model (hierarchical logit-het.-dominance parameter) to
+#    capture temporal variability in development fo resistance phenotype
+# - compute Africa-average LLIN-effective susceptibility to show along with
+#    bioassay data plot. Also plot weighted LLIN usage at these locations, for
+#    context.
+# - maybe use a very sparse hierarchical GP to model initial susceptibility
 # - make plots demonstrating the inherent variability of bioassay data
 # - maybe add a resistance cost parameter
 #    (positive, as fitness = 1 + selection - cost)
