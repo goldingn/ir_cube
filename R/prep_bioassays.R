@@ -502,23 +502,23 @@ ir_everything <- ir_everything %>%
   ) %>% 
   # standardise insecticide class nomenclature
   mutate(
-    insecticide_class = if_else(insecticide_class == "carbamate",
-                                "carbamates",
+    insecticide_class = if_else(insecticide_class == "carbamates",
+                                "carbamate",
                                 insecticide_class),
-    insecticide_class = if_else(insecticide_class == "organochlorine",
-                                "organochlorines",
+    insecticide_class = if_else(insecticide_class == "organochlorines",
+                                "organochlorine",
                                 insecticide_class),
-    insecticide_class = if_else(insecticide_class == "organophosphate",
-                                "organophosphates",
+    insecticide_class = if_else(insecticide_class == "organophosphates",
+                                "organophosphate",
                                 insecticide_class),
-    insecticide_class = if_else(insecticide_class == "pyrethroid",
-                                "pyrethroids",
+    insecticide_class = if_else(insecticide_class == "pyrethroids",
+                                "pyrethroid",
                                 insecticide_class),
   ) %>% 
   # fill in missing class from va data
   mutate(
     insecticide_class = if_else(insecticide_type == "deltamethrin" & is.na(insecticide_class),
-                                "pyrethroids",
+                                "pyrethroid",
                                 insecticide_class)
   ) %>% 
   # final boss now - standardise species nomenclature
