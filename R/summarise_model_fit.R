@@ -7,10 +7,12 @@ source("R/functions.R")
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
 
+# load the mask
+mask <- rast("data/clean/raster_mask.tif")
+
 # load covariate rasters (need to reload these even if restoring workspace
 # because pointers)
 covs_flat <- rast("data/clean/flat_covariates.tif")
-mask <- covs_flat[[1]] * 0
 
 # summarise the covariate effect sizes (at insecticide class level)
 effect_sizes <- summary(calculate(exp(beta_class[, 1]), values = draws))$statistics[, c("Mean", "SD")]
