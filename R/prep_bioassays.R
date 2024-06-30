@@ -659,6 +659,26 @@ table(ir_distinct_gambiae$source) %>% sort(decreasing = TRUE)
 
 # # save the diagnostic interactive map
 # mapshot(mapview(ir_distinct_sf,zcol = "insecticide_type"),url = "distinct_pts.html")
-# save these out as an RDS
+
+# fix the insecticide names and save these out as an RDS
+ir_distinct_gambiae <- ir_distinct_gambiae %>%
+  mutate(
+    insecticide_type = case_when(
+      insecticide_type == "deltamethrin" ~ "Deltamethrin",
+      insecticide_type == "permethrin" ~ "Permethrin",
+      insecticide_type == "ddt" ~ "DDT",
+      insecticide_type == "bendiocarb" ~ "Bendiocarb",
+      insecticide_type == "lambdacyhalothrin" ~ "Lambda-cyhalothrin",
+      insecticide_type == "pirimiphos-methyl" ~ "Pirimiphos-methyl",
+      insecticide_type == "fenitrothion" ~ "Fenitrothion",
+      insecticide_type == "alphacypermethrin" ~ "Alpha-cypermethrin",
+      insecticide_type == "malathion" ~ "Malathion",
+      .default = NA
+    )
+  ) %>%
+  filter(
+    !is.na(insecticide_type)
+  )
+  
 saveRDS(ir_distinct_gambiae,
         file = "data/clean/all_gambiae_complex_data.RDS")

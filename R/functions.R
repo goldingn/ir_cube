@@ -158,3 +158,10 @@ theme_ir_maps <- function() {
           plot.background=element_blank())
 }
 
+# vectorised quantile function of the betabinomial distribution, by sampling 
+qbbinom_once <- function(p, size, alpha = 1, beta = 1, nsims = 1e5) {
+  sims <- extraDistr::rbbinom(nsims, size, alpha, beta)
+  quantile(sims, p)
+}
+qbbinom <- Vectorize(qbbinom_once, c("p", "size", "alpha", "beta"))
+
