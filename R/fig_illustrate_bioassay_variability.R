@@ -110,14 +110,7 @@ df_most_sampled <- df %>%
     Susceptibility = died / mosquito_number
   )
 
-# get posterior means for rho
-sims <- calculate(rho_classes,
-                  values = draws,
-                  nsim = 1000)
-rho_classes_est <- colMeans(sims$rho_classes[, , 1])
-rho_types_est <- rho_classes_est[classes_index]
-
-# NOTE: replace this with re-estimation of rho for these
+# re-estimate rho for this set
 examples <- unique(df_most_sampled$cell_year_type)
 n_examples <- length(examples)
 df_fit <- df_most_sampled %>%
@@ -125,16 +118,17 @@ df_fit <- df_most_sampled %>%
     example_id = match(cell_year_type, examples)
   )
 
-rhos <- variable(0, 1, dim = n_examples)
+rho <- variable(0, 1)
 probs <- variable(0, 1, dim = n_examples)
+
 distribution(df_fit$died) <- betabinomial_p_rho(N = df_fit$mosquito_number,
                                                 p = probs[df_fit$example_id],
-                                                rho = rhos[df_fit$example_id])
-m <- model(rhos)  
+                                                rho = rho)
+m <- model(rho)  
 rho_draws <- mcmc(m)
 o <- greta::opt(m, adjust = FALSE)
-rhos_ml <- o$par$rhos
-rhos_bayes <- summary(rho_draws)$statistics[, "Mean"]
+rho_ml <- o$par$rho
+rho_bayes <- summary(rho_draws)$statistics["Mean"]
 
 # compute expected and observed statistics of these to elucidate the distribution
 df_most_sampled_stats <- df_most_sampled %>%
@@ -151,8 +145,8 @@ df_most_sampled_stats <- df_most_sampled %>%
     # 95% CIs under betabinomial (non-independence) sampling assumption, using
     # the posterior mean estimated by our model
     # MLE is lower, maybe biased down
-    # rho = rhos_ml,
-    rho = rhos_bayes,
+    # rho = rho_ml,
+    rho = rho_bayes,
     alpha = Susceptibility * (1 / rho - 1),
     beta = alpha * (1 - Susceptibility) / Susceptibility,
     betabinom_lower_100 = qbbinom(0.025, 100, alpha, beta) / 100,
@@ -233,7 +227,14 @@ df_most_sampled %>%
     axis.text.x = element_blank(),
     panel.grid.major.x = element_blank(),
     panel.grid.minor.x = element_blank()
-  ) 
+  ) +
+  ggtitle(
+    "Significant variability in replicated bioassay results",
+    sprintf("95%s sampling intervals under binomial (mid grey) and betabinomial
+(light grey; estimated correlation rho=%s) distributions for sample size N=100.",
+            "%",
+            round(rho_bayes, 2))
+  )
 
 ggsave(
   "figures/bioassay_variability.png",

@@ -39,6 +39,13 @@ df_validate <- df %>%
   left_join(
     all_extract,
     by = c("cell_id", "year_id")
+  ) %>%
+  # make spatial clusters
+  mutate(
+    cluster = kmeans(
+      x = as.matrix(select(., latitude, longitude)),
+      centers = 15
+    )$cluster
   )
 
 # plot and fit models comparing this with covariate values
@@ -69,12 +76,13 @@ df_validate %>%
   theme_ir_maps() +
   ggtitle("Residuals")
 
-space_fit <- mgcv::gam(
-  z_resid ~ s(latitude, longitude, bs = "gp", k = 200),
-  method = "REML",
-  data = df_validate
-)
-summary(space_fit)
+space_fit <- df_validate %>%
+  filter(insecticide_class == "Pyrethroids") %>%
+  mgcv::gam(
+    z_resid ~ s(latitude, longitude, bs = "gp", k = 200),
+    method = "REML",
+    data = .
+  )
 
 # make a raster of the GAM residual fit
 mask_lores <- mask %>%
@@ -105,7 +113,8 @@ ggplot() +
   ) +
   scale_fill_distiller(
     type = "div",
-    na.value = "transparent"
+    na.value = "transparent",
+    limits = c(-4, 4)
   ) +
   theme_ir_maps() +
   ggtitle(
@@ -117,12 +126,19 @@ cov_names <- colnames(all_extract)[-(1:2)]
 df_validate %>%
   select(
     all_of(cov_names),
+    insecticide_type,
     z_resid
   ) %>%
   pivot_longer(
     cols = all_of(cov_names),
     names_to = "covariate_name",
     values_to = "covariate_value"
+  ) %>%
+  mutate(
+    covariate_value = case_when(
+      covariate_name != "net_coverage" ~ sqrt(covariate_value),
+      .default = covariate_value
+    )
   ) %>%
   ggplot(
     aes(
@@ -134,10 +150,81 @@ df_validate %>%
   geom_point(
     alpha = 0.1
   ) +
+  geom_hline(yintercept = 0,
+             colour = "red",
+             linetype = 2) +
   geom_smooth() +
-  facet_wrap(~covariate_name) +
+  facet_grid(insecticide_type ~ covariate_name) +
   theme_minimal()
 
 # plot against time, in different regions
+df_validate %>%
+  group_by(country_name) %>%
+  filter(n() >= 500) %>%
+  ggplot(
+    aes(
+      x = year_start,
+      y = z_resid
+    )
+  ) +
+  geom_point(
+    alpha = 0.1
+  ) +
+  geom_hline(yintercept = 0,
+             colour = "red",
+             linetype = 2) +
+  geom_smooth() +
+  facet_grid(country_name ~ insecticide_type) +
+  theme_minimal()
 
 
+# group distributions in different ways, and compute Kolmogorov-Smirnov
+# D statistics (and p values) for each
+
+
+
+df_validate %>%
+  group_by(year_start, insecticide_class) %>%
+  summarise(
+    n = n(),
+    D = ks.test(z_resid, pnorm)$statistic,
+    p = ks.test(z_resid, pnorm)$p.value
+  ) %>%
+  arrange(desc(D))
+
+
+df_validate %>%
+  filter(insecticide_type != "DDT") %>%
+  group_by(cluster, insecticide_class) %>%
+  summarise(
+    n = n(),
+    D = ks.test(z_resid, pnorm)$statistic,
+    p = ks.test(z_resid, pnorm)$p.value
+  ) %>%
+  arrange(desc(D))
+
+df_validate %>%
+  ggplot(
+    aes(x = longitude,
+        y = latitude,
+        fill = cluster == 7)
+  ) +
+  geom_point(
+    shape = 21
+  ) +
+  coord_equal() +
+  theme_minimal()
+
+
+df_validate %>%
+  filter(cluster == 7,
+         insecticide_class == "Pyrethroids") %>%
+  pull(z_resid) %>%
+  hist(breaks = 100)
+
+
+# Carbamate residual in Cote D'Ivoire
+
+# East Africa opposite direction residual in Pyrethroids and DDT too
+
+# Madagascar residual against Pyrethroids
