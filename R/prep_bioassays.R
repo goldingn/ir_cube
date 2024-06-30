@@ -215,16 +215,11 @@ ir_mapper_dis_species_africa <- read_csv("data/raw/2_standard-WHO-susc-test_spec
 # these are all Africa so no need for country subset
 ir_mapper_dis_complex <- read_csv("data/raw/1_standard-WHO-susc-test_complex-subgroup.csv",
                                          na = c("", "NA","NR","NF")) %>% 
-  #strip out invalid string in long lat
-  mutate(Latitude = stringr::str_extract(
-    Latitude,
-    "\\d+\\.*\\d*"
-  ),
-  Longitude = stringr::str_extract(
-    Longitude,
-    "\\d+\\.*\\d*"
-  )
-  ) %>% 
+  # strip out invalid string in long lat
+  mutate(
+    Latitude = str_remove_all(Latitude, "\xa0"),
+    Longitude = str_remove_all(Longitude, "\xa0")
+  ) %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
     across(
@@ -301,15 +296,9 @@ ir_mapper_int_complex <- read_csv("data/raw/5_intensity-bioassays_complex-subgro
                                   na = c("", "NA","NR","NF"),
                                   locale=locale(encoding="latin1") # not sure why this is needed
                                   ) %>% 
-  #strip out invalid string in long lat
-  mutate(Latitude = stringr::str_extract(
-    Latitude,
-    "\\d+\\.*\\d*"
-  ),
-  Longitude = stringr::str_extract(
-    Longitude,
-    "\\d+\\.*\\d*"
-  )
+  mutate(
+    Latitude = str_remove_all(Latitude, "\xa0"),
+    Longitude = str_remove_all(Longitude, "\xa0")
   ) %>% 
   # these were read in as characters and readxl is a pain to set column types
   mutate(
@@ -481,6 +470,16 @@ ir_everything <- ir_dis_mtm_africa %>%
 
 # standardise the data
 ir_everything <- ir_everything %>% 
+  # convert graphical characters in Côte d'Ivoire to the format supported here
+  mutate(
+    country_name = iconv(country_name, to = "", sub = "byte"),
+    # align these for macOS, at least
+    country_name = case_when(
+      country_name == "c<f4>te d'ivoire" ~ "Côte d’Ivoire",
+      country_name == "C<f4>te d<92>Ivoire" ~ "Côte d’Ivoire",
+      .default = country_name
+    )
+  ) %>%
   #standardise all non-species name characters to lower
   mutate(
     across(c("insecticide_type",
@@ -598,15 +597,17 @@ ir_everything <- ir_everything %>%
 # deduplicate based on unique criteria
 ir_distinct <- ir_everything %>% 
   distinct(year_start,
-           lat_round = round(latitude,digits = 2),
-           lon_round = round(longitude,digits = 2),
+           lat_round = round(latitude,
+                             digits = 2),
+           lon_round = round(longitude,
+                             digits = 2),
            species_complex,
            insecticide_type,
            mosquito_number,
            died,
            country_name, 
            concentration,
-           mortality_round = round(mortality_adjusted,digits = 0),
+           mortality_round = round(mortality_adjusted, digits = 0),
            .keep_all = TRUE) 
 
 # map distinct records for checking if any remaining duplicates
@@ -624,21 +625,26 @@ ir_distinct_sf <- st_as_sf(ir_distinct %>%
                            coords = c("longitude","latitude"),
                            crs = st_crs(4326))
 
-
-mapview(ir_distinct_sf,zcol = "insecticide_type")
+mapview(ir_distinct_sf,
+        zcol = "insecticide_type")
 
 # group by nearby matching points and check if nearby points might be duplicates  
-ir_distinct %>%  group_by(year_start, 
-                          died, 
-                          insecticide_type,
-                          mortality_round,
-                          species_complex,
-                          country_name,
-                          concentration,
-                          round(lat_round,1),
-                          round(lon_round,1),
-                          mosquito_number) %>% 
-  count() %>% View
+ir_distinct %>%
+  group_by(year_start, 
+           died, 
+           insecticide_type,
+           mortality_round,
+           species_complex,
+           country_name,
+           concentration,
+           round(lat_round,1),
+           round(lon_round,1),
+           mosquito_number) %>% 
+  count() %>%
+  arrange(desc(n)) %>%
+  View()
+
+
 # most of the remaining close by points with identical responses have 100% mortality, they are
 # likely legit separate observations
 
