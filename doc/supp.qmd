@@ -1,0 +1,188 @@
+---
+title: "Supplemental material"
+author: "Nick Golding & co authors"
+format: pdf
+editor: visual
+---
+
+## Supplemental material for the article: *Forecasting the Evolution of Resistance to Insecticides for Malaria Control Across Africa*
+
+## Insecticide resistance data
+
+TO DO: briefly describe susceptibility bioassay dta; discriminating concentrations dn intensity
+
+### Bioassay data processing
+
+TO DO: describe database consolidation, subsetting to WHO bioassays
+QC checks
+
+### Bioassay data spatial coverage
+
+TO DO: display maps of data for each insecticide type
+
+### Bioassay data spatio-temporal coverage
+
+The following figures display the spatial and temporal distribution of susceptibility bioassay data used in this analysis. Both discriminating concentration bioassay and intensity bioassay data are listed.
+
+```{r echo = FALSE}
+knitr::include_graphics("../figures/data_time_Alpha-cypermethrin.png")
+knitr::include_graphics("../figures/data_time_Deltamethrin.png")
+knitr::include_graphics("../figures/data_time_Lambda-cyhalothrin.png")
+knitr::include_graphics("../figures/data_time_Permethrin.png")
+knitr::include_graphics("../figures/data_time_Fenitrothion.png")
+knitr::include_graphics("../figures/data_time_Malathion.png")
+knitr::include_graphics("../figures/data_time_Pirimiphos-methyl.png")
+knitr::include_graphics("../figures/data_time_DDT.png")
+knitr::include_graphics("../figures/data_time_Bendiocarb.png")
+```
+
+## Model
+
+The model consists of four parts: an observation model describing the bioassay results expected at a given time and place, given the population-level susceptibility; a dose-response model describing how susceptibility depends on concentration (enabling incorporation of intensity bioassay data); a dynamic process model describing how the resistance traits spread in a given population; and a statistical model describing how the selection coefficients driving resistance vary through space and time along with covariates.  
+
+### Observation model
+
+Beta binomial
+
+### Dose-response model
+
+probit, for intensity bioassay data
+
+### Dynamic process model
+
+initial fraction susceptible in each cell
+
+haploid selection (equivalent to non-dominant diploid)
+
+### Selection coefficient model
+
+hierarchical
+
+Positive partial selection coefficients combined with sclaed indicators. This enables us to encode prior knowledge that resistance will not be selected for in the absence of drivers, whilst been flexible regarding the potential drivers. It is not possibly to estimate this statistically from the data, since bioassays are not performed in regions not using insecticides.
+
+#### Covariates
+
+All scaled to be indicators.
+
+##### LLIN use
+
+TO DO: From MAP, cite Bertozzi-Villa paper
+
+```{r echo=FALSE}
+knitr::include_graphics("../figures/itn_map.png")
+```
+
+##### IRS coverage
+
+TO DO: From MAO, originally from WHO, get at country level?
+
+```{r echo=FALSE}
+knitr::include_graphics("../figures/irs_map.png")
+```
+
+##### IRS chemical timeseries
+
+TO DO: need something like this to capture DDT's different pattern, since it has been deprecated.
+
+##### Agricultural intensity
+
+TO DO: Gerry
+
+```{r echo=FALSE}
+knitr::include_graphics("../figures/crop_map.png")
+```
+
+### Priors
+
+mostly non-informative/hierarchical
+
+### Inference
+
+HMC, 4 chains, 1000 samples each after 1000 warmup.
+
+Convergence assessed by potential scale reduction factors and visual inspection of MCMC trace plots
+
+### Posteriors
+
+TO DO: list parameter posterior summaries (programmatically, in this file)
+```{r echo=FALSE}
+knitr::include_graphics("../figures/covariate_loadings.png")
+```
+
+## Model Predictions
+
+TO DO: Display examples of how the model responds to different drivers
+
+### Local-scale predictions
+
+The figure below illustrates model predictions in three locations with different histories of coverage
+
+```{r}
+knitr::include_graphics("../figures/exemplar_itn_susc.png")
+```
+
+
+
+The figure below illustrates model predictions of population-level susceptibility, and the modelled sampling interval, compared with bioassay data.
+
+```{r echo=FALSE}
+knitr::include_graphics("../figures/fit_subset.png")
+```
+
+
+### Insecticide-specific prediction maps
+
+TO DO: Here's Deltamethrin, do the rest.
+
+```{r}
+knitr::include_graphics("../figures/Deltamethrin_ir_map.png")
+```
+
+These can be downloaded from: ...
+
+### Intervention-relevant prediction maps
+
+TO DO: Plot LLIN-effective resistance, also weighted by assumed physical/chemical effectiveness. Ditto IRS?
+
+These can be downloaded from: ...
+
+## Model validation
+
+The very high variance in susceptibility bioassay data complicates model validation. This section illustrates the problem and our approach of validating the model against asynchronous distributions of bioassay results using randomised quantile residuals.
+
+### Variability in susceptibility bioassay data
+
+Susceptibility bioassay results exhibit very high variability. In locations with moderate or high levels of resistance, the variance between two bioassays performed in the same place is generally much greater than the variance between the true population susceptibility fractions in within a region. This is illustrated empirically below. 
+
+Displayed are six examples of specific places (5km grid cells) and times (calendar years) where multiple discriminating concentration bioassay results have been performed against the same Pyrethroid insecticide at the same concentration. Dark grey horizontal lines give the (sample size weighted) mean of the susceptibility estimates; as an estimate of the true population-level susceptibility. Medium grey bands show the 95% sampling interval of a binomial distribution, with this mean and 100 samples. If the data could accurately be described by a binomial distribution (implying each individual mosquito in the sample is randomly selected from the whole population), 95% of bioassay results with 100 individuals would fall within this band. Most results with more than 100 individuals would fall closer to the population mean. Light grey bands give the 95% sampling interval of a beta-binomial distribution, with this mean, 100 samples, and correlation parameter $\rho$ estimated from these data. This parameter quantifies the level of correlation (non-independence) between any two individuals in the sample, e.g. due to relatedness of individuals in the sample due to sampling many individuals from the same larval habitat.
+
+```{r echo=FALSE}
+knitr::include_graphics("../figures/bioassay_variability.png")
+```
+
+### Validation against distributions
+
+Since single bioassays are not representative of population susceptibility, and since bioassays are rarely sufficiently replicated in the same location, year, and insecticide to yield robust point estimates, model validation cannot be conducted by comparing predicted and observed values. Accurately predicting a single bioassay result is not preferable, since it likely indicates overfitting rather than good model fit. Instead, we validate our model by ensuring that it robustly quantifies the distributions of bioassay results, across multiple places and times.
+
+### Randomised quantile residuals
+
+Explain briefly, but point to DHARMa package etc. for more
+
+### Within-sample validation
+
+Use RQR to check visually for model misspecification
+
+### Out-of-sample validation
+
+#### Spatial extrapolation
+
+Bioassay data are very sparse across much of malaria-endemic Africa. We therefore aim to develop a model that can robustly predict levels of resistance in regions, such as much of Central Africa, where there is little or no data. We therefore validate our model using spatially-blocked cross-validation with blocks large enough to represent this spatial extrapolation challenge; training the model to data in West Africa and predicting resistance levels in East Africa and vice versa.
+
+#### Temporal forecasting
+
+We aim to forecast the spread of resistance into the coming decade, as a function of covariates known to drive resistance. We therefore validate our model's ability to predict the most recent decade of data, having trained it on only the early portion of the data.
+
+## Scenario analyses
+
+TO DO: details of the scenarios and estimates of cost, physical vs chemical barrier, and impact on clinical outcomes
+
