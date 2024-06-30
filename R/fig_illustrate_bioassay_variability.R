@@ -15,9 +15,6 @@ insecticides_plot <- tibble(
   class = classes[classes_index]
 ) %>%
   arrange(desc(class), insecticide) %>%
-  filter(
-    !(insecticide %in% c("DDT")) 
-  ) %>%
   pull(insecticide)
 
 insecticides_plot_small <- c("Deltamethrin",
@@ -162,7 +159,7 @@ df_most_sampled_stats <- df_most_sampled %>%
     betabinom_upper_100 = qbbinom(0.975, 100, alpha, beta) / 100,
   )
 
-colour_types <- scales::hue_pal(direction = -1)(8)
+colour_types <- scales::hue_pal(direction = -1)(9)
 types_plot_id <- match(insecticides_plot_small, insecticides_plot)
 colours_plot <- colour_types[types_plot_id]
 
@@ -211,7 +208,6 @@ df_most_sampled %>%
       x = x_random,
       fill = insecticide_type
     ),
-    # fill = colours_plot,
     shape = 21
   ) +
   facet_wrap(~cell_year_type,
