@@ -231,7 +231,7 @@ df_most_sampled %>%
   ggtitle(
     "Significant variability in replicated bioassay results",
     sprintf("95%s sampling intervals under binomial (mid grey) and betabinomial
-(light grey; estimated correlation rho=%s) distributions for sample size N=100.",
+(light grey; estimated correlation rho=%s) intervals assume sample size N=100.",
             "%",
             round(rho_bayes, 2))
   )

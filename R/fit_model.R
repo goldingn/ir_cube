@@ -312,13 +312,17 @@ save.image(file = "temporary/fitted_model.RData")
 # restarts and memory leaks?)
 
 # things to do next:
+# - extra covariates: time-varying population; IRS coverage;
+#    (interactions with malaria pre-control baseline & DVS composition)
+# - mask plotted outputs by DVS extent mask
+# - add in updated discriminating bioassay data from August and rerun model
+# - implement dose-response model and add in intensity bioassay data
+# - output validation stratified by species
 # - visualise and code up functions for validation method
 # - run predictions across multiple scenario cubes
-# - add in updated data from August
-# - add in Gerry's insecticide covariates
 # - maybe extend nets to pre-2000 to find a start point with flat resistance
 # - maybe use diploid model (hierarchical logit-het.-dominance parameter) to
-#    capture temporal variability in development fo resistance phenotype
+#    capture temporal variability in development of resistance phenotype
 # - compute Africa-average LLIN-effective susceptibility to show along with
 #    bioassay data plot. Also plot weighted LLIN usage at these locations, for
 #    context.
