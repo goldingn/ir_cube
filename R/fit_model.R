@@ -10,6 +10,12 @@ mask <- rast("data/clean/raster_mask.tif")
 # load time-varying net coverage data
 nets_cube <- rast("data/clean/net_use_cube.tif")
 
+# load time-varying IRS coverage data
+irs_cube <- rast("data/clean/irs_coverage_scaled_cube.tif")
+
+# load time-varying population data
+pop_cube <- rast("data/clean/pop_scaled_cube.tif")
+
 # load the other layers
 covs_flat <- rast("data/clean/flat_covariates.tif")
 
@@ -94,18 +100,29 @@ flat_extract <- covs_flat %>%
     .before = everything()
   )
 
+# TODO: extract other spatiotemporal covariates here
+
 # extract spatiotemporal covariates from the cube
-all_extract <- nets_cube %>%
-  terra::extract(unique_cells) %>%
+all_extract <- bind_cols(
+  terra::extract(nets_cube, unique_cells),
+  terra::extract(irs_cube, unique_cells),
+  terra::extract(pop_cube, unique_cells)
+) %>%
   mutate(
     cell = unique_cells,
     .before = everything()
   ) %>%
+  # this stacks all the different cubes in long format, but we want wide on the
+  # variable but long on year, so pivot_wider immediately after
   pivot_longer(
-    cols = starts_with("nets_"),
-    names_prefix = "nets_",
-    names_to = "year",
-    values_to = "net_coverage"
+    cols = -one_of("cell"),
+    names_sep = "_",
+    names_to = c("variable", "year"),
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = "variable",
+    values_from = "value"
   ) %>%
   mutate(
     year = as.numeric(year)

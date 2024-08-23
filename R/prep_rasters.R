@@ -76,7 +76,8 @@ irs_coverage <- rast(irs_files)
 # extend these to the ITN mask
 irs_coverage <- terra::extend(irs_coverage, mask)
 
-# pad them with zeros (where distribution data missing)
+# pad them with zeros (where distribution data missing, including -9999 coding)
+irs_coverage[irs_coverage < 0] <- 0
 irs_coverage[is.na(irs_coverage)] <- 0
 
 # mask them
@@ -85,6 +86,8 @@ irs_coverage <- mask(irs_coverage, mask)
 # set their names
 names(irs_coverage) <- paste0("irs_", irs_years)
 
+# clip to the analysis years (not before 2000)
+irs_coverage <- irs_coverage[[paste0("irs_", 2000:2022)]]
 terra::writeRaster(irs_coverage,
                    "data/clean/irs_coverage_cube.tif",
                    overwrite = TRUE)
@@ -96,6 +99,104 @@ irs_coverage_max <- max(global(irs_coverage,
 irs_coverage_scaled <- irs_coverage / irs_coverage_max
 terra::writeRaster(irs_coverage_scaled,
                    "data/clean/irs_coverage_scaled_cube.tif",
+                   overwrite = TRUE)
+
+# Human population, combining MAP's WorldPop observed and projected global
+# rasters to get 2000-2022
+
+# past population, 2000-2020
+pop_past_files <- list.files("data/raw/pop/",
+                             pattern = ".tif",
+                             full.names = TRUE)
+pop_past_years <- pop_past_files %>%
+  basename() %>%
+  str_remove("WorldPop_UNAdj_v3_DRC_fix.") %>%
+  str_remove(".Annual.Data.5km.sum.tif")
+pop_past <- rast(pop_past_files)
+names(pop_past) <- paste0("pop_", pop_past_years)
+
+# projected future population, 2021-2049
+pop_future_files <- list.files("data/raw/pop_future/",
+                               pattern = ".tif",
+                               full.names = TRUE)
+pop_future_years <- pop_future_files %>%
+  basename() %>%
+  str_remove("WorldPop_UNAdj_v3_DRC_fix_projected.") %>%
+  str_remove(".Annual.Data.5km.sum.tif")
+pop_future <- rast(pop_future_files)
+names(pop_future) <- paste0("pop_", pop_future_years)
+
+# combine, crop, and mask to mastergrids
+pop_all <- c(pop_past, pop_future)
+pop_all <- crop(pop_all, mask)
+pop_all <- mask(pop_all, mask)
+
+# fill in zeros on land with an epsilon, fill in NAs (outside mastergrids) with
+# 0, and relevel total populations, just in case I end up using these for population
+# stats by mistake.
+
+# Set the epsilon to 1 person per 5km, approximately the 11th percentile of
+# non-zero populations, and for Egypt (with most missing population) this
+# matches the neighbouring low-population Sahara desert areas well
+
+# annual populations for Africa within the mastergrids file, for relevelling
+target_africa_pops <- global(pop_all, "sum", na.rm = TRUE)
+
+# check approximate percentile of the epsilon
+epsilon <- 1
+epsilon_quantile <- mean(na.omit(c(pop_all[])) <= epsilon)
+round(100 * epsilon_quantile)
+
+# fill in the missing populations (and remask the true NA areas)
+pop_all[is.na(pop_all)] <- 0
+pop_all[pop_all == 0] <- epsilon
+pop_all <- mask(pop_all, mask)
+
+# relevel the total continent populations
+new_africa_pops <- global(pop_all, "sum", na.rm = TRUE)
+ratios <- target_africa_pops / new_africa_pops
+for (i in seq_len(terra::nlyr(pop_all))) {
+  pop_all[[i]] <- pop_all[[i]] * ratios[[1]][i]
+}
+
+# check there's less than a person different in the total populations
+final_africa_pops <- global(pop_all, "sum", na.rm = TRUE)
+max(abs(final_africa_pops - target_africa_pops)) < 1
+
+# transform and scale to 0-1
+# trans_pop_all <- log(pop_all)
+trans_pop_all <- identity(pop_all)
+trans_pop_all_min <- min(global(trans_pop_all,
+                            "min",
+                            na.rm = TRUE))
+trans_pop_all <- trans_pop_all - trans_pop_all_min
+trans_pop_all_max <- max(global(trans_pop_all,
+                            "max",
+                            na.rm = TRUE))
+trans_pop_all <- trans_pop_all / trans_pop_all_max
+
+# clip to modelling years, and save
+pop <- pop_all[[paste0("pop_", 2000:2022)]]
+trans_pop <- trans_pop_all[[paste0("pop_", 2000:2022)]]
+
+terra::writeRaster(pop,
+                   "data/clean/pop_cube.tif",
+                   overwrite = TRUE)
+
+terra::writeRaster(trans_pop,
+                   "data/clean/pop_scaled_cube.tif",
+                   overwrite = TRUE)
+
+# save future projection years, too
+pop_future <- pop_all[[paste0("pop_", 2023:2030)]]
+trans_pop_future <- trans_pop_all[[paste0("pop_", 2023:2030)]]
+
+terra::writeRaster(pop_future,
+                   "data/clean/pop_cube_future.tif",
+                   overwrite = TRUE)
+
+terra::writeRaster(trans_pop_future,
+                   "data/clean/pop_scaled_cube_future.tif",
                    overwrite = TRUE)
 
 # other static ones
@@ -189,6 +290,9 @@ for (crop_type in unique(crop_info$type)) {
 }
 
 names(crops_group) <- paste0("crops_", names(crops_group))
+
+# # drop 'all' before saving, since it's not useful as a covariate after all
+# crops_group <- crops_group[[-1]]
 
 # combine these into a multiband geotiff of flat (not temporally static)
 # covariates

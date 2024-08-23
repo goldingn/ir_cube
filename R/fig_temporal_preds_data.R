@@ -438,9 +438,9 @@ df_net_use <- all_extract %>%
     net_coverage_class
   ) %>%
   summarise(
-    lower = quantile(net_coverage, 0.25),
-    upper = quantile(net_coverage, 0.75),
-    mean = mean(net_coverage),
+    lower = quantile(nets, 0.25),
+    upper = quantile(nets, 0.75),
+    mean = mean(nets),
     .groups = "drop"
   ) %>%
   mutate(

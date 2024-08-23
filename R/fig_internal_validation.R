@@ -140,6 +140,16 @@ df_validate %>%
       .default = covariate_value
     )
   ) %>%
+  group_by(
+    covariate_name,
+    insecticide_type
+  ) %>%
+  # remove some outlying data skewing the smooths
+  filter(
+    covariate_value <= quantile(covariate_value, 0.95),
+    covariate_value >= quantile(covariate_value, 0.05)
+  ) %>%
+  ungroup() %>%
   ggplot(
     aes(
       x = covariate_value,
@@ -154,13 +164,24 @@ df_validate %>%
              colour = "red",
              linetype = 2) +
   geom_smooth() +
-  facet_grid(insecticide_type ~ covariate_name) +
+  facet_grid(insecticide_type ~ covariate_name,
+             scales = "free_x") +
   theme_minimal()
 
 # plot against time, in different regions
 df_validate %>%
   group_by(country_name) %>%
   filter(n() >= 500) %>%
+  group_by(
+    country_name,
+    insecticide_type
+  ) %>%
+  # remove some outlying data skewing the smooths
+  filter(
+    year_start <= quantile(year_start, 0.95),
+    year_start >= quantile(year_start, 0.05)
+  ) %>%
+  ungroup() %>%
   ggplot(
     aes(
       x = year_start,
@@ -174,7 +195,8 @@ df_validate %>%
              colour = "red",
              linetype = 2) +
   geom_smooth() +
-  facet_grid(country_name ~ insecticide_type) +
+  facet_grid(country_name ~ insecticide_type,
+             scales = "free_x") +
   theme_minimal()
 
 
@@ -204,23 +226,25 @@ df_validate %>%
   arrange(desc(D))
 
 df_validate %>%
+  arrange(z_resid) %>%
   ggplot(
     aes(x = longitude,
         y = latitude,
-        fill = cluster == 7)
+        fill = abs(z_resid))#factor(cluster))# == 7)
   ) +
   geom_point(
     shape = 21
   ) +
+  facet_wrap(~insecticide_type) +
   coord_equal() +
   theme_minimal()
 
 
-df_validate %>%
-  filter(cluster == 7,
-         insecticide_class == "Pyrethroids") %>%
-  pull(z_resid) %>%
-  hist(breaks = 100)
+# df_validate %>%
+#   filter(cluster == 7,
+#          insecticide_class == "Pyrethroids") %>%
+#   pull(z_resid) %>%
+#   hist(breaks = 100)
 
 
 # Carbamate residual in Cote D'Ivoire

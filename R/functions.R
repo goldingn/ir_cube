@@ -155,7 +155,9 @@ theme_ir_maps <- function() {
           panel.border=element_blank(),
           panel.grid.major=element_blank(),
           panel.grid.minor=element_blank(),
-          plot.background=element_blank())
+          plot.background=element_blank(),
+          plot.title = element_markdown(),
+          legend.title = element_markdown())
 }
 
 # vectorised quantile function of the betabinomial distribution, by sampling 

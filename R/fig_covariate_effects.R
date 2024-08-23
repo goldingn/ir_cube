@@ -34,8 +34,8 @@ sd_tibble <- sims$effect_type %>%
     values_to = "sd"
   )
 
-# get the mean of the scaled covariates in the data
-data_means <- x_cell_years %>%
+# get the mean and sd of the scaled covariates in the data
+data_sry <- x_cell_years %>%
   as_tibble() %>%
   pivot_longer(
     cols = everything(),
@@ -44,7 +44,8 @@ data_means <- x_cell_years %>%
   ) %>%
   group_by(covariate) %>%
   summarise(
-    value = mean(value),
+    data_mean = mean(value),
+    data_sd = sd(value),
     .groups = "drop"
   )
 
@@ -54,30 +55,58 @@ stats <- mean_tibble %>%
     by = c("covariate", "insecticide")
   ) %>%
   left_join(
-    data_means,
+    data_sry,
     by = "covariate"
   ) %>%
   mutate(
-    mean_scaled = mean * value,
+    mean_scaled = mean * data_mean,
     # is this right foraffine transform of a normal? Can't check as I'm on a
     # plane
-    sd_scaled = sd * value,
+    sd_scaled = sd * data_mean,
     precision = 1 / sd ^ 2,
     precision_scaled = 1 / sd_scaled ^ 2,
     inv_coef_variation = mean / sd ^ 2,
     inv_coef_variation_scaled = mean_scaled / sd_scaled ^ 2
-  ) 
+  ) %>%
+  # rename some things for plotting
+  mutate(
+    covariate = str_replace(covariate, "crops_", "Crop yield: "),
+    covariate = case_when(
+      covariate == "pop" ~ "Population density",
+      covariate == "nets" ~ "LLIN use",
+      covariate == "irs" ~ "IRS coverage",
+      .default = covariate
+    )
+  )
 
-stats %>%
+# order the covariates by the mean effect
+covariate_order_scaled <- stats %>%
+  group_by(covariate) %>%
+  summarise(mean_scaled = mean(mean_scaled)) %>%
+  arrange(mean_scaled) %>%
+  pull(covariate)
+
+stats <- stats %>%
+  mutate(
+    covariate = factor(covariate,
+                       levels = covariate_order_scaled)
+  )
+
+effect_grid <- stats %>%
+  rename(
+    `Average\nselection\npressure` = mean_scaled
+  ) %>%
   ggplot(
     aes(
       x = insecticide,
       y = covariate,
-      fill = mean_scaled,
+      fill = `Average\nselection\npressure`,
       # alpha = precision_scaled
     )
   ) +
-  geom_tile() +
+  geom_tile(
+    colour = grey(0.5)
+  ) +
   scale_fill_gradient(
     low = "white",
     high = "red"
@@ -90,11 +119,7 @@ stats %>%
   ) +
   theme_minimal() +
   xlab("") +
-  guides(
-    fill = guide_legend(
-      title = "Average selection effect"
-    )
-  ) +
+  ylab("") +
   theme(
     axis.text.x = element_text(
       angle = 45,
@@ -107,11 +132,48 @@ stats %>%
 # indicator variable for the covariate. This captures both the relative strength
 # of the covariate in selecting for resistance, and its prevalence.
 
+
+# do the same on the coefficients themselves
+regression_grid <- stats %>%
+  rename(
+    `Effect\nsize` = mean
+  ) %>%
+  ggplot(
+    aes(
+      x = insecticide,
+      y = covariate,
+      fill = `Effect\nsize`,
+      # alpha = precision_scaled
+    )
+  ) +
+  geom_tile(
+    colour = grey(0.5)
+  ) +
+  scale_fill_gradient(
+    low = "white",
+    high = "red"
+  ) +
+  scale_x_discrete(
+    position = "top"
+  ) +
+  scale_alpha_continuous(
+    range = c(0.2, 1)
+  ) +
+  theme_minimal() +
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 0)
+  )
+
+effect_grid / regression_grid
+
 ggsave(
   "figures/covariate_loadings.png",
   bg = "white",
   scale = 0.8,
   width = 8,
-  height = 5
+  height = 8
 )  
-
