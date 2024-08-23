@@ -165,3 +165,110 @@ qbbinom_once <- function(p, size, alpha = 1, beta = 1, nsims = 1e5) {
 }
 qbbinom <- Vectorize(qbbinom_once, c("p", "size", "alpha", "beta"))
 
+
+# Compute the statistical power to estimate the population susceptibility
+# (margin of error of the susceptibility estimate) under a betabinomial
+# distribution, where: n = sample size, p = probability of a positive; rho =
+# overdispersion; alpha = significance level (0.05 = MoE for 95% CI)
+moe_betabinomial <- function(n = 100, p = 0.5, rho = 0.1, alpha = 0.05) {
+  
+  # alpha and beta of the betabinomial distribution (avoiding name clashes)
+  a <- p * (1 / rho - 1)
+  b <- a * (1 - p) / p
+  
+  # compute variance of the number dead
+  num <- n * a * b * (a + b + n)
+  denom <- (a + b) ^ 2 * (a + b + 1)
+  var <- num / denom
+  
+  # to get the variance of the proportion, multiply the random variable for the
+  # number dead by 1/n; compute the variance of this new random variable. From
+  # normal distribution closure under affine transformation the variance of the
+  # proportion is this variance divided by 1/n^2
+  var_prop <- var / (n ^ 2)
+  
+  # get the standard deviation, and the standard error of the estimate
+  sd_prop <- sqrt(var_prop)
+  
+  # compute Z score (for a two-tailed test at this significance level)
+  z <- qnorm(1 - alpha / 2)
+  
+  # moe is z score times the standard deviation
+  z * sd_prop
+  
+}
+
+# Compute the statistical power to estimate the population susceptibility
+# (margin of error of the susceptibility estimate) under a binomial
+# distribution, where: n = sample size, p = probability of a positive; alpha =
+# significance level (0.05 = MoE for 95% CI)
+moe_binomial <- function(n = 100, p = 0.5, alpha = 0.05) {
+  
+  # compute variance of the number dead
+  var <- n * p * (1 - p)
+  
+  # to get the variance of the proportion, multiply the random variable for the
+  # number dead by 1/n; compute the variance of this new random variable. From
+  # normal distribution closure under affine transformation the variance of the
+  # proportion is this variance divided by 1/n^2
+  var_prop <- var / (n ^ 2)
+  
+  # get the standard deviation, and the standard error of the estimate
+  sd_prop <- sqrt(var_prop)
+  
+  # compute Z score (for a two-tailed test at this significance level)
+  z <- qnorm(1 - alpha / 2)
+  
+  # moe is z score times the standard deviation
+  z * sd_prop
+  
+}
+
+# Compute the statistical power to estimate the population susceptibility
+# (margin of error of the susceptibility estimate) under a sum of independent
+# betabinomial samples, where: n = sample size, p = probability of a positive;
+# rho = overdispersion; alpha = significance level (0.05 = MoE for 95% CI),
+# clusters = number of independent samples (n is divided between these), and
+# nsim = number of Monte Carlo simulations to perform to estimate the MoE
+moe_betabinomial_cluster <- function(n = 100, p = 0.5, rho = 0.1, alpha = 0.05,
+                                     clusters = 3, nsim = 1e4) {
+  
+  # alpha and beta of the betabinomial distribution (avoiding name clashes)
+  a <- p * (1 / rho - 1)
+  b <- a * (1 - p) / p
+  
+  # sample random cluster fractions from a beta distribution
+  probs <- rbeta(n = nsim * clusters,
+                 shape1 = a,
+                 shape2 = b)
+  
+  # divide up the sample size between these clusters
+  cluster_sample_sizes <- rep(n %/% clusters, clusters)
+  which_get_extra <- seq_len(n %% clusters)
+  cluster_sample_sizes[which_get_extra] <- cluster_sample_sizes[which_get_extra] + 1 
+  
+  # repeat these to match the probs (need 'each', so it aligns with matrix
+  # dimension setting later)
+  sample_sizes <- rep(cluster_sample_sizes,
+                      each = nsim)
+  
+  # simulate successes in each cluster/sim
+  sims <- rbinom(n = nsim * clusters,
+                 size = sample_sizes,
+                 prob = probs)
+  sims <- matrix(sims,
+                 nrow = nsim,
+                 ncol = clusters)
+  
+  # sims of numbers of successes overall, and a Monte Carlo estimate of the
+  # standard deviation of the estimates
+  successes <- rowSums(sims)
+  sd_prop <- sd(successes / n)
+  
+  # compute Z score (for a two-tailed test at this significance level)
+  z <- qnorm(1 - alpha / 2)
+  
+  # moe is z score times the standard deviation
+  z * sd_prop
+  
+}

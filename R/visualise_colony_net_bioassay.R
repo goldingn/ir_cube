@@ -84,10 +84,6 @@ ig2_stats <- ig2 %>%
     betabinom_upper_100 = qbbinom(0.975, 100, alpha, beta) / 100,
   )
 
-colour_types <- scales::hue_pal(direction = -1)(9)
-types_plot_id <- match(insecticides_plot_small, insecticides_plot)
-colours_plot <- colour_types[types_plot_id]
-
 set.seed(1)
 ig2 %>%
   # shuffle the x axes so the points don't overlap too much
@@ -164,3 +160,10 @@ ig2 %>%
             round(rho_bayes, 2))
   )
 
+ggsave(
+  "figures/colony_net_bioassay_variability.png",
+  bg = "white",
+  scale = 0.9,
+  width = 3,
+  height = 6
+)

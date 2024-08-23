@@ -252,3 +252,63 @@ ggsave(
 # samples, light grey bands give the 95% sampling interval of a beta-binomial
 # distribution, with this mean, 100 samples, and correlation parameter estimate
 # from each dataset independently.
+
+
+# Using this estimate of the dispersion in susceptibility bioassays (and
+# assuming each was sampled from a single location), plot how the statistical
+# power to estimate the population susceptibility depends on the total number of
+# mosquitoes assayed, and the number of unique collections they are collated
+# from
+
+tibble(
+  n = seq(50, 500, by = 10)
+) %>%
+  rowwise() %>%
+  mutate(
+    moe_1 = moe_betabinomial(n, rho = rho_bayes),
+    moe_3 = moe_betabinomial_cluster(n, rho = rho_bayes, clusters = 3),
+    moe_5 = moe_betabinomial_cluster(n, rho = rho_bayes, clusters = 5),
+    moe_10 = moe_betabinomial_cluster(n, rho = rho_bayes, clusters = 10),
+    moe_50 = moe_betabinomial_cluster(n, rho = rho_bayes, clusters = 50),
+    moe_independent = moe_binomial(n)
+  ) %>%
+  pivot_longer(
+    cols = starts_with("moe"),
+    names_to = "clusters",
+    values_to = "moe",
+    names_prefix = "moe_"
+  ) %>%
+  mutate(
+    clusters = factor(
+      clusters,
+      levels = c(na.omit(unique(as.numeric(clusters))), "independent")
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = n,
+      y = moe,
+      group = clusters,
+      colour = clusters
+    )
+  ) +
+  geom_line(
+    linewidth = 1
+  ) +
+  scale_y_continuous(labels = scales::percent,
+                     limits = c(0, 0.5)) +
+  theme_minimal() +
+  scale_x_continuous(breaks = c(50, 100, 250, 500)) +
+  ylab("Margin of error") +
+  xlab("Number of mosquitoes") +
+  ggtitle(
+    "Statistical power of cluster-stratified susceptibility bioassays",
+  )
+
+ggsave("figures/cluster_sampling_power.png",
+       bg = "white",
+       width = 6,
+       height = 5)
+
+
+
