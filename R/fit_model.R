@@ -303,6 +303,12 @@ system.time(
   draws <- mcmc(m,
                 chains = n_chains)
 )
+
+# new data:
+# user    system   elapsed 
+# 15255.782  5870.483  3916.685 
+
+# old data:
 # user   system  elapsed
 # 7937.520 3529.599 2452.889
 
