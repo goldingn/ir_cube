@@ -594,6 +594,48 @@ ir_everything <- ir_everything %>%
   species_complex)
   )
 
+# fix insecticide type and country names
+ir_everything <- ir_everything %>%
+  mutate(
+    insecticide_type = case_when(
+      insecticide_type == "deltamethrin" ~ "Deltamethrin",
+      insecticide_type == "permethrin" ~ "Permethrin",
+      insecticide_type == "ddt" ~ "DDT",
+      insecticide_type == "bendiocarb" ~ "Bendiocarb",
+      insecticide_type == "lambdacyhalothrin" ~ "Lambda-cyhalothrin",
+      insecticide_type == "pirimiphos-methyl" ~ "Pirimiphos-methyl",
+      insecticide_type == "fenitrothion" ~ "Fenitrothion",
+      insecticide_type == "alphacypermethrin" ~ "Alpha-cypermethrin",
+      insecticide_type == "malathion" ~ "Malathion",
+      .default = NA
+    ),
+    insecticide_class = case_when(
+      insecticide_class == "pyrethroid" ~ "Pyrethroids",
+      insecticide_class == "organophosphate" ~ "Organophosphates",
+      insecticide_class == "organochlorine" ~ "Organochlorines",
+      insecticide_class == "carbamate" ~ "Carbamates",
+      .default = NA
+    ),
+    # capitalise countries again, then fix up errors
+    country_name = str_to_title(country_name),
+    country_name = str_replace(country_name, "D’ivoire", "d’Ivoire"),
+    country_name = str_replace(country_name, " And ", " and "),
+    country_name = str_replace(country_name, " Of ", " of "),
+    country_name = str_replace(country_name, " The ", " the "),
+    # shorten some country names for plotting
+    country_name = case_when(
+      country_name == "United Republic of Tanzania" ~ "Tanzania",
+      country_name == "Democratic Republic of the Congo" ~ "DR Congo",
+      country_name == "Central African Republic" ~ "CAR",
+      country_name == "Sao Tome and Principe" ~ "Sao Tome & Principe",
+    .default = country_name
+    )
+  ) %>%
+  # drop any missing the insecticide type
+  filter(
+    !is.na(insecticide_type)
+  )
+
 # deduplicate based on unique criteria
 ir_distinct <- ir_everything %>% 
   distinct(year_start,
@@ -660,32 +702,7 @@ table(ir_distinct_gambiae$source) %>% sort(decreasing = TRUE)
 # # save the diagnostic interactive map
 # mapshot(mapview(ir_distinct_sf,zcol = "insecticide_type"),url = "distinct_pts.html")
 
-# fix the insecticide names and save these out as an RDS
-ir_distinct_gambiae <- ir_distinct_gambiae %>%
-  mutate(
-    insecticide_type = case_when(
-      insecticide_type == "deltamethrin" ~ "Deltamethrin",
-      insecticide_type == "permethrin" ~ "Permethrin",
-      insecticide_type == "ddt" ~ "DDT",
-      insecticide_type == "bendiocarb" ~ "Bendiocarb",
-      insecticide_type == "lambdacyhalothrin" ~ "Lambda-cyhalothrin",
-      insecticide_type == "pirimiphos-methyl" ~ "Pirimiphos-methyl",
-      insecticide_type == "fenitrothion" ~ "Fenitrothion",
-      insecticide_type == "alphacypermethrin" ~ "Alpha-cypermethrin",
-      insecticide_type == "malathion" ~ "Malathion",
-      .default = NA
-    ),
-    insecticide_class = case_when(
-      insecticide_class == "pyrethroid" ~ "Pyrethroids",
-      insecticide_class == "organophosphate" ~ "Organophosphates",
-      insecticide_class == "organochlorine" ~ "Organochlorines",
-      insecticide_class == "carbamate" ~ "Carbamates",
-      .default = NA
-    )
-  ) %>%
-  filter(
-    !is.na(insecticide_type)
-  )
-  
+# save these out as an RDS
 saveRDS(ir_distinct_gambiae,
         file = "data/clean/all_gambiae_complex_data.RDS")
+

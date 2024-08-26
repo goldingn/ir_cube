@@ -16,7 +16,7 @@ covs_flat <- rast("data/clean/flat_covariates.tif")
 
 # summarise the covariate effect sizes (at insecticide class level)
 effect_sizes <- summary(calculate(exp(beta_class[, 1]), values = draws))$statistics[, c("Mean", "SD")]
-rownames(effect_sizes) <- c("itn_coverage", names(covs_flat))
+rownames(effect_sizes) <- colnames(x_cell_years) #c("itn_coverage", names(covs_flat))
 round(effect_sizes, 2)
 
 # get RMSE and MAE for observed data and posterior mean within-sample predictions
@@ -53,6 +53,7 @@ plot(dharma)
 par(mfrow = n2mfrow(length(types)))
 for (type in types) {
   hist(dharma$scaledResiduals[df$insecticide_type == type],
+       breaks = 50,
        main = type)
 }
 
@@ -102,7 +103,7 @@ set.seed(1)
 exemplar_cells <- all_extract %>%
   group_by(cell_id) %>%
   summarise(
-    net_coverage = mean(net_coverage),
+    net_coverage = mean(nets),
     .groups = "drop"
   ) %>%
   # then pull the quartile threshold values
@@ -146,7 +147,17 @@ exemplar_cells <- all_extract %>%
 # find a short name for these places
 place_lookup <- exemplar_cells %>%
   mutate(
-    precise_place = str_split_i(address, ",", 1),
+    # drop Arabic name from a reverse-geocoded country name
+    country = case_when(
+      str_detect(country, "Djibouti") ~ "Djibouti",
+      str_detect(country, "Sénégal") ~ "Senegal",
+      .default = country
+    ),
+    precise_place = case_when(
+      str_detect(address, "Dano") ~ "Dano",
+      str_detect(address, "Tadjoura") ~ "Tadjoura",
+      .default = str_split_i(address, ",", 1),
+    ),
     place = paste(precise_place, country, sep = ", ")
   ) %>%
   select(
@@ -223,7 +234,7 @@ itns_plot <- all_extract %>%
   ggplot(
     aes(
       x = year,
-      y = net_coverage,
+      y = nets,
       group = place
     )
   ) +
@@ -266,7 +277,8 @@ locations_plot <- df %>%
   group_by(cell) %>%
   filter(
     n() >= 25,
-    n_distinct(year_start) >= 5
+    n_distinct(year_start) >= 8,
+    n_distinct(insecticide_type) >= 3
   ) %>%
   select(
     country_name,
@@ -293,16 +305,23 @@ locations_plot <- df %>%
     precise_place = str_split_i(address, ",", 1),
     # tidy up some of these where possible
     precise_place = case_when(
+      grepl("Tiassalé", address) ~ "Tiassalé",
+      grepl("Homa Bay", address) ~ "Homa Bay",
+      grepl("Garoua", address) ~ "Garoua",
+      grepl("Bandiagara", address) ~ "Bandiagara",
+      grepl("Yaoundé", address) ~ "Yaoundé",
+      grepl("Pitoa", address) ~ "Pitoa",
+      grepl("Houet", address) ~ "Houet",
+      grepl("Dakar", address) ~ "Dakar",
+      grepl("Kéréwane", address) ~ "Kéréwane, Kolda",
       grepl("Soumousso", address) ~ "Soumousso",
       grepl("Busia", address) ~ "Busia",
-      grepl("Homa Bay", address) ~ "Homa Bay",
-      grepl("Pitoa", address) ~ "Pitoa",
-      grepl("Garoua", address) ~ "Garoua",
       .default = precise_place
     ),
     place = paste(precise_place, country_name, sep = ", ")
   ) %>%
   select(
+    address,
     place,
     latitude,
     longitude,
@@ -489,9 +508,9 @@ preds_plot %>%
 ggsave("figures/fit_subset.png",
        bg = "white",
        scale = 0.8,
-       width = 16,
+       width = 18,
        height = 7)
 
 # these are the only sites with at least 25 pyrethroid bioassay datapoints,
-# spanning at least 5 years
+# spanning at least 8 years, and with data for all three major pyrethroids
 
