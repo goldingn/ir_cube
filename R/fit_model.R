@@ -20,35 +20,23 @@ pop_cube <- rast("data/clean/pop_scaled_cube.tif")
 covs_flat <- rast("data/clean/flat_covariates.tif")
 
 # load bioassay data
-ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
+ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 
 # set the start of the timeseries considered
 baseline_year <- 2000
 
-df <- ir_mtm_africa %>%
+df <- ir_africa %>%
+  group_by(insecticide_type) %>%
+  # subset to the most common concentration for each insecticide
   filter(
-    # subset to An. gambiae (s.l./s.s.)
-    species %in% c("An. gambiae s.l.", "An. gambiae s.s."),
-    # subset to WHO tube tests (most of data)
-    test_type == "WHO tube test",
-    # drop the minor classes: pyrroles and neonicotinoids
-    insecticide_class %in% c("Pyrethroids",
-                             "Carbamates",
-                             "Organochlorines",
-                             "Organophosphates"),
-    # drop Dieldrin as it has two concentrations in the dataset, and those with
-    # fewer than 200 observations (manually as I'm being lazy)
-    !(insecticide_type %in% c("Dieldrin",
-                              "Carbosulfan",
-                              "Cyfluthrin",
-                              "Etofenprox",
-                              "Propoxur")),
+   concentration == sample_mode(concentration)
+  ) %>%
+  ungroup() %>%
+  filter(
     # drop any from before when we have data on net coverage
     year_start >= baseline_year
   ) %>%
   mutate(
-    # convert concentrations into numeric values
-    concentration = as.numeric(str_remove(insecticide_conc, "%")),
     # create an index to the simulation year (in 1-indexed integers)
     year_id = year_start - baseline_year + 1,
     # add on cell ids corresponding to these observations,
@@ -329,11 +317,11 @@ save.image(file = "temporary/fitted_model.RData")
 # restarts and memory leaks?)
 
 # things to do next:
-# - extra covariates: time-varying population; IRS coverage;
-#    (interactions with malaria pre-control baseline & DVS composition)
 # - mask plotted outputs by DVS extent mask
 # - add in updated discriminating bioassay data from August and rerun model
 # - implement dose-response model and add in intensity bioassay data
+# - consider possibility (identifiability) of complete but imperfect resistance
+# (trait fixation, not leading to 100% survival in the test)
 # - output validation stratified by species
 # - visualise and code up functions for validation method
 # - run predictions across multiple scenario cubes
@@ -344,13 +332,8 @@ save.image(file = "temporary/fitted_model.RData")
 #    bioassay data plot. Also plot weighted LLIN usage at these locations, for
 #    context.
 # - maybe use a very sparse hierarchical GP to model initial susceptibility
-# - make plots demonstrating the inherent variability of bioassay data
 # - maybe add a resistance cost parameter
 #    (positive, as fitness = 1 + selection - cost)
 # - set up code for posterior predictive checking
 # - set up code for out of sample (future timesteps, spatial blocks) evaluation
 #    of model fit.
-# - add in more discriminating bioassay data
-# - add in intensity bioassay data using LD50 model, including possibility of
-#    complete but imperfect resistance (trait fixation, not leading to 100%
-#    survival in the test)

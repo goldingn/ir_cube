@@ -8,6 +8,18 @@ mask <- rast("data/clean/raster_mask.tif")
 
 ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
 
+types <- unique(ir_africa$insecticide_type)
+classes <- unique(ir_africa$insecticide_class)
+
+ir_africa$class_id <- match(ir_africa$insecticide_class, classes)
+ir_africa$type_id <- match(ir_africa$insecticide_type, types)
+
+# index to the classes for each type
+classes_index <- ir_africa %>%
+  distinct(type_id, class_id) %>%
+  arrange(type_id) %>%
+  pull(class_id)
+
 insecticides_plot <- tibble(
   insecticide = types,
   class = classes[classes_index]

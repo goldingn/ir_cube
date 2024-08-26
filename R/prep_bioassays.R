@@ -610,39 +610,39 @@ ir_distinct <- ir_everything %>%
            mortality_round = round(mortality_adjusted, digits = 0),
            .keep_all = TRUE) 
 
-# map distinct records for checking if any remaining duplicates
-library(mapview)
-library(sf)
-jitter_coord <- function(x) jitter(x,factor = 0.1)
+# # map distinct records for checking if any remaining duplicates
+# library(mapview)
+# library(sf)
+# jitter_coord <- function(x) jitter(x,factor = 0.1)
+# 
+# ir_distinct_sf <- st_as_sf(ir_distinct %>% 
+#                              mutate(
+#                                across(
+#                                  c("longitude","latitude"),
+#                                  jitter_coord
+#                                  )
+#                              ),
+#                            coords = c("longitude","latitude"),
+#                            crs = st_crs(4326))
+# 
+# mapview(ir_distinct_sf,
+#         zcol = "insecticide_type")
 
-ir_distinct_sf <- st_as_sf(ir_distinct %>% 
-                             mutate(
-                               across(
-                                 c("longitude","latitude"),
-                                 jitter_coord
-                                 )
-                             ),
-                           coords = c("longitude","latitude"),
-                           crs = st_crs(4326))
-
-mapview(ir_distinct_sf,
-        zcol = "insecticide_type")
-
-# group by nearby matching points and check if nearby points might be duplicates  
-ir_distinct %>%
-  group_by(year_start, 
-           died, 
-           insecticide_type,
-           mortality_round,
-           species_complex,
-           country_name,
-           concentration,
-           round(lat_round,1),
-           round(lon_round,1),
-           mosquito_number) %>% 
-  count() %>%
-  arrange(desc(n)) %>%
-  View()
+# # group by nearby matching points and check if nearby points might be duplicates  
+# ir_distinct %>%
+#   group_by(year_start, 
+#            died, 
+#            insecticide_type,
+#            mortality_round,
+#            species_complex,
+#            country_name,
+#            concentration,
+#            round(lat_round,1),
+#            round(lon_round,1),
+#            mosquito_number) %>% 
+#   count() %>%
+#   arrange(desc(n)) %>%
+#   View()
 
 
 # most of the remaining close by points with identical responses have 100% mortality, they are
@@ -673,6 +673,13 @@ ir_distinct_gambiae <- ir_distinct_gambiae %>%
       insecticide_type == "fenitrothion" ~ "Fenitrothion",
       insecticide_type == "alphacypermethrin" ~ "Alpha-cypermethrin",
       insecticide_type == "malathion" ~ "Malathion",
+      .default = NA
+    ),
+    insecticide_class = case_when(
+      insecticide_class == "pyrethroid" ~ "Pyrethroids",
+      insecticide_class == "organophosphate" ~ "Organophosphates",
+      insecticide_class == "organochlorine" ~ "Organochlorines",
+      insecticide_class == "carbamate" ~ "Carbamates",
       .default = NA
     )
   ) %>%

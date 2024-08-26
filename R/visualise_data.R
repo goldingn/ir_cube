@@ -5,12 +5,12 @@ source("R/packages.R")
 source("R/functions.R")
 
 # load data
-ir_mtm_africa <- readRDS(file = "data/clean/mtm_data.RDS")
+ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 
 # visualise resistance data over time
 
-# only plot An gambiae (s.l. and s.s.) and pyrethroids
-ir_mtm_africa %>%
+# only plot pyrethroids
+ir_africa %>%
   # fix up some names for plotting
   rename(
     year = year_start,
@@ -19,7 +19,6 @@ ir_mtm_africa %>%
     insecticide = insecticide_type
   ) %>%
   filter(
-    species %in% c("An. gambiae s.l.", "An. gambiae s.s."),
     insecticide_class %in% c("Pyrethroids")
   ) %>%
   # for each insecticide, filter to only the most common concentration
@@ -27,7 +26,7 @@ ir_mtm_africa %>%
     insecticide
   ) %>%
   filter(
-    insecticide_conc == sample_mode(insecticide_conc)
+    concentration == sample_mode(concentration)
   ) %>%
   group_by(
     country

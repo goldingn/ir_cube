@@ -29,24 +29,10 @@ pyrethroids <- tibble(
   filter(class == "Pyrethroids") %>%
   pull(insecticide)
 
-# subset to An. gambiae s.l. and pyrethroids
-df_pyrethroids <- ir_mtm_africa %>%
+# subset to pyrethroids
+df_pyrethroids <- df %>%
   filter(
-    # subset to An. gambiae (s.l./s.s.)
-    species %in% c("An. gambiae s.l.",
-                   "An. gambiae s.s.",
-                   "An. coluzzii",
-                   "An. arabiensis"),
-    # subset to WHO tube tests (most of data)
-    test_type == "WHO tube test",
-    # and only pyrethroids
     insecticide_class == "Pyrethroids",
-    # drop any from before when we have data on net coverage
-    year_start >= baseline_year
-  ) %>%
-  mutate(
-    # convert concentrations into numeric values
-    concentration = as.numeric(str_remove(insecticide_conc, "%")),
   ) %>%
   rename(
     year = year_start,
@@ -744,9 +730,4 @@ ggsave("figures/all_africa_net_use_pred_data.png",
        scale = 0.8,
        width = 12,
        height = 4)
-
-
-# TO DO:
-# model DDT better by including temporal information on use of different
-# insecticides for IRS by country
 
