@@ -404,8 +404,7 @@ net_coverage_cell_lookup <- df %>%
     net_coverage = terra::extract(nets_flat, pull(., cell)),
     net_coverage_class = case_when(
       net_coverage < 0.3 ~ "A) Low use",
-      net_coverage >= 0.4 ~ "C) High use",
-      .default = "B) Medium use")
+      .default = "B) High use")
   ) %>%
   select(
     cell,
@@ -534,35 +533,12 @@ weights_array_low <- array(rep(c(weights_mat_low), n_times),
 # multiply through and sum to get average susceptibilities
 weighted_susc_array_low <- dynamic_cells$all_states[low_idx, , ] * weights_array_low
 overall_susc_low <- apply(weighted_susc_array_low, 2:3, "sum")
-pyrethroid_net_class_susc_low <- as_data(t(pyrethroid_net_class_weights[, 1])) %*% overall_susc_low
-
-
-# now repeat for medium
-med_idx <- net_coverage_cell_lookup %>%
-  filter(
-    net_coverage_class == "B) Medium use"
-  ) %>%
-  pull(cell_id)
-
-sample_size_mat_med <- sample_size_mat[med_idx, ]
-weights_mat_med <- sweep(sample_size_mat_med,
-                         2,
-                         colSums(sample_size_mat_med),
-                         "/")
-
-# expand out into an array, replicating by year
-weights_array_med <- array(rep(c(weights_mat_med), n_times),
-                           dim = c(nrow(weights_mat_med), n_types, n_times))
-
-# multiply through and sum to get average susceptibilities
-weighted_susc_array_med <- dynamic_cells$all_states[med_idx, , ] * weights_array_med
-overall_susc_med <- apply(weighted_susc_array_med, 2:3, "sum")
-pyrethroid_net_class_susc_med <- as_data(t(pyrethroid_net_class_weights[, 2])) %*% overall_susc_med
+pyrethroid_net_class_susc_low <- as_data(t(pyrethroid_net_class_weights[, "A) Low use"])) %*% overall_susc_low
 
 # and repeat for high
 high_idx <- net_coverage_cell_lookup %>%
   filter(
-    net_coverage_class == "C) High use"
+    net_coverage_class == "B) High use"
   ) %>%
   pull(cell_id)
 
@@ -579,40 +555,16 @@ weights_array_high <- array(rep(c(weights_mat_high), n_times),
 # multiply through and sum to get average susceptibilities
 weighted_susc_array_high <- dynamic_cells$all_states[high_idx, , ] * weights_array_high
 overall_susc_high <- apply(weighted_susc_array_high, 2:3, "sum")
-pyrethroid_net_class_susc_high <- as_data(t(pyrethroid_net_class_weights[, 3])) %*% overall_susc_high
+pyrethroid_net_class_susc_high <- as_data(t(pyrethroid_net_class_weights[, "B) High use"])) %*% overall_susc_high
 
 # get posterior samples of these
 sims_net_class <- calculate(pyrethroid_net_class_susc_low,
-                            pyrethroid_net_class_susc_med,
                             pyrethroid_net_class_susc_high,
                             values = draws,
                             nsim = 1e3)
 
 
 pop_mort_sry_low <- sims_net_class$pyrethroid_net_class_susc_low[, 1, ] %>%
-  t() %>%
-  as_tibble() %>%
-  mutate(
-    time_id = row_number(),
-    .before = everything()
-  ) %>%
-  pivot_longer(
-    cols = starts_with("V"),
-    names_prefix = "V",
-    names_to = "sim",
-    values_to = "susceptibility"
-  ) %>%
-  group_by(time_id) %>%
-  summarise(
-    susc_pop_mean = mean(susceptibility),
-    susc_pop_lower = quantile(susceptibility, 0.025),
-    susc_pop_upper = quantile(susceptibility, 0.975),
-  ) %>%
-  mutate(
-    year = baseline_year + time_id - 1
-  )
-
-pop_mort_sry_med <- sims_net_class$pyrethroid_net_class_susc_med[, 1, ] %>%
   t() %>%
   as_tibble() %>%
   mutate(
@@ -660,8 +612,7 @@ pop_mort_sry_high <- sims_net_class$pyrethroid_net_class_susc_high[, 1, ] %>%
 
 pop_mort_sry_net_class <- bind_rows(
   `A) Low use` = pop_mort_sry_low,
-  `B) Medium use` = pop_mort_sry_med,
-  `C) High use` = pop_mort_sry_high,
+  `B) High use` = pop_mort_sry_high,
   .id = "net_coverage_class"
 )
 
@@ -728,6 +679,6 @@ net_class_fig
 ggsave("figures/all_africa_net_use_pred_data.png",
        bg = "white",
        scale = 0.8,
-       width = 12,
+       width = 8,
        height = 4)
 
