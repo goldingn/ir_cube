@@ -4,26 +4,61 @@
 source("R/packages.R")
 source("R/functions.R")
 
+# set the start of the timeseries considered in modelling (the start of
+# non-negligible levels of resistance) - assume it's before the mass-rollout of
+# nets
+baseline_year <- 1995
+
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
-# load time-varying net coverage data
+# load time-varying rasters
+
+# net use
 nets_cube <- rast("data/clean/net_use_cube.tif")
 
-# load time-varying IRS coverage data
+# IRS coverage
 irs_cube <- rast("data/clean/irs_coverage_scaled_cube.tif")
 
-# load time-varying population data
+# human population
 pop_cube <- rast("data/clean/pop_scaled_cube.tif")
 
-# load the other layers
-covs_flat <- rast("data/clean/flat_covariates.tif")
+# for each one pad back to the baseline year, repeating the first
+nets_cube <- pre_pad_cube(nets_cube, baseline_year)
+irs_cube <- pre_pad_cube(irs_cube, baseline_year)
+pop_cube <- pre_pad_cube(pop_cube, baseline_year)
+
+# load the non-temporal crop covariate layers
+
+# collated total yields of crop types
+crops_group <- rast("data/clean/crop_group_scaled.tif")
+
+# yields of individual crops
+crops_all <- rast("data/clean/crop_scaled.tif")
+
+# Pull out crop types implicated in risk for IR. refer to this review, crop type
+# section:
+# https://malariajournal.biomedcentral.com/articles/10.1186/s12936-016-1162-4
+crops_implicated <- c(
+  # "increased resistance at cotton growing sites, a finding subsequently
+  # supported in eight other papers from five different African countries", "the
+  # cash crop with the highest intensity insecticide use of any crop"
+  crops_all$cotton,
+  # "In eight studies, vegetable cultivation strongly related to
+  # insecticide-resistant field collections", "Vegetable production requires
+  # significantly higher quantities and/or more frequent application of
+  # pesticides than other food crops"
+  crops_all$vegetables,
+  # "Seven of the studies reviewed here examined the insecticide susceptibility
+  # of vector populations at rice-growing sites, and found low-to-moderate
+  # resistance levels in these mosquito populations."
+  crops_all$rice)
+
+# combine all temporally-static covariates
+covs_flat <- c(crops_group, crops_implicated)
 
 # load bioassay data
 ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
-
-# set the start of the timeseries considered
-baseline_year <- 2000
 
 df <- ir_africa %>%
   group_by(insecticide_type) %>%
@@ -33,7 +68,7 @@ df <- ir_africa %>%
   ) %>%
   ungroup() %>%
   filter(
-    # drop any from before when we have data on net coverage
+    # drop any from before the baseline
     year_start >= baseline_year
   ) %>%
   mutate(
@@ -198,8 +233,11 @@ dim(fitness_array) <- c(n_times, n_unique_cells, n_types, 1)
 # identical(sims$array_subset[1, , 1, 1, 1],
 #           sims$matrix_subset[1, , 1])
 
-# model fractions susceptible prior to 2000
-init_fraction_susceptible <- normal(1, 0.005,
+# model fractions susceptible across the continent prior to baseline. More flex
+# for DDT and less for others
+init_frac_sd <- ifelse(types == "DDT", 0.01, 0.001)
+
+init_fraction_susceptible <- normal(1, init_frac_sd,
                                     dim = n_types,
                                     truncation = c(0, 1))
 
@@ -304,11 +342,15 @@ system.time(
                 chains = n_chains)
 )
 
-# new data:
+# new data, from 1995
+# user    system   elapsed 
+# 22645.760  9301.635  6053.067 
+
+# new data, from 2000
 # user    system   elapsed 
 # 15255.782  5870.483  3916.685 
 
-# old data:
+# old data, from 2000
 # user   system  elapsed
 # 7937.520 3529.599 2452.889
 
@@ -324,7 +366,6 @@ save.image(file = "temporary/fitted_model.RData")
 
 # things to do next:
 # - mask plotted outputs by DVS extent mask
-# - add in updated discriminating bioassay data from August and rerun model
 # - implement dose-response model and add in intensity bioassay data
 # - consider possibility (identifiability) of complete but imperfect resistance
 # (trait fixation, not leading to 100% survival in the test)

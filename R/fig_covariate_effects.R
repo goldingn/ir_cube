@@ -70,12 +70,11 @@ stats <- mean_tibble %>%
   ) %>%
   # rename some things for plotting
   mutate(
-    covariate = str_replace(covariate, "crops_", "Crop yield: "),
     covariate = case_when(
       covariate == "pop" ~ "Population density",
       covariate == "nets" ~ "LLIN use",
       covariate == "irs" ~ "IRS coverage",
-      .default = covariate
+      .default = str_to_sentence(covariate)
     )
   )
 
@@ -92,7 +91,39 @@ stats <- stats %>%
                        levels = covariate_order_scaled)
   )
 
-effect_grid <- stats %>%
+# stats for combined effects
+combined_stats <- stats %>%
+  mutate(
+    covariate_type = case_when(
+      covariate %in% c("LLIN use", "IRS coverage") ~ "Vector control",
+      covariate == "Population density" ~ "Population density",
+      .default = "Agriculture"
+    ),
+    covariate_type = factor(covariate_type,
+                            levels = c("Population density",
+                                       "Agriculture",
+                                       "Vector control")),
+    .before = everything()
+  ) %>%
+  group_by(covariate_type, insecticide) %>%
+  summarise(
+    mean_scaled = sum(mean_scaled),
+    .groups = "drop"
+  )
+
+
+overall_stats <- stats %>%
+  group_by(insecticide) %>%
+  summarise(
+    mean_scaled = sum(mean_scaled),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    covariate = "Overall"
+  )
+
+# plot the overall selection pressure
+overall_stats_effect_grid <- overall_stats %>%
   rename(
     `Average\nselection\npressure` = mean_scaled
   ) %>%
@@ -101,7 +132,73 @@ effect_grid <- stats %>%
       x = insecticide,
       y = covariate,
       fill = `Average\nselection\npressure`,
-      # alpha = precision_scaled
+    )
+  ) +
+  geom_tile(
+    colour = grey(0.5)
+  ) +
+  scale_fill_gradient(
+    low = "white",
+    high = "red"
+  ) +
+  scale_x_discrete(
+    position = "top"
+  ) +
+  scale_alpha_continuous(
+    range = c(0.2, 1)
+  ) +
+  theme_minimal() +
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 0)
+  )
+
+# combine the different types of covariates
+combined_effect_grid <- combined_stats %>%
+  rename(
+    `Average\nselection\npressure` = mean_scaled
+  ) %>%
+  ggplot(
+    aes(
+      x = insecticide,
+      y = covariate_type,
+      fill = `Average\nselection\npressure`,
+    )
+  ) +
+  geom_tile(
+    colour = grey(0.5)
+  ) +
+  scale_fill_gradient(
+    low = "white",
+    high = "red"
+  ) +
+  scale_x_discrete(
+    position = "top"
+  ) +
+  scale_alpha_continuous(
+    range = c(0.2, 1)
+  ) +
+  theme_minimal() +
+  xlab("") +
+  ylab("") +
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 0)
+  )
+
+effect_grid <- stats %>%
+  rename(
+    `Average\nselection\npressure` = mean_scaled
+  ) %>%
+  ggplot(
+    aes(
+      x = insecticide,
+      y = covariate,
+      fill = `Average\nselection\npressure`
     )
   ) +
   geom_tile(
@@ -142,8 +239,7 @@ regression_grid <- stats %>%
     aes(
       x = insecticide,
       y = covariate,
-      fill = `Effect\nsize`,
-      # alpha = precision_scaled
+      fill = `Effect\nsize`
     )
   ) +
   geom_tile(
@@ -168,7 +264,31 @@ regression_grid <- stats %>%
       hjust = 0)
   )
 
-effect_grid / regression_grid
+# plot the combined and specific selection pressures
+
+# suppress some plot elements in each
+max_pressure <- max(c(overall_stats$mean_scaled,
+                      combined_stats$mean_scaled,
+                      stats$mean_scaled))
+fill_scale <- scale_fill_gradient(low = "white",
+                                  high = "red",
+                                  limits = c(0, max_pressure)) 
+(overall_stats_effect_grid +
+    fill_scale +
+    theme(legend.position = "none",
+          plot.title.position = "plot")) +
+(combined_effect_grid +
+    fill_scale +
+   theme(axis.text.x = element_blank(),
+         legend.position = "none",
+         plot.title.position = "plot")) +  
+  (effect_grid +
+     fill_scale +
+     theme(axis.text.x = element_blank(),
+           plot.title.position = "plot")) +
+  plot_layout(nrow = 3, heights = c(1, 3, 9)) +
+  plot_annotation(tag_levels = 'A') &
+  theme(plot.tag = element_text(size = 12))
 
 ggsave(
   "figures/covariate_loadings.png",
@@ -176,4 +296,15 @@ ggsave(
   scale = 0.8,
   width = 8,
   height = 8
+)  
+
+
+regression_grid
+
+ggsave(
+  "figures/covariate_loadings_effect_size.png",
+  bg = "white",
+  scale = 0.8,
+  width = 8,
+  height = 6
 )  

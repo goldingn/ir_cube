@@ -86,8 +86,6 @@ irs_coverage <- mask(irs_coverage, mask)
 # set their names
 names(irs_coverage) <- paste0("irs_", irs_years)
 
-# clip to the analysis years (not before 2000)
-irs_coverage <- irs_coverage[[paste0("irs_", 2000:2022)]]
 terra::writeRaster(irs_coverage,
                    "data/clean/irs_coverage_cube.tif",
                    overwrite = TRUE)
@@ -208,35 +206,8 @@ terra::writeRaster(trans_pop_future,
 # load crops, both as-is and standardised to 0-1
 crops <- rast("data/raw/ir_pred_rasters/crop_2010.tif")
 
-# # subset to main staple crops (more likely to be used in subsistence farming and
-# # therefore influence rural malaria vectors): cereals, roots, and bananas/plantains. Exclude 'other' categories, and any with comparative low coverage
-# crop_type_staple <- c(
-#   # cereals
-#   # "wheat",  # too sparse 
-#   "rice",
-#   "maize",
-#   # "barley",  # too sparse 
-#   "pearl millet",
-#   # "small millet",  # too sparse 
-#   "sorghum",
-#   "potato", # roots
-#   "sweet potato",
-#   "yams",
-#   "cassava",
-#   "banana",
-#   "plantain"
-# )
-# 
-# # subset to staples
-# crop_codes_staples <- crop_info %>%
-#   filter(
-#     crop %in% crop_type_staple
-#   ) %>%
-#   pull(code)
-# 
-# crops_staples <- crops[[crop_codes_staples]]
-# crops_std_staples <- crops_std[[crop_codes_staples]]
 
+# create layers for total yield of crop groups
 cereals <- c("wheat", "rice", "maize", "barley", "pearl millet", "small millet",
              "sorghum", "other cereals")
 
@@ -259,19 +230,19 @@ crop_info <- geodata::spamCrops() %>%
   mutate(
     code = toupper(code),
     type = case_when(
-      crop %in% cereals ~ "cereal",
-      crop %in% roots ~ "root",
-      crop %in% pulses ~ "pulse",
-      crop %in% oilcrops ~ "oil crop",
-      crop %in% fibrecrops ~ "fibre crop",
-      crop %in% othercrops ~ "other"
+      crop %in% cereals ~ "cereal crops",
+      crop %in% roots ~ "root crops",
+      crop %in% pulses ~ "pulse crops",
+      crop %in% oilcrops ~ "oil crops",
+      crop %in% fibrecrops ~ "fibre crops",
+      crop %in% othercrops ~ "other crops"
     )
   )
 
 # compute and standardise the yield of all crops
 crops_group <- app(crops, sum)
 crops_group <- crops_group / global(crops_group, "max", na.rm = TRUE)[1, 1]
-names(crops_group) <- "all"
+names(crops_group) <- "all crops"
 
 # do the same for groups of these and append them
 for (crop_type in unique(crop_info$type)) {
@@ -289,17 +260,23 @@ for (crop_type in unique(crop_info$type)) {
   
 }
 
-names(crops_group) <- paste0("crops_", names(crops_group))
-
-# # drop 'all' before saving, since it's not useful as a covariate after all
-# crops_group <- crops_group[[-1]]
-
-# combine these into a multiband geotiff of flat (not temporally static)
-# covariates
-
-flat_covs <- c(crops_group)
-
 # save these out
-terra::writeRaster(flat_covs,
-                   "data/clean/flat_covariates.tif",
+terra::writeRaster(crops_group,
+                   "data/clean/crop_group_scaled.tif",
+                   overwrite = TRUE)
+
+
+# now rename the individual crops, scale, and save layer for all crops
+full_names <- names(crops) %>%
+  tibble(code = .) %>%
+  left_join(crop_info,
+            by = "code") %>% 
+  pull(crop)
+
+names(crops) <- full_names
+
+crops_scaled <- crops / global(crops, "max", na.rm = TRUE)$max
+
+terra::writeRaster(crops_scaled,
+                   "data/clean/crop_scaled.tif",
                    overwrite = TRUE)

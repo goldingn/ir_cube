@@ -4,7 +4,6 @@
 source("R/packages.R")
 source("R/functions.R")
 
-
 # plot time-varying covariates
 itn <- rast("data/clean/nets_per_capita_cube.tif")
 itn_plot_years <- c(2000, 2005, 2010, 2015, 2020)

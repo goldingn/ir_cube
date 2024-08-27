@@ -3,19 +3,19 @@
 source("R/packages.R")
 source("R/functions.R")
 
-# load the mask
-mask <- rast("data/clean/raster_mask.tif")
+# load the fitted model objects here, to set up predictions
+load(file = "temporary/fitted_model.RData")
 
-ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
-
-types <- unique(ir_africa$insecticide_type)
-classes <- unique(ir_africa$insecticide_class)
-
-ir_africa$class_id <- match(ir_africa$insecticide_class, classes)
-ir_africa$type_id <- match(ir_africa$insecticide_type, types)
+# ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
+# 
+# types <- unique(ir_africa$insecticide_type)
+# classes <- unique(ir_africa$insecticide_class)
+# 
+# ir_africa$class_id <- match(ir_africa$insecticide_class, classes)
+# ir_africa$type_id <- match(ir_africa$insecticide_type, types)
 
 # index to the classes for each type
-classes_index <- ir_africa %>%
+classes_index <- df %>%
   distinct(type_id, class_id) %>%
   arrange(type_id) %>%
   pull(class_id)
@@ -31,7 +31,7 @@ colour_types <- scales::hue_pal(direction = -1)(9)
 types_plot_id <- match(insecticides_plot, types)
 colours_plot <- colour_types[types_plot_id]
 
-df_plot <- ir_africa %>%
+df_plot <- df %>%
   rename(
     year = year_start,
     country = country_name,
@@ -41,7 +41,7 @@ df_plot <- ir_africa %>%
     country, year, insecticide
   ) %>%
   filter(
-    year >= 2000
+    year >= 1995
   ) %>%
   summarise(
     mosquito_number = sum(mosquito_number),
@@ -100,5 +100,3 @@ for (this_insecticide in types) {
          height = 8)
   
 }
-
-

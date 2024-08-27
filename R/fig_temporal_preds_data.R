@@ -163,9 +163,25 @@ pyrethroid_weights <- df %>%
 
 pyrethroid_susc <- as_data(t(pyrethroid_weights)) %*% overall_susc
 
+
+# get weighted average pyrethroid susceptibility for all cells and times
+pyrethroid_weights_array <- array(pyrethroid_weights,
+                                  dim = c(n_types, n_times, n_unique_cells))
+pyrethroid_weights_array <- aperm(pyrethroid_weights_array, c(3, 1, 2))
+pyrethroid_all_cells <- apply(pyrethroid_weights_array * dynamic_cells$all_states, c(1, 3), FUN = "sum")
+
+# vector version of all cells and times for the weighted pyrethroid estimate
+indices_all_pyrethroid <- expand_grid(
+  cell_id = seq_len(n_unique_cells),
+  time_id = seq_len(n_times)
+)
+
+pyrethroid_all_cells_vec <- pyrethroid_all_cells[as.matrix(indices_all_pyrethroid)]
+
 # get posterior samples of these
 sims <- calculate(overall_pop_mort_vec,
                   pyrethroid_susc,
+                  pyrethroid_all_cells_vec,
                   values = draws,
                   nsim = 1e3)
 
@@ -193,6 +209,29 @@ pop_mort_sry_pyrethroid <- sims$pyrethroid_susc[,  1, ] %>%
     year = baseline_year + time_id - 1
   )
 
+# posterior means for all cells
+pop_mort_sry_pyrethroid_all <- sims$pyrethroid_all_cells_vec[,  , 1] %>%
+  t() %>%
+  as_tibble() %>%
+  bind_cols(
+    indices_all_pyrethroid,
+    .
+  ) %>%
+  pivot_longer(
+    cols = starts_with("V"),
+    names_prefix = "V",
+    names_to = "sim",
+    values_to = "susceptibility"
+  ) %>%
+  group_by(cell_id, time_id) %>%
+  summarise(
+    susc_pop_mean = mean(susceptibility),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    year = baseline_year + time_id - 1
+  )
+
 type_years <- indices %>%
   mutate(
     year = baseline_year + time_id - 1,
@@ -206,9 +245,6 @@ insecticides_plot <- tibble(
   class = classes[classes_index]
 ) %>%
   arrange(desc(class), insecticide) %>%
-  # filter(
-  #   !(insecticide %in% c("DDT")) 
-  # ) %>%
   pull(insecticide)
 
 insecticide_type_labels <- sprintf("%s) %s%s",
@@ -289,6 +325,16 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
       x = year
     )
   ) +
+  geom_line(
+    aes(
+      y = susc_pop_mean,
+      group = cell_id
+    ),
+    data = pop_mort_sry_pyrethroid_all,
+    linewidth = 0.1,
+    colour = grey(0.8),
+    alpha = 0.25
+  ) +
   geom_ribbon(
     aes(
       ymax = susc_pop_upper,
@@ -318,7 +364,7 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
   ) +
   xlab("") +
   ylab("Susceptibility") +
-  coord_cartesian(xlim = c(1998, 2022),
+  coord_cartesian(xlim = c(1995, 2022),
                   ylim = c(0, 1)) +
   theme_minimal() +
   theme(
@@ -370,7 +416,7 @@ all_insecticides_fig <- pop_mort_sry %>%
   xlab("") +
   # suppress ylab, as it is on the other panel
   ylab("") +
-  coord_cartesian(xlim = c(1998, 2022)) +
+  coord_cartesian(xlim = c(1995, 2022)) +
   theme_minimal() +
   theme(
     strip.text.x = element_text(hjust = 0)
@@ -681,4 +727,3 @@ ggsave("figures/all_africa_net_use_pred_data.png",
        scale = 0.8,
        width = 8,
        height = 4)
-

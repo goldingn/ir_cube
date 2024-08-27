@@ -274,3 +274,35 @@ moe_betabinomial_cluster <- function(n = 100, p = 0.5, rho = 0.1, alpha = 0.05,
   z * sd_prop
   
 }
+
+# given a SpatRaster representing a space-time cube, pad with additional years
+# back to an earlier baseline, repeating the earliest value in the cube. cube
+# must have contiguous years, each layer correctly named using the naming
+# format: name_year, e.g.: irs_2001 or nets_2010. This will return a SpatRaster
+# with earlier year years added, using the same naming convention, repeating the
+# earliest year in the SpatRaster
+pre_pad_cube <- function(cube, baseline_year = 1995) {
+  # work out the naming system and first year
+  first_layer_name <- names(cube)[1]
+  earliest_year <- str_sub(first_layer_name, start = -4L)
+  prefix <- str_remove(first_layer_name, earliest_year)
+  n_years_pad <- as.numeric(earliest_year) - baseline_year
+  
+  # check the baseline year
+  if (!(n_years_pad > 0)) {
+    stop("baseline_year must be earlier than the first year in the raster",
+         call. = FALSE)
+  }
+  
+  # make some padding
+  pad_layer <- cube[[1]]
+  padding <- replicate(n_years_pad, pad_layer, simplify = FALSE) %>%
+    do.call(c, .)
+  # name the padding years
+  years_padding <- as.numeric(earliest_year) - rev(seq_len(n_years_pad))
+  names(padding) <- paste0(prefix, years_padding)
+  
+  # prepend and return
+  c(padding, cube)
+  
+}
