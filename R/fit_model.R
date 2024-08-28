@@ -241,26 +241,85 @@ init_fraction_susceptible <- normal(1, init_frac_sd,
                                     dim = n_types,
                                     truncation = c(0, 1))
 
-# compute the fraction susceptible over time against each insecticide via
-# haploid trait evolution (equivalent to diploid evolution with heterozygote
-# dominance = 0.5)
+# compute the fraction expressing the susceptible phenotype over time against
+# each insecticide with a single-locus population genetics model. Either with
+# haploid trait evolution (approximately equivalent to diploid evolution with
+# heterozygote dominance = 0.5), or with a diploid model with variable
+# heterozygote dominance
 
 # solve through time to get fraction susceptible over time
+
+# haploid version:
+# state = current proportion with *susceptible* allele
+# iter = iteration number (required by greta.dynamics)
+# w = selection pressure (relative fitness) for resistance phenotype
 haploid_next <- function(state, iter, w) {
-  p <- state
-  q <- 1 - p
-  p / (p + q * w)
+  # fraction susceptible
+  q <- state
+  # fraction resistant
+  p <- 1 - q
+  # number resistant grows relative to resistant by ratio w, re-normalise to get
+  # fraction remaining susceptible
+  q / (q + p * w)
 }
 
-# expand initial conditions out to all cells with data (plus a trailing
-# dimension to match greta.dynamics interface)
+
+# diploid version: state = current frequency of *susceptible* alleles in the
+# population iter = iteration number (required by greta.dynamics) w = selection
+# pressure (relative fitness) for resistant phenotype h = level of heterozygote
+# dominance (0.5 = heterozygotes have intermediate resistance between homozygote
+# susceptible and resistant individuals)
+
+# Ref here for a nice example notation and discussion re. mossies:
+# https://journals.plos.org/plosntds/article?id=10.1371/journal.pntd.0001387
+diploid_next <- function(state, iter, w, h = 0.5) {
+  # frequency of the susceptible allele
+  q <- state
+  # frequency of the resistant allele
+  p <- 1 - q
+  # pre-compute things to save a few FLOPs
+  s <- w - 1
+  pq <- p * q
+  p2 <- p ^ 2
+  
+  # compute the frequency of the resistant allele in the next generation, given
+  # the fractions of the population homozygotic resistant (p^2), homozygotic
+  # susceptible (q^2) and heterozygotic (pq), and their relative fitnesses (hom.
+  # susceptible = 1, hom. resistant = 1+s = w, het. = 1 + hs)
+  
+  # size of population with resistant allele in next gen, relative to previous gen
+  numerator <- p2 * w + pq * (1 + h * s)
+  # size of total population in next gen, relative to previous gen, to normalise
+  denominator <- 1 + s * (p2 + 2 * h * pq)
+  # new proportion with resistant phenotype now
+  new_p <- numerator / denominator
+  # return proportion susceptible
+  new_q <- 1 - new_p
+  new_q
+}
+
+# # model hierarchical heterozygote dominance
+# logit_het_dom_mean <- normal(0, 1)
+# logit_het_dom_sd <- normal(0, 1, truncation = c(0, Inf))
+# logit_het_dom_raw <- normal(0, 1, dim = n_types)
+# logit_het_dom <- logit_het_dom_mean + logit_het_dom_raw * logit_het_dom_sd
+# het_dom <- ilogit(logit_het_dom)
+
+# expand initial conditions and het. dominance parameters out to all cells with
+# data (plus a trailing dimension to match greta.dynamics interface)
 init_array <- sweep(ones(n_unique_cells, n_types),
                     2,
                     init_fraction_susceptible,
                     FUN = "*")
 dim(init_array) <- c(dim(init_array), 1)
 
-# iterate through time to get fraction susceptible for all years at all cells
+# het_dom_array <- sweep(ones(n_unique_cells, n_types),
+#                        2,
+#                        het_dom,
+#                        FUN = "*")
+# dim(het_dom_array) <- c(dim(het_dom_array), 1)
+
+# iterate through time to get fraction without resistant allele for all years at all cells
 # with data
 dynamic_cells <- iterate_dynamic_function(
   transition_function = haploid_next,
@@ -304,7 +363,7 @@ fraction_susceptible_vec <- dynamic_cells$all_states[index]
 # probit_vec <- (df$concentration - LD50_vec) / population_LD50_sd
 # population_mortality_vec <- iprobit(probit_vec)
 
-# for now, map straight from genotype to mortality
+# for now, map straight from phenotype expression to mortality
 population_mortality_vec <- fraction_susceptible_vec
 
 # define observation model
