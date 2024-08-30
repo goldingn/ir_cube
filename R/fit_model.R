@@ -235,7 +235,7 @@ dim(fitness_array) <- c(n_times, n_unique_cells, n_types, 1)
 
 # model fractions susceptible across the continent prior to baseline. More flex
 # for DDT and less for others
-init_frac_sd <- ifelse(types == "DDT", 0.01, 0.001)
+init_frac_sd <- ifelse(types == "DDT", 0.005, 0.001)
 
 init_fraction_susceptible <- normal(1, init_frac_sd,
                                     dim = n_types,
