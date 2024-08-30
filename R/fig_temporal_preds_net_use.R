@@ -270,47 +270,29 @@ pyrethroid_net_class_weights <- df_sub %>%
   select(-type_id) %>%
   as.matrix()
 
-# get average annual total sample size in unique cell, per insecticide
-cell_sample_sizes <- df_sub %>%
-  group_by(cell_id, year, type_id) %>%
+weights_mat <- df_sub %>%
+  group_by(cell_id, type_id) %>%
   # get annual sums 
   summarise(
     mosquito_number = sum(mosquito_number),
     .groups = "drop"
   ) %>%
-  # now collapse to cell and insecticide type (average over years to make it
-  # constant for plotting)
-  group_by(cell_id, type_id) %>%
-  summarise(
-    # this isn't padded, to to get annual mean we need to divide by all years,
-    # not observed years
-    mosquito_number = sum(mosquito_number) / n_times,
-    .groups = "drop"
-  )
-
-# we already have a greta array for susceptibility in all unique cells in the
-# dataset, for all insecticides and all years: dynamic_cells$all_states
-
-# for each year and each insecticide, compute the weighted (by annual average of
-# the total number of mosquitoes at that cell, per insecticide) mean of the
-# susceptibility fractions, and simulate the expected fraction in observed
-# summary stats.
-sample_size_mat <- expand_grid(
-  cell_id = seq_len(n_unique_cells),
-  type_id = seq_len(n_types)
-) %>%
-  left_join(cell_sample_sizes,
-            by = c("cell_id", "type_id")) %>%
-  replace_na(list(mosquito_number = 0)) %>%
-  # make into a matrix and squash names
+  complete(
+    cell_id,
+    type_id,
+    fill = list(mosquito_number = 0)
+  ) %>%
+  group_by(type_id) %>%
+  mutate(weight = mosquito_number / sum(mosquito_number)) %>%
+  select(-mosquito_number) %>%
+  arrange(cell_id, type_id) %>%
   pivot_wider(
     names_from = type_id,
-    values_from = mosquito_number,
-    names_prefix = "type_"
+    values_from = weight
   ) %>%
   select(-cell_id) %>%
   as.matrix() %>%
-  `dimnames<-`(NULL)
+  `colnames<-`(NULL)
 
 # AAARGH, this code is horrible, but best I can do for now on this plane.
 
@@ -325,10 +307,11 @@ low_idx <- net_coverage_cell_lookup %>%
   ) %>%
   pull(cell_id)
 
-sample_size_mat_low <- sample_size_mat[low_idx, ]
-weights_mat_low <- sweep(sample_size_mat_low,
+# subset and renormalise weights
+weights_mat_low <- weights_mat[low_idx, ]
+weights_mat_low <- sweep(weights_mat_low,
                          2,
-                         colSums(sample_size_mat_low),
+                         colSums(weights_mat_low),
                          "/")
 
 # expand out into an array, replicating by year
@@ -351,11 +334,13 @@ high_idx <- net_coverage_cell_lookup %>%
   ) %>%
   pull(cell_id)
 
-sample_size_mat_high <- sample_size_mat[high_idx, ]
-weights_mat_high <- sweep(sample_size_mat_high,
-                          2,
-                          colSums(sample_size_mat_high),
-                          "/")
+
+# subset and renormalise weights
+weights_mat_high <- weights_mat[high_idx, ]
+weights_mat_high <- sweep(weights_mat_high,
+                         2,
+                         colSums(weights_mat_high),
+                         "/")
 
 # expand out into an array, replicating by year
 weights_array_high <- array(rep(c(weights_mat_high), n_times),

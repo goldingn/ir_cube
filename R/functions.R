@@ -316,23 +316,29 @@ country_region_lookup <- function() {
              delim = ";",
              col_select = any_of(c("Country or Area",
                                    "Region Name",
+                                   "Sub-region Name",
                                    "Intermediate Region Name")),
              col_types = "c") %>%
     filter(`Region Name` == "Africa") %>%
     select(-"Region Name") %>%
-    rename(
-      country_name = `Country or Area`,
-      region = `Intermediate Region Name` 
-    ) %>%
-    # standardise some names to our printable versions
     mutate(
+      # combine two levels of regions
+      region = case_when(
+        `Sub-region Name` == "Northern Africa" ~ `Sub-region Name`,
+        `Sub-region Name` == "Sub-Saharan Africa" ~ `Intermediate Region Name`
+      ),
+      # standardise some names to our printable versions
       country_name = case_when(
-        country_name == "United Republic of Tanzania" ~ "Tanzania",
-        country_name == "Democratic Republic of the Congo" ~ "DR Congo",
-        country_name == "Central African Republic" ~ "CAR",
-        country_name == "Sao Tome and Principe" ~ "Sao Tome & Principe",
-        .default = country_name
+        `Country or Area` == "United Republic of Tanzania" ~ "Tanzania",
+        `Country or Area` == "Democratic Republic of the Congo" ~ "DR Congo",
+        `Country or Area` == "Central African Republic" ~ "CAR",
+        `Country or Area` == "Sao Tome and Principe" ~ "Sao Tome & Principe",
+        .default = `Country or Area`
       )
+    ) %>%
+    select(
+      country_name,
+      region
     )
 }
 
