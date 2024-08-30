@@ -1,5 +1,14 @@
-# make figure of model predictions over time for all of Africa overlaid with raw
-# bioassay data, aggregated up at various levels.
+# Make figure of model predictions over time for all of Africa overlaid with
+# point-estimates of susceptibility bioassay data, aggregated up at various
+# levels.
+
+# Compute the point estimates as *weighted average* susceptibilities (weighted
+# sum of number that died over weighted sum of number tested) to represent
+# continent-wide sampling for that insecticide. Replace legend title with
+# 'Effective sample size'
+
+# Repeat the plots, with multiple lines and points for each regions. (Make
+# functions to simplify this?)
 
 # load packages and functions
 source("R/packages.R")
@@ -14,9 +23,6 @@ years_sub <- 2010:2022
 nets_cube_sub <- nets_cube[[paste0("nets_", years_sub)]]
 nets_flat <- app(nets_cube_sub, "mean")
 
-# set the start of the timeseries considered
-baseline_year_data <- 1990
-
 # set colours
 pyrethroid_blue <- "#56B1F7"
 
@@ -29,20 +35,27 @@ pyrethroids <- tibble(
   filter(class == "Pyrethroids") %>%
   pull(insecticide)
 
-# subset to pyrethroids
-df_pyrethroids <- df %>%
-  filter(
-    insecticide_class == "Pyrethroids",
+# add on regions and tidy up column names
+df_sub <- df %>%
+  left_join(
+    country_region_lookup(),
+    by = "country_name"
   ) %>%
   rename(
     year = year_start,
     country = country_name,
     insecticide = insecticide_type
   )
+  
+# subset to pyrethroids, and add on UN geoscheme regions for Africa
+df_pyrethroids <- df_sub %>%
+  filter(
+    insecticide_class == "Pyrethroids",
+  )
 
-# data aggregated over all of the pyrethroids
-df_pyrethroids_africa_plot <- df_pyrethroids %>%
-  group_by(year) %>%
+# data aggregated over all of the pyrethroids and each region
+df_pyrethroids_region_plot <- df_pyrethroids %>%
+  group_by(year, region) %>%
   summarise(
     died = sum(died),
     mosquito_number = sum(mosquito_number),
@@ -59,8 +72,8 @@ df_pyrethroids_africa_plot <- df_pyrethroids %>%
 # locations with any bioassays) for all years with the average sample size
 
 # get average total sample size per year, per insecticide, over all samples
-average_sample_sizes <- df %>%
-  group_by(year_start, type_id) %>%
+average_sample_sizes <- df_sub %>%
+  group_by(year, type_id) %>%
   summarise(
     mosquito_number = sum(mosquito_number),
     .groups = "drop"
@@ -73,8 +86,8 @@ average_sample_sizes <- df %>%
   pull(mosquito_number)
 
 # get average annual total sample size in unique cell, per insecticide
-cell_sample_sizes <- df %>%
-  group_by(cell_id, year_start, type_id) %>%
+cell_sample_sizes <- df_sub %>%
+  group_by(cell_id, year, type_id) %>%
   # get annual sums 
   summarise(
     mosquito_number = sum(mosquito_number),
@@ -144,17 +157,17 @@ overall_pop_mort_vec <- overall_susc_vec
 
 # now compute a weighted sum over the pyrethroids (weights given by the numbers
 # of mosquitoes tested for each pyrethroid, over the whole timeseries)
-pyrethroid_weights <- df %>% 
+pyrethroid_weights <- df_sub %>% 
   group_by(
     type_id,
-    insecticide_type 
+    insecticide 
   ) %>%
   summarise(
     mosquito_number = sum(mosquito_number),
     .groups = "drop"
   ) %>%
   mutate(
-    is_a_pyrethroid = insecticide_type %in% pyrethroids,
+    is_a_pyrethroid = insecticide %in% pyrethroids,
     mosquito_number = mosquito_number * as.numeric(is_a_pyrethroid),
     weight = mosquito_number / sum(mosquito_number)
   ) %>%
@@ -290,33 +303,164 @@ pop_mort_sry <- sims$overall_pop_mort_vec[, , 1] %>%
     by = "insecticide"
   )
 
-df_overall_plot <- df %>%
-  group_by(year_start,
-           insecticide_type) %>%
+# now aggregate data for plotting Africa-wide averages
+df_overall_plot <- df_sub %>%
+  
+  # first, group by cells, insecticides, and years
+  group_by(cell_id,
+           insecticide,
+           year) %>%
   summarise(
     died = sum(died),
     mosquito_number = sum(mosquito_number),
+    bioassays = n(),
+    .groups = "drop"
+  ) %>%
+  
+  # now compute the population fraction for each cell, for each insecticide, in
+  # each year and in the full dataset, to compute weights reducing the annual
+  # variability in the data estimates
+  
+  # for this insecticide, how many mosquitoes were collected in total
+  group_by(insecticide) %>%
+  mutate(
+    total_overall_mosquito_number = sum(mosquito_number)
+  ) %>%
+  
+  # for this insecticide, how many mosquitoes were collected in total in
+  # this cell
+  group_by(insecticide, cell_id) %>%
+  mutate(
+    cell_overall_mosquito_number = sum(mosquito_number)
+  ) %>%
+  
+  # for this insecticide and this year, how many mosquitoes were collected in
+  # total
+  group_by(insecticide, year) %>%
+  mutate(
+    total_year_mosquito_number = sum(mosquito_number)
+  ) %>%
+  
+  # for this insecticide and this year, how many mosquitoes were collected in
+  # this cell
+  group_by(insecticide, year, cell_id) %>%
+  mutate(
+    cell_year_mosquito_number = sum(mosquito_number)
+  ) %>%
+  
+  # compute the cell's fraction of the total population in each year and
+  # overall, and compute a corresponding weight
+  ungroup() %>%
+  mutate(
+    year_fraction = cell_year_mosquito_number / total_year_mosquito_number,
+    overall_fraction = cell_overall_mosquito_number / total_overall_mosquito_number,
+    weight = overall_fraction / year_fraction
+  ) %>%
+  
+  # now compute Africa-wide weighted susceptibilities for each year and insecticide
+  group_by(
+    year,
+    insecticide
+  ) %>%
+  mutate(
+    # components of the relative variance of the weights
+    relvar_component = (weight - mean(weight)) ^ 2 / (mean(weight) ^ 2)
+  ) %>%
+  summarise(
+    bioassays = sum(bioassays),
+    died_weighted = sum(died * weight),
+    mosquito_number_weighted = sum(mosquito_number * weight),
+    # died = sum(died),
+    mosquito_number = sum(mosquito_number),
+    relvar = mean(relvar_component),
     .groups = "drop"
   ) %>%
   mutate(
-    Susceptibility = died / mosquito_number
+    # Susceptibility_raw = died / mosquito_number,
+    Susceptibility = died_weighted / mosquito_number_weighted,
+    # design effect and effective sample size due to weighting
+    design_effect = 1 + relvar,
+    effective_bioassays = bioassays / design_effect,
+    effective_samples = mosquito_number / design_effect,
+    effective_died = Susceptibility * effective_samples,
+    .after = insecticide
   ) %>%
-  rename(
-    year = year_start,
-    insecticide = insecticide_type
-  ) %>%
-  filter(
-    insecticide %in% insecticides_plot
-  ) %>%
+  # add labels for plotting
   left_join(
     insecticides_plot_lookup,
     by = "insecticide"
   )
 
-# make them share a point size legend
-size_limits <- c(min(df_overall_plot$mosquito_number),
-                 max(df_pyrethroids_africa_plot$mosquito_number))
+# now aggregate the pyrethroids, ensuring even weighting across pyrethroid types
+# between years
+df_pyrethroids_plot <- df_overall_plot %>%
+  filter(
+    insecticide %in% pyrethroids
+  ) %>%
 
+  # compute target weights for different pyrethroids over the whole dataset
+  mutate(
+    total_overall_samples = sum(effective_samples)
+  ) %>%
+  
+  group_by(insecticide) %>%
+  mutate(
+    insecticide_overall_samples = sum(effective_samples)
+  ) %>%
+
+  group_by(year) %>%
+  mutate(
+    total_year_samples = sum(effective_samples)
+  ) %>%
+  
+  group_by(insecticide, year) %>%
+  mutate(
+    insecticide_year_samples = sum(effective_samples)
+  ) %>%
+  
+  ungroup() %>%
+  mutate(
+    year_fraction = insecticide_year_samples / total_year_samples,
+    overall_fraction = insecticide_overall_samples / total_overall_samples,
+    weight = overall_fraction / year_fraction
+  ) %>%
+  
+  # collapse down to year
+  group_by(year) %>%
+  
+  mutate(
+    relvar_component = (weight - mean(weight)) ^ 2 / (mean(weight) ^ 2)
+  ) %>%
+  # now compute the year-specific population fraction for this cell in  insecticide
+  summarise(
+    bioassays_weighted = sum(effective_bioassays * weight),
+    died_weighted = sum(effective_died * weight),
+    samples_weighted = sum(effective_samples * weight),
+    died = sum(effective_died),
+    samples = sum(effective_samples),
+    bioassays = sum(effective_bioassays),
+    relvar = mean(relvar_component),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Susceptibility_raw = died / samples,
+    Susceptibility = died_weighted / samples_weighted,
+    # design effect and effective sample size due to weighting
+    design_effect = 1 + relvar,
+    effective_samples = samples / design_effect,
+    effective_bioassays = bioassays / design_effect,
+    .after = year
+  )
+
+# plot(df_pyrethroids_plot$Susceptibility_raw ~ df_pyrethroids_plot$Susceptibility)
+
+# make them share a point size legend
+max(c(df_pyrethroids_plot$effective_bioassays,
+      df_overall_plot$effective_bioassays))
+size_limits <- c(0, 500)
+
+# add lines to prediction ribbon for visibility
+line_size <- 0.5
 
 # plot all-pyrethroid figure
 pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
@@ -325,32 +469,26 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
       x = year
     )
   ) +
-  geom_line(
-    aes(
-      y = susc_pop_mean,
-      group = cell_id
-    ),
-    data = pop_mort_sry_pyrethroid_all,
-    linewidth = 0.1,
-    colour = grey(0.8),
-    alpha = 0.25
-  ) +
   geom_ribbon(
     aes(
       ymax = susc_pop_upper,
       ymin = susc_pop_lower,
     ),
     data = pop_mort_sry_pyrethroid,
-    fill = pyrethroid_blue
+    fill = pyrethroid_blue,
+    colour = pyrethroid_blue,
+    size = line_size,
+    lineend = "round"
   ) +
   geom_point(
     aes(
       y = Susceptibility,
-      size = mosquito_number
+      size = effective_bioassays,
     ),
     shape = 21,
     fill = pyrethroid_blue,
-    data = df_pyrethroids_africa_plot
+    colour = "black",
+    data = df_pyrethroids_plot
   ) +
   guides(
     size = "none"
@@ -358,8 +496,7 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
   facet_wrap(~ "A) All pyrethroids*") +
   scale_y_continuous(
     labels = scales::percent) +
-  scale_size_continuous(
-    labels = scales::number_format(accuracy = 1000, big.mark = ","),
+  scale_size_area(
     limits = size_limits
   ) +
   xlab("") +
@@ -375,42 +512,49 @@ all_insecticides_fig <- pop_mort_sry %>%
   ggplot(
     aes(
       x = year,
-      fill = insecticide_type_label
+      fill = insecticide_type_label,
+      colour = insecticide_type_label,
     )
   ) +
   geom_ribbon(
     aes(
       ymax = susc_pop_upper,
       ymin = susc_pop_lower,
-    )
+    ),
+    size = line_size
   ) +
   geom_point(
     data = df_overall_plot,
     mapping = aes(
       y = Susceptibility,
       group = "none",
-      size = mosquito_number
+      size = effective_bioassays
     ),
     shape = 21,
+    colour = "black"
   ) +
   facet_wrap(~insecticide_type_label,
              ncol = 3) +
   guides(
-    size = guide_legend(title = "No. tested")
+    size = guide_legend(title = "Effective\nsamples")
   ) +
   scale_y_continuous(
     labels = scales::percent,
     breaks = c(0, 1),
     limits = c(0, 1)) +
   scale_x_continuous(breaks = c(2000, 2020)) +
-  scale_size_continuous(
+  scale_size_area(
     labels = scales::number_format(
-      accuracy = 1000,
+      accuracy = 100,
       big.mark = ","
     ),
+    breaks = c(1, 3, 5) * 100,
     limits = size_limits
   ) +
   scale_fill_discrete(
+    direction = -1,
+    guide = FALSE) +
+  scale_colour_discrete(
     direction = -1,
     guide = FALSE) +
   xlab("") +
@@ -435,295 +579,3 @@ ggsave("figures/all_africa_pred_data.png",
 # resistance across the sites where the samples were collected (bold colour
 # band; 95%CI)
 
-
-# add the low, medium, high LLINs underneath
-# find how much data by different coverages
-
-net_coverage_cell_lookup <- df %>%
-  group_by(
-    cell_id, cell
-  ) %>%
-  # get one record per observed cell
-  slice(1) %>%
-  ungroup() %>%
-  mutate(
-    net_coverage = terra::extract(nets_flat, pull(., cell)),
-    net_coverage_class = case_when(
-      net_coverage < 0.3 ~ "A) Low use",
-      .default = "B) High use")
-  ) %>%
-  select(
-    cell,
-    cell_id,
-    net_coverage_class
-  )
-
-# extract net use over time at all observation locations
-df_net_use <- all_extract %>%
-  left_join(
-    net_coverage_cell_lookup,
-    by = "cell_id"
-  ) %>%
-  group_by(
-    year_id,
-    net_coverage_class
-  ) %>%
-  summarise(
-    lower = quantile(nets, 0.25),
-    upper = quantile(nets, 0.75),
-    mean = mean(nets),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    year = year_id + baseline_year - 1
-  )
-
-
-# get LLIN-effective resistance at these sites, predictions and points
-
-# do predictions of the effective resistance to ITNS
-ingredient_weights <- readRDS("temporary/ingredient_weights.RDS")
-
-ingredient_ids <- match(names(ingredient_weights), types)
-
-# average the LLIN pyrethroids across these to plot against time
-df_net_class_points <- df %>%
-  filter(
-    insecticide_type %in% pyrethroids
-  ) %>%
-  left_join(
-    net_coverage_cell_lookup,
-    by = "cell_id"
-  ) %>%
-  group_by(year_start,
-           # insecticide_type,
-           net_coverage_class) %>%
-  summarise(
-    died = sum(died),
-    mosquito_number = sum(mosquito_number),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    Susceptibility = died / mosquito_number,
-  ) %>%
-  rename(
-    year = year_start
-  )
-
-# compute predicted population-level susceptibility to the insecticides
-# average net coverage over time in each of those places
-
-# now compute a weighted sum over the pyrethroids (weights given by the numbers
-# of mosquitoes tested for each pyrethroid, over the whole timeseries)
-pyrethroid_net_class_weights <- df %>%
-  left_join(
-    net_coverage_cell_lookup,
-    by = "cell_id"
-  ) %>%
-  group_by(
-    type_id,
-    insecticide_type,
-    net_coverage_class
-  ) %>%
-  summarise(
-    mosquito_number = sum(mosquito_number),
-    .groups = "drop"
-  ) %>%
-  group_by(net_coverage_class) %>%
-  mutate(
-    is_a_pyrethroid = insecticide_type %in% pyrethroids,
-    mosquito_number = mosquito_number * as.numeric(is_a_pyrethroid),
-    weight = mosquito_number / sum(mosquito_number)
-  ) %>%
-  ungroup() %>%
-  select(
-    type_id,
-    weight,
-    net_coverage_class
-  ) %>%
-  pivot_wider(
-    names_from = net_coverage_class,
-    values_from = "weight"
-  ) %>%
-  arrange(type_id) %>%
-  select(-type_id) %>%
-  as.matrix()
-
-# AAARGH, this code is horrible, but best I can do for now on this plane.
-
-# compute a weighted average of the insecticides in low, medium, high net
-# coverage locations
-
-# just subset the data and repeat what happens in the overall plot
-
-low_idx <- net_coverage_cell_lookup %>%
-  filter(
-    net_coverage_class == "A) Low use"
-  ) %>%
-  pull(cell_id)
-
-sample_size_mat_low <- sample_size_mat[low_idx, ]
-weights_mat_low <- sweep(sample_size_mat_low,
-                         2,
-                         colSums(sample_size_mat_low),
-                         "/")
-
-# expand out into an array, replicating by year
-weights_array_low <- array(rep(c(weights_mat_low), n_times),
-                           dim = c(nrow(weights_mat_low), n_types, n_times))
-
-# check dimensions are the right way around
-# identical(weights_array_low[, , 1],  weights_mat_low)
-# all(weights_array_low[1, 1, ] == weights_array_low[1, 1, 1])
-
-# multiply through and sum to get average susceptibilities
-weighted_susc_array_low <- dynamic_cells$all_states[low_idx, , ] * weights_array_low
-overall_susc_low <- apply(weighted_susc_array_low, 2:3, "sum")
-pyrethroid_net_class_susc_low <- as_data(t(pyrethroid_net_class_weights[, "A) Low use"])) %*% overall_susc_low
-
-# and repeat for high
-high_idx <- net_coverage_cell_lookup %>%
-  filter(
-    net_coverage_class == "B) High use"
-  ) %>%
-  pull(cell_id)
-
-sample_size_mat_high <- sample_size_mat[high_idx, ]
-weights_mat_high <- sweep(sample_size_mat_high,
-                         2,
-                         colSums(sample_size_mat_high),
-                         "/")
-
-# expand out into an array, replicating by year
-weights_array_high <- array(rep(c(weights_mat_high), n_times),
-                            dim = c(nrow(weights_mat_high), n_types, n_times))
-
-# multiply through and sum to get average susceptibilities
-weighted_susc_array_high <- dynamic_cells$all_states[high_idx, , ] * weights_array_high
-overall_susc_high <- apply(weighted_susc_array_high, 2:3, "sum")
-pyrethroid_net_class_susc_high <- as_data(t(pyrethroid_net_class_weights[, "B) High use"])) %*% overall_susc_high
-
-# get posterior samples of these
-sims_net_class <- calculate(pyrethroid_net_class_susc_low,
-                            pyrethroid_net_class_susc_high,
-                            values = draws,
-                            nsim = 1e3)
-
-
-pop_mort_sry_low <- sims_net_class$pyrethroid_net_class_susc_low[, 1, ] %>%
-  t() %>%
-  as_tibble() %>%
-  mutate(
-    time_id = row_number(),
-    .before = everything()
-  ) %>%
-  pivot_longer(
-    cols = starts_with("V"),
-    names_prefix = "V",
-    names_to = "sim",
-    values_to = "susceptibility"
-  ) %>%
-  group_by(time_id) %>%
-  summarise(
-    susc_pop_mean = mean(susceptibility),
-    susc_pop_lower = quantile(susceptibility, 0.025),
-    susc_pop_upper = quantile(susceptibility, 0.975),
-  ) %>%
-  mutate(
-    year = baseline_year + time_id - 1
-  )
-
-pop_mort_sry_high <- sims_net_class$pyrethroid_net_class_susc_high[, 1, ] %>%
-  t() %>%
-  as_tibble() %>%
-  mutate(
-    time_id = row_number(),
-    .before = everything()
-  ) %>%
-  pivot_longer(
-    cols = starts_with("V"),
-    names_prefix = "V",
-    names_to = "sim",
-    values_to = "susceptibility"
-  ) %>%
-  group_by(time_id) %>%
-  summarise(
-    susc_pop_mean = mean(susceptibility),
-    susc_pop_lower = quantile(susceptibility, 0.025),
-    susc_pop_upper = quantile(susceptibility, 0.975),
-  ) %>%
-  mutate(
-    year = baseline_year + time_id - 1
-  )
-
-pop_mort_sry_net_class <- bind_rows(
-  `A) Low use` = pop_mort_sry_low,
-  `B) High use` = pop_mort_sry_high,
-  .id = "net_coverage_class"
-)
-
-net_class_fig <- df_net_class_points %>%
-  ggplot(
-    aes(
-      x = year
-    )
-  ) +
-  geom_ribbon(
-    aes(
-      x = year,
-      ymax = upper,
-      ymin = lower,
-      group = net_coverage_class
-    ),
-    data = df_net_use,
-    fill = grey(0.9),
-    colour = grey(0.7)
-  ) +
-  geom_ribbon(
-    aes(
-      ymax = susc_pop_upper,
-      ymin = susc_pop_lower,
-    ),
-    data = pop_mort_sry_net_class,
-    fill = pyrethroid_blue
-  ) +
-  geom_point(
-    aes(
-      y = Susceptibility,
-      size = mosquito_number
-    ),
-    shape = 21,
-    fill = pyrethroid_blue
-  ) +
-  facet_wrap(~net_coverage_class) +
-  guides(
-    size = "none"
-  ) +
-  scale_y_continuous(
-    labels = scales::percent,
-    sec.axis = sec_axis(
-      ~.,
-      name = "LLIN use (grey)",
-      labels = scales::percent,
-    )
-  ) +
-  scale_size_continuous(
-    labels = scales::number_format(accuracy = 1000, big.mark = ","),
-    limits = size_limits
-  ) +
-  xlab("") +
-  ylab("Susceptibility to pyrethroids") +
-  coord_cartesian(xlim = c(2000, 2022),
-                  ylim = c(0, 1)) +
-  theme_minimal() +
-  theme(
-    strip.text.x = element_text(hjust = 0)
-  )
-
-net_class_fig
-
-ggsave("figures/all_africa_net_use_pred_data.png",
-       bg = "white",
-       scale = 0.8,
-       width = 8,
-       height = 4)

@@ -306,3 +306,33 @@ pre_pad_cube <- function(cube, baseline_year = 1995) {
   c(padding, cube)
   
 }
+
+# read in the UN statistical division's geoscheme and turn into a lookup for
+# African region.
+
+# why the ever-loving fuck is this semi-colon delimited?
+country_region_lookup <- function() {
+  read_delim("data/raw/UNSD — Methodology.csv",
+             delim = ";",
+             col_select = any_of(c("Country or Area",
+                                   "Region Name",
+                                   "Intermediate Region Name")),
+             col_types = "c") %>%
+    filter(`Region Name` == "Africa") %>%
+    select(-"Region Name") %>%
+    rename(
+      country_name = `Country or Area`,
+      region = `Intermediate Region Name` 
+    ) %>%
+    # standardise some names to our printable versions
+    mutate(
+      country_name = case_when(
+        country_name == "United Republic of Tanzania" ~ "Tanzania",
+        country_name == "Democratic Republic of the Congo" ~ "DR Congo",
+        country_name == "Central African Republic" ~ "CAR",
+        country_name == "Sao Tome and Principe" ~ "Sao Tome & Principe",
+        .default = country_name
+      )
+    )
+}
+
