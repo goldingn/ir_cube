@@ -239,16 +239,3 @@ df_validate %>%
   coord_equal() +
   theme_minimal()
 
-
-# df_validate %>%
-#   filter(cluster == 7,
-#          insecticide_class == "Pyrethroids") %>%
-#   pull(z_resid) %>%
-#   hist(breaks = 100)
-
-
-# Carbamate residual in Cote D'Ivoire
-
-# East Africa opposite direction residual in Pyrethroids and DDT too
-
-# Madagascar residual against Pyrethroids

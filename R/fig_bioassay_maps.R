@@ -44,13 +44,7 @@ insecticides_plot_lookup <- tibble(
   insecticide_type_label = insecticide_type_labels
 )
 
-
-# add on regions
 df_sub <- df %>%
-  left_join(
-    country_region_lookup(),
-    by = "country_name"
-  ) %>%
   rename(
     year = year_start,
     country = country_name,

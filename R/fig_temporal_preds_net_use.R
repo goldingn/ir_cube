@@ -26,12 +26,8 @@ pyrethroids <- tibble(
   filter(class == "Pyrethroids") %>%
   pull(insecticide)
 
-# add on regions and tidy up column names
+# tidy up column names
 df_sub <- df %>%
-  left_join(
-    country_region_lookup(),
-    by = "country_name"
-  ) %>%
   rename(
     year = year_start,
     country = country_name,

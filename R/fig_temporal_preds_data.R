@@ -29,12 +29,8 @@ pyrethroids <- tibble(
   filter(class == "Pyrethroids") %>%
   pull(insecticide)
 
-# add on regions and tidy up column names
+# tidy up column names
 df_sub <- df %>%
-  left_join(
-    country_region_lookup(),
-    by = "country_name"
-  ) %>%
   rename(
     year = year_start,
     country = country_name,
@@ -609,16 +605,6 @@ df_region_overall_plot <- df_sub %>%
     overall_fraction = cell_overall_mosquito_number / total_overall_mosquito_number,
     weight = overall_fraction / year_fraction
   ) %>%
-    geom_point(
-    data = df_overall_plot,
-    mapping = aes(
-      y = Susceptibility,
-      group = "none",
-      size = effective_bioassays
-    ),
-    shape = 21,
-    colour = "black"
-  ) +
   # now compute Africa-wide weighted susceptibilities for each year and insecticide
   group_by(
     year,
@@ -654,7 +640,18 @@ df_region_overall_plot <- df_sub %>%
     by = "insecticide"
   )
 
-
+# ggplot() +
+#   geom_point(
+#     data = df_overall_plot,
+#     mapping = aes(
+#       y = Susceptibility,
+#       group = "none",
+#       size = effective_bioassays
+#     ),
+#     shape = 21,
+#     colour = "black"
+#   ) +
+#   
 # make a matrix mapping from cell IDs to regions, to aggregate by region
 # for each insecticide.
 regions <- unique(df_sub$region)
@@ -793,11 +790,11 @@ region_pop_mort_sry <- sims_regional$weighted_susc_region_vec[, , 1] %>%
   ) %>%
   mutate(
     region = factor(region,
-                    levels = c("Northern Africa",
+                    levels = c("Southern Africa",
                                "Western Africa",
                                "Middle Africa", 
                                "Eastern Africa",
-                               "Southern Africa"))
+                               "Northern Africa"))
   )
 
 
@@ -850,6 +847,7 @@ region_all <- region_pop_mort_sry %>%
   )
 
 region_all
+
 ggsave("figures/regional_pred_data.png",
        bg = "white",
        scale = 0.8,

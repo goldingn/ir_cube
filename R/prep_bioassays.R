@@ -696,6 +696,13 @@ ir_distinct_gambiae <- ir_distinct %>% filter(species_complex == "gambiae comple
 ir_distinct_gambiae <- ir_distinct_gambiae %>% 
   select(-c(lat_round:mortality_round))
 
+# add on region information
+ir_distinct_gambiae <- ir_distinct_gambiae %>%
+  left_join(
+    country_region_lookup(),
+    by = "country_name"
+  )
+
 # check contributions from each database
 table(ir_distinct_gambiae$source) %>% sort(decreasing = TRUE)
 

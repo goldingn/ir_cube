@@ -81,19 +81,24 @@ df <- ir_africa %>%
   # drop a handful of datapoints missing covariates
   filter(
     !is.na(extract(mask, cell)[, 1])
-  ) %>%
-  # add an index to the vector of unique cells (now they have been subsetted)
-  mutate(
-    cell_id = match(cell, unique(cell))
   )
 
-# map the data to the insecticide classes and types
+# create indices to categorical vectors
 classes <- unique(df$insecticide_class)
 types <- unique(df$insecticide_type)
+regions <- unique(df$region)
+countries <- unique(df$country_name)
+unique_cells <- unique(df$cell)
+years <- baseline_year - 1 + sort(unique(df$year_id))
 
-# add in indices to the dataframe to the types and insecticides
-df$class_id <- match(df$insecticide_class, classes)
-df$type_id <- match(df$insecticide_type, types)
+df <- df %>%
+  mutate(
+    cell_id = match(cell, unique_cells),
+    region_id = match(region, regions),
+    country_id = match(country_name, countries),
+    class_id = match(insecticide_class, classes),
+    type_id = match(insecticide_type, types)
+  )
 
 # index to the classes for each type
 classes_index <- df %>%
@@ -109,9 +114,6 @@ type_concentrations <- df %>%
   arrange(type_id) %>%
   pull(concentration)
 
-# pull covariates for all unique cells
-unique_cells <- unique(df$cell)
-n_unique_cells <- length(unique_cells)
 
 # create design matrix at all unique cells and for all years
 
@@ -122,8 +124,6 @@ flat_extract <- covs_flat %>%
     cell = unique_cells,
     .before = everything()
   )
-
-# TODO: extract other spatiotemporal covariates here
 
 # extract spatiotemporal covariates from the cube
 all_extract <- bind_cols(
@@ -159,6 +159,9 @@ all_extract <- bind_cols(
     year_id = year - baseline_year + 1,
     .before = everything()
   ) %>%
+  filter(
+    year >= baseline_year
+  ) %>%
   select(
     -cell,
     -year
@@ -175,11 +178,14 @@ x_cell_years <- all_extract %>%
   as.matrix()
 
 # dimensions of things in the fitting stage
-n_obs <- nrow(df)
 n_covs <- ncol(x_cell_years)
+n_obs <- nrow(df)
+n_unique_cells <- length(unique_cells)
+n_times <- max(df$year_start) - min(df$year_start) + 1
 n_classes <- length(classes)
 n_types <- length(types)
-n_times <- max(df$year_start) - min(df$year_start) + 1
+n_regions <- length(regions)
+n_countries <- length(countries)
 
 # hierarchical regression parameters
 
@@ -233,13 +239,81 @@ dim(fitness_array) <- c(n_times, n_unique_cells, n_types, 1)
 # identical(sims$array_subset[1, , 1, 1, 1],
 #           sims$matrix_subset[1, , 1])
 
-# model fractions susceptible across the continent prior to baseline. More flex
-# for DDT and less for others
-init_frac_sd <- ifelse(types == "DDT", 0.005, 0.001)
 
-init_fraction_susceptible <- normal(1, init_frac_sd,
-                                    dim = n_types,
-                                    truncation = c(0, 1))
+# use an IID hierarcichal model for the initial fraction susceptible, with a
+# prior logit-mean, and variance across regions and countries within regions
+
+# Note: we could make this ICAR for the same computational complexity and possibly
+# fewer parameters (we can drop the regional level)
+# https://github.com/goldingn/greta.car
+
+# Maybe do that if it's real speckly, and consider adding subnational levels
+# too.
+
+# prior assumption of the fractions susceptible across the continent at the
+# baseline. More flex for DDT and less for others
+
+# prior and minimum values for the initial fractions susceptible
+
+init_frac_prior <- ifelse(types == "DDT", 0.9, 0.95)
+init_frac_min <- ifelse(types == "DDT", 0.75, 0.9)
+
+
+
+# mean logit proportion of the distance from the minimum to 1, for each type
+init_frac_relative_prior <- (init_frac_prior - init_frac_min) / (1 - init_frac_min)
+logit_init_mean <- normal(qlogis(init_frac_relative_prior), 1, dim = n_types)
+
+# variance at each level, for each insecticide
+init_region_sd <- normal(0, 1, truncation = c(0, Inf), dim = n_types)
+init_country_sd <- normal(0, 1, truncation = c(0, Inf), dim = n_types)
+
+# unscaled deviation parameters (hierarchical decentring)
+init_region_raw <- normal(0, 1, dim = c(n_regions, dim = n_types))
+init_country_raw <- normal(0, 1, dim = c(n_countries, dim = n_types))
+
+# combine to get the regional and country-level deviation from the prior logit
+# mean
+init_region_effect <- sweep(init_region_raw, 2, init_region_sd, FUN = "*")
+init_country_effect <- sweep(init_country_raw, 2, init_country_sd, FUN = "*")
+
+country_region_index <- df %>%
+  group_by(country_id) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(country_id, region_id) %>%
+  arrange(country_id) %>%
+  pull(region_id)
+
+# combine these together into the country-level logit-mean initial value
+# logit_init_mean <- qlogis(init_frac_mean)
+init_country_overall_effect <- init_country_effect + init_region_effect[country_region_index, ]
+logit_init_country <- sweep(init_country_overall_effect,
+                            2,
+                            logit_init_mean,
+                            FUN = "+")
+
+# convert from relative (0-1) to the constrained scale (above init_frac_min)
+init_country_relative <- ilogit(logit_init_country)
+init_range <- 1 - init_frac_min
+init_country_magnitude <- sweep(init_country_relative, 2, init_range, FUN = "*") 
+init_country <- sweep(init_country_magnitude, 2, init_frac_min, FUN = "+")
+
+cell_country_lookup <- df %>%
+  group_by(cell_id) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(cell_id, country_id) %>%
+  arrange(cell_id) %>%
+  pull(country_id)
+
+# expand out to all observations
+init_array <- init_country[cell_country_lookup, ]
+
+# add a trailing dimension to match greta.dynamics interface
+dim(init_array) <- c(dim(init_array), 1)
+
+# hist(calculate(init_array[1, 5, 1], nsim = 1e4)[[1]])
 
 # compute the fraction expressing the susceptible phenotype over time against
 # each insecticide with a single-locus population genetics model. Either with
@@ -305,14 +379,6 @@ diploid_next <- function(state, iter, w, h = 0.5) {
 # logit_het_dom <- logit_het_dom_mean + logit_het_dom_raw * logit_het_dom_sd
 # het_dom <- ilogit(logit_het_dom)
 
-# expand initial conditions and het. dominance parameters out to all cells with
-# data (plus a trailing dimension to match greta.dynamics interface)
-init_array <- sweep(ones(n_unique_cells, n_types),
-                    2,
-                    init_fraction_susceptible,
-                    FUN = "*")
-dim(init_array) <- c(dim(init_array), 1)
-
 # het_dom_array <- sweep(ones(n_unique_cells, n_types),
 #                        2,
 #                        het_dom,
@@ -368,15 +434,45 @@ population_mortality_vec <- fraction_susceptible_vec
 
 # define observation model
 
-# model overdispersion in the data via an overdispersion parameter rho. This
-# prior makes rho approximately uniform, but fairly nicely behaved
-# normal(0, 1.6) is similar to logit distribution; with hierarcichal prior, set
-# overall sd to: sqrt((1.6 ^ 2) - 1)
-logit_rho_mean <- normal(0, 1.3)
-logit_rho_sd <- normal(0, 1, truncation = c(0, Inf))
-logit_rho_raw <- normal(0, 1, dim = n_classes)
-logit_rho_classes <- logit_rho_mean + logit_rho_raw * logit_rho_sd
-rho_classes <- ilogit(logit_rho_classes)
+# model overdispersion in the data via an overdispersion parameter rho.
+
+# at p = 0.5 (the highest variance point), with rho = 0.067 the 95% interval of
+# a betabinomial is 0.5; a very large error range we wish to treat as unlikely,
+# and penalise towards smaller values. Found this by trial and error with
+# simulations:
+
+# p <- 0.5
+# rho <- 0.067
+# size <- 1000
+# a <- p * (1 / rho - 1)
+# b <- a * (1 - p) / p
+# upper <- qbbinom(0.975, size = size, alpha = a, beta = b, nsims = 1e7)
+# ci_width <- 2 * ((upper / size) - p)
+# ci_width
+
+# So set this ('rho_max' = 0.067) as being at the upper end of the likely
+# scenario, say p(rho < rho_max) = 0.99. Compute the corresponding standard
+# deviation of a half-normal (ignoring the truncation in calculations as it has
+# negligible effect at these ranges
+
+# # just maths:
+# # q = 2 * pnorm(rho_max, 0, sd)
+# # q / 2 = pnorm(rho_max, 0, sd)
+# # qnorm(q / 2, 0, sd) = rho_max
+# # qnorm(q / 2, 0, 1) * sd = rho_max
+# # sd = rho_max / qnorm(q, 0, 1)
+
+# calculation
+# rho_max = 0.067
+# q = 0.99
+# sd = rho_max / qnorm(q, 0, 1)
+# sd
+# [1] 0.02880051
+# so sd on rho prior to 0.05
+
+rho_classes <- normal(0, 0.025,
+                      truncation = c(0, 1),
+                      dim = n_classes)
 
 distribution(df$died) <- betabinomial_p_rho(N = df$mosquito_number,
                                             p = population_mortality_vec,
@@ -386,9 +482,7 @@ m <- model(
   beta_overall,
   sigma_overall,
   beta_type_raw,
-  init_fraction_susceptible,
-  logit_rho_mean,
-  logit_rho_raw
+  rho_classes
 )
 
 # set the inits for obs_var_multiplier to be large (more params will fit OK to
@@ -400,6 +494,10 @@ system.time(
   draws <- mcmc(m,
                 chains = n_chains)
 )
+
+# new data, from 1995, with hierarchical initial state
+# user    system   elapsed 
+# 23331.754  9113.193  5618.095 
 
 # new data, from 1995
 # user    system   elapsed 
@@ -415,10 +513,10 @@ system.time(
 
 save.image(file = "temporary/fitted_model.RData")
 
-# # check convergence
-# coda::gelman.diag(draws,
-#                   autoburnin = FALSE,
-#                   multivariate = FALSE)
+# check convergence
+coda::gelman.diag(draws,
+                  autoburnin = FALSE,
+                  multivariate = FALSE)
 
 # run prediction code across scenario net cubes (bash batching to prevent
 # restarts and memory leaks?)
