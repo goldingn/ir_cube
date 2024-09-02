@@ -71,7 +71,7 @@ stats <- mean_tibble %>%
   # rename some things for plotting
   mutate(
     covariate = case_when(
-      covariate == "pop" ~ "Population density",
+      covariate == "pop" ~ "Human population",
       covariate == "nets" ~ "LLIN use",
       covariate == "irs" ~ "IRS coverage",
       .default = str_to_sentence(covariate)
@@ -96,11 +96,11 @@ combined_stats <- stats %>%
   mutate(
     covariate_type = case_when(
       covariate %in% c("LLIN use", "IRS coverage") ~ "Vector control",
-      covariate == "Population density" ~ "Population density",
+      covariate == "Human population" ~ "Human population",
       .default = "Agriculture"
     ),
     covariate_type = factor(covariate_type,
-                            levels = c("Population density",
+                            levels = c("Human population",
                                        "Agriculture",
                                        "Vector control")),
     .before = everything()

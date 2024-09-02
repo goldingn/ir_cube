@@ -5,7 +5,7 @@ source("R/packages.R")
 source("R/functions.R")
 
 # plot time-varying covariates
-itn <- rast("data/clean/nets_per_capita_cube.tif")
+itn <- rast("data/clean/net_use_cube.tif")
 itn_plot_years <- c(2000, 2005, 2010, 2015, 2020)
 itn_plot_layers <- paste0("nets_", itn_plot_years)
 itn_plot <- itn[[itn_plot_layers]]
@@ -33,14 +33,15 @@ ggplot() +
     data = itn_plot
   ) +
   scale_fill_gradient(
-    name = "Nets per capita",
-    limits = c(0, max_nets),
+    name = "LLIN use",
+    labels = scales::percent,
+    limits = c(0, 1),
     low = grey(0.9),
     high = grey(0.2),
     na.value = "transparent") +
   facet_wrap(~lyr, nrow = 1) +
   ggtitle(
-    label = "LLIN coverage"
+    label = "LLIN use"
   ) +
   theme_ir_maps()
 
@@ -101,8 +102,33 @@ ggsave("figures/pop_map.png",
        dpi = 300)
 
 
-crops <- rast("data/clean/flat_covariates.tif")
+# collated total yields of crop types
+crops_group <- rast("data/clean/crop_group_scaled.tif")
 
+# yields of individual crops
+crops_all <- rast("data/clean/crop_scaled.tif")
+
+# Pull out crop types implicated in risk for IR. refer to this review, crop type
+# section:
+# https://malariajournal.biomedcentral.com/articles/10.1186/s12936-016-1162-4
+crops_implicated <- c(
+  # "increased resistance at cotton growing sites, a finding subsequently
+  # supported in eight other papers from five different African countries", "the
+  # cash crop with the highest intensity insecticide use of any crop"
+  crops_all$cotton,
+  # "In eight studies, vegetable cultivation strongly related to
+  # insecticide-resistant field collections", "Vegetable production requires
+  # significantly higher quantities and/or more frequent application of
+  # pesticides than other food crops"
+  crops_all$vegetables,
+  # "Seven of the studies reviewed here examined the insecticide susceptibility
+  # of vector populations at rice-growing sites, and found low-to-moderate
+  # resistance levels in these mosquito populations."
+  crops_all$rice)
+
+# combine all temporally-static covariates
+crops <- c(crops_group, crops_implicated)
+names(crops) <- str_to_sentence(names(crops))
 ggplot() +
   geom_spatraster(
     data = crops
@@ -123,6 +149,6 @@ ggplot() +
 
 ggsave("figures/crop_map.png",
        bg = "white",
-       width = 12,
-       height = 8,
+       width = 14,
+       height = 6,
        dpi = 300)
