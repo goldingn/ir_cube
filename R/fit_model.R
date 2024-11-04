@@ -400,36 +400,7 @@ dynamic_cells <- iterate_dynamic_function(
 index <- cbind(df$cell_id, df$type_id, df$year_id)
 fraction_susceptible_vec <- dynamic_cells$all_states[index]
 
-# model the susceptible & resistant LD50s of the different insecticides
-# (skip this until we have multiple concentrations)
-
-# # for single concentration data, fix the variance to 1 and fix the LD50 for
-# # susceptibles to correspond to mortality rate of 99% (98% is resistant)
-# population_LD50_sd <- 1
-# LD50_susceptible <- type_concentrations - population_LD50_sd * qnorm(0.99)
-#
-# # define a reasonable prior for the difference in LD50s: resistants have mortality ~1% (95% CI goes up to 25% mortality))
-# # LD50_resistant_lower <- type_concentrations - population_LD50_sd * qnorm(0.25)
-# LD50_resistant_mean <- type_concentrations - population_LD50_sd * qnorm(0.01)
-# # LD50_resistant_sd <- LD50_resistant_mean - LD50_resistant_lower / 1.96
-# # LD50_difference_mean <- LD50_resistant_mean - LD50_susceptible
-#
-# # this is a chore
-# # LD50_difference_raw <- normal(0, 1, dim = n_types)
-# # LD50_difference <- LD50_difference_mean + LD50_difference_raw * LD50_resistant_sd
-#
-# # compute LD50 for resistant genotype
-# # LD50_resistant <- LD50_susceptible + LD50_difference
-# LD50_resistant <- LD50_resistant_mean
-#
-# # get the population-level LD50s for the observations
-# LD50_vec <- fraction_susceptible_vec * LD50_susceptible[df$type_id] +
-#   (1 - fraction_susceptible_vec) * LD50_resistant[df$type_id]
-#
-# probit_vec <- (df$concentration - LD50_vec) / population_LD50_sd
-# population_mortality_vec <- iprobit(probit_vec)
-
-# for now, map straight from phenotype expression to mortality
+# resistant phenotype expression rate = expected mortality in bioassays
 population_mortality_vec <- fraction_susceptible_vec
 
 # define observation model
@@ -468,7 +439,7 @@ population_mortality_vec <- fraction_susceptible_vec
 # sd = rho_max / qnorm(q, 0, 1)
 # sd
 # [1] 0.02880051
-# so sd on rho prior to 0.05
+# so sd on rho prior to 0.025
 
 rho_classes <- normal(0, 0.025,
                       truncation = c(0, 1),

@@ -16,19 +16,54 @@ load(file = "temporary/fitted_model.RData")
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
-# load time-varying net coverage data
+# load time-varying net use, IRS coverage, population data
 nets_cube <- rast("data/clean/net_use_cube.tif")
+irs_cube <- rast("data/clean/irs_coverage_scaled_cube.tif")
+pop_cube <- rast("data/clean/pop_scaled_cube.tif")
 
-# load the other layers
-covs_flat <- rast("data/clean/flat_covariates.tif")
+# for each one pad back to the baseline year, repeating the first
+nets_cube <- pre_pad_cube(nets_cube, baseline_year)
+irs_cube <- pre_pad_cube(irs_cube, baseline_year)
+pop_cube <- pre_pad_cube(pop_cube, baseline_year)
 
+# load the non-temporal crop covariate layers
+
+# collated total yields of crop types
+crops_group <- rast("data/clean/crop_group_scaled.tif")
+
+# yields of individual crops
+crops_all <- rast("data/clean/crop_scaled.tif")
+
+# Pull out crop types implicated in risk for IR. refer to this review, crop type
+# section:
+# https://malariajournal.biomedcentral.com/articles/10.1186/s12936-016-1162-4
+crops_implicated <- c(
+  # "increased resistance at cotton growing sites, a finding subsequently
+  # supported in eight other papers from five different African countries", "the
+  # cash crop with the highest intensity insecticide use of any crop"
+  crops_all$cotton,
+  # "In eight studies, vegetable cultivation strongly related to
+  # insecticide-resistant field collections", "Vegetable production requires
+  # significantly higher quantities and/or more frequent application of
+  # pesticides than other food crops"
+  crops_all$vegetables,
+  # "Seven of the studies reviewed here examined the insecticide susceptibility
+  # of vector populations at rice-growing sites, and found low-to-moderate
+  # resistance levels in these mosquito populations."
+  crops_all$rice)
+
+# combine all temporally-static covariates
+covs_flat <- c(crops_group, crops_implicated)
+
+# load the country raster for initial condition lookup
+country_raster <- rast("data/clean/country_raster.tif")
 
 # make prediction rasters
 # (split this into a separate function, to be run on multiple scenarios, in
 # parallel, without refitting)
 
 # years to predict to
-years_predict <- 2000:2030
+years_predict <- baseline_year:2030
 n_times_predict <- length(years_predict)
 
 # cells to predict to
@@ -36,15 +71,10 @@ cells_predict <- terra::cells(mask)
 n_cells_predict <- length(cells_predict)
 
 # pad out the nets cube, repeating the final year into the future
-n_future <- n_times_predict - n_times
-nets_cube_future <- nets_cube[[n_times]] %>%
-  replicate(n_future,
-            .,
-            simplify = FALSE) %>%
-  do.call(c, .)
-years_future <- baseline_year + n_times + seq_len(n_future) - 1
-names(nets_cube_future) <- paste0("nets_", years_future)
-nets_cube_predict <- c(nets_cube, nets_cube_future)
+end_year <- max(years_predict)
+nets_cube <- post_pad_cube(nets_cube, end_year)
+irs_cube <- post_pad_cube(irs_cube, end_year)
+pop_cube <- post_pad_cube(pop_cube, end_year)
 
 # pull out temporally-static covariates for all cells
 flat_extract_predict <- covs_flat %>%
@@ -55,17 +85,26 @@ flat_extract_predict <- covs_flat %>%
   )
 
 # extract spatiotemporal covariates from the cube
-all_extract_predict <- nets_cube_predict %>%
-  terra::extract(cells_predict) %>%
+all_extract_predict <- bind_cols(
+  terra::extract(nets_cube, cells_predict),
+  terra::extract(irs_cube, cells_predict),
+  terra::extract(pop_cube, cells_predict)
+) %>%
   mutate(
     cell = cells_predict,
     .before = everything()
   ) %>%
+  # this stacks all the different cubes in long format, but we want wide on the
+  # variable but long on year, so pivot_wider immediately after
   pivot_longer(
-    cols = starts_with("nets_"),
-    names_prefix = "nets_",
-    names_to = "year",
-    values_to = "net_coverage"
+    cols = -one_of("cell"),
+    names_sep = "_",
+    names_to = c("variable", "year"),
+    values_to = "value"
+  ) %>%
+  pivot_wider(
+    names_from = "variable",
+    values_from = "value"
   ) %>%
   mutate(
     year = as.numeric(year)
@@ -78,6 +117,9 @@ all_extract_predict <- nets_cube_predict %>%
     cell_id = match(cell, cells_predict),
     year_id = year - baseline_year + 1,
     .before = everything()
+  ) %>%
+  filter(
+    year >= baseline_year
   ) %>%
   select(
     -cell,
@@ -93,6 +135,9 @@ x_cell_years_predict <- all_extract_predict %>%
   select(-cell_id,
          -year_id) %>%
   as.matrix()
+
+# get the country for each cell
+cell_country_predict <- extract(country_raster, cells_predict)$country_name
 
 # create batches of cells for processing
 
@@ -132,6 +177,9 @@ predict_batch <- function(
     
     # data extracted for all cells and years
     x_cell_years_predict,
+    
+    # country to which each cell belongs
+    cell_country_predict,
     
     # the insecticide type to predict for
     insecticide_type,
@@ -206,12 +254,82 @@ predict_batch <- function(
   # identical(sims$array_subset[1, , 1, 1, 1],
   #           sims$matrix_subset[1, , 1])
   
-  # expand initial conditions out to all cells with data (plus a trailing
-  # dimension to match greta.dynamics interface)
-  init_array_batch <- sweep(ones(batch_n, n_ingredients),
-                            2,
-                            init_fraction_susceptible[ingredient_ids],
-                            FUN = "*")
+  # find the initial fraction susceptible for all cells and insecticides, using
+  # lookup against country-level model, for all countries in the mask
+  
+  # for each cell in this batch, pull out the country, the region, and therefore
+  # the index to the random variables for the initial fraction
+  lookup <- country_region_lookup()
+
+  all_countries <- unique(lookup$country_name)
+  all_regions <- unique(lookup$region)
+  n_all_countries <- length(all_countries)
+  n_all_regions <- length(all_regions)
+  
+  unobserved_countries <- setdiff(all_countries, countries)
+  n_countries_unobserved <- length(unobserved_countries)
+  unobserved_regions <- setdiff(all_regions, regions)
+  n_regions_unobserved <- length(unobserved_regions)
+    
+  # get the new vectors of region (rearrange) and country (pad and rearrange)
+  # parameters, and recombine into initial conditions here
+  countries_observed_index <- match(countries, all_countries)
+  regions_observed_idx <- match(regions, all_regions)
+  
+  # create empty matrices for the initial coniditoion parameters
+  init_region_raw_pred <- zeros(n_all_regions, n_types)
+  init_country_raw_pred <- zeros(n_all_countries, n_types)
+
+  # add in the estimated parameters for observed countries
+  init_country_raw_pred[countries_observed_index, ] <- init_country_raw
+  init_region_raw_pred[regions_observed_idx, ] <- init_region_raw
+  
+  # add any the new country or region parameters for countries/regions not in
+  # the data, extrapolating with hierarchical model
+  if (n_countries_unobserved > 0) {
+    countries_unobserved_index <- match(unobserved_countries, all_countries)
+    init_country_raw_unobserved <- normal(0, 1, dim = c(n_countries_unobserved, n_types))
+    init_country_raw_pred[countries_unobserved_index, ] <- init_country_raw_unobserved
+  }
+  
+  if (n_regions_unobserved > 0) {
+    regions_unobserved_index <- match(unobserved_regions, all_regions)
+    init_region_raw_unobserved <- normal(0, 1, dim = c(n_regions_unobserved, n_types))
+    init_region_raw_pred[regions_unobserved_index, ] <- init_region_raw_unobserved
+  }
+
+  # combine to get the regional and country-level deviation from the prior logit
+  # mean
+  init_region_effect_pred <- sweep(init_region_raw_pred, 2, init_region_sd, FUN = "*")
+  init_country_effect_pred <- sweep(init_country_raw_pred, 2, init_country_sd, FUN = "*")
+  
+  # get a lookup from countries to regions, in the new order
+  # for each country in all_countries (ensuring to use the new order), find the regions
+  regions_for_all_countries <- lookup$region[match(all_countries, lookup$country_name)]
+  # pull out the index of these countries to the full set of regions, in the new order
+  all_country_region_index <- match(regions_for_all_countries, all_regions)
+  
+  # for each country in the full dataset, combine the national and the regional
+  # effects and get the logit initial fraction susceptibile for that country
+  init_country_overall_effect_pred <- init_country_effect_pred +
+    init_region_effect_pred[all_country_region_index, ]
+  
+  logit_init_country_pred <- sweep(init_country_overall_effect_pred,
+                              2,
+                              logit_init_mean,
+                              FUN = "+")
+  
+  # convert from relative (0-1) to the constrained scale (above init_frac_min)
+  init_country_relative_pred <- ilogit(logit_init_country_pred)
+  init_country_magnitude_pred <- sweep(init_country_relative_pred, 2, init_range, FUN = "*") 
+  init_country_pred <- sweep(init_country_magnitude_pred, 2, init_frac_min, FUN = "+")
+  
+  # expand out to all prediction cells
+  batch_countries <- cell_country_predict[cell_batch]
+  batch_country_id <- match(batch_countries, all_countries)
+  init_array_batch <- init_country[batch_country_id, ingredient_ids]
+  
+  # add a trailing dimension to match greta.dynamics interface
   dim(init_array_batch) <- c(dim(init_array_batch), 1)
   
   # iterate through time to get fraction susceptible for all years at all
@@ -304,6 +422,9 @@ for (this_insecticide in types_save) {
                   cell_years_predict_index = cell_years_predict_index,
                   # data extracted for all cells and years
                   x_cell_years_predict = x_cell_years_predict,
+                  # vector of countries to which each cell (in the full
+                  # prediction set) belongs
+                  cell_country_predict,
                   # the insecticide to compute for
                   insecticide_type = this_insecticide,
                   # an RNG seed to make sure all batches use the same posterior samples of

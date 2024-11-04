@@ -279,7 +279,7 @@ moe_betabinomial_cluster <- function(n = 100, p = 0.5, rho = 0.1, alpha = 0.05,
 # back to an earlier baseline, repeating the earliest value in the cube. cube
 # must have contiguous years, each layer correctly named using the naming
 # format: name_year, e.g.: irs_2001 or nets_2010. This will return a SpatRaster
-# with earlier year years added, using the same naming convention, repeating the
+# with earlier years added, using the same naming convention, repeating the
 # earliest year in the SpatRaster
 pre_pad_cube <- function(cube, baseline_year = 1995) {
   # work out the naming system and first year
@@ -304,6 +304,40 @@ pre_pad_cube <- function(cube, baseline_year = 1995) {
   
   # prepend and return
   c(padding, cube)
+  
+}
+
+
+# given a SpatRaster representing a space-time cube, pad with additional years
+# forward to a later end year, repeating the last value in the cube. cube must
+# have contiguous years, each layer correctly named using the naming format:
+# name_year, e.g.: irs_2001 or nets_2010. This will return a SpatRaster with
+# later years added, using the same naming convention, repeating the last year
+# in the SpatRaster
+post_pad_cube <- function(cube, end_year = 2030) {
+  n_layers_orig <- terra::nlyr(cube)
+  # work out the naming system and first year
+  last_layer_name <- names(cube)[n_layers_orig]
+  latest_year <- str_sub(last_layer_name, start = -4L)
+  prefix <- str_remove(last_layer_name, latest_year)
+  n_years_pad <- end_year - as.numeric(latest_year)
+  
+  # check the end year
+  if (!(n_years_pad > 0)) {
+    stop("end_year must be later than the last year in the raster",
+         call. = FALSE)
+  }
+  
+  # make some padding
+  pad_layer <- cube[[n_layers_orig]]
+  padding <- replicate(n_years_pad, pad_layer, simplify = FALSE) %>%
+    do.call(c, .)
+  # name the padding years
+  years_padding <- as.numeric(latest_year) + seq_len(n_years_pad)
+  names(padding) <- paste0(prefix, years_padding)
+  
+  # append and return
+  c(cube, padding)
   
 }
 
