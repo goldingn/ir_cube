@@ -400,7 +400,11 @@ predict_batch <- function(
 # to limit the overall memory use on the machine because of memory growth if all
 # run in a single process, not to parallelise computation. So set the number of
 # workers to do that.
-plan(multisession,
+# plan(multisession,
+#      workers = 1)
+
+# try using callr to fully shit down the workers
+plan(future.callr::callr,
      workers = 1)
 
 # loop through insecticides
