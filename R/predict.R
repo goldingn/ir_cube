@@ -195,6 +195,10 @@ predict_batch <- function(
   # load all the objects from the fitted model image here
   load(fitted_model_image_file)
   
+  # reload the packages and functions
+  source("R/packages.R")
+  source("R/functions.R")
+  
   # if the output is the llin_effective susceptibility, get IDs for the multiple
   # active ingredients used, and the weights to combine them
   if (insecticide_type == "llin_effective") {
@@ -396,44 +400,42 @@ predict_batch <- function(
   
 }
 
-# set up the future plan, to run each prediction batch in a new process. This is
-# to limit the overall memory use on the machine because of memory growth if all
-# run in a single process, not to parallelise computation. So set the number of
-# workers to do that.
-# plan(multisession,
-#      workers = 1)
+# How many parallel workers to use? n_workers = 1 is sequential mode, note that
+# prediction is memory intensive, so pick the number fo workers to fit within
+# memory when all running simultaneously
+n_workers <- 3
 
-
-# future is still gumming up memory by re-using a single worker, even though we
-# are usung future.callr, so run batches in super-batches that we know the
-# machine can tolerate memory leaks from, and flush the workers after each super
-# batch
-super_batch_bigness <- 50
-batches <- seq_len(n_batches)
-# # for picking up broken runs
-# batches <- 98:n_batches
-super_batch_idx <- batches %/% super_batch_bigness
-super_batches <- split(batches, super_batch_idx)
-n_super_batches <- length(super_batches)
-
-# How many workers to use? n_workers = 1 is sequential mode. We could try doing in
-# parallel again, but it seems to stochastically kill the container when we do
-n_workers <- 1
+# future workers are re-used within a single plan, which leads to a memory leak
+# if workers are used more than once. So define some 'super batches', so that
+# each worker only gets one job before it is reset.
+# for picking up broken runs
+batches <- 93:n_batches
+# batches <- seq_len(n_batches)
+super_batches <- split(batches, batches %/% n_workers)
 
 # loop through insecticides
 for (this_insecticide in types_save) {
   
-  # # grab the current seed, so we can do calculate in batches but not shuffle
-  # # parameters over space
-  # this_seed <- greta::.internals$utils$misc$get_seed()
+  # grab the current seed, so we can do calculate in batches but not shuffle
+  # parameters over space
   seed <- get_seed()
   
   # do a sub-batch
   for (super_batch in super_batches) {
     
-    # set up future workers
-    fut <- plan(multisession,  # future.callr::callr,
-                workers = n_workers)
+    # set up the future plan, to run each prediction batch in a new process. This is
+    # to limit the overall memory use on the machine because of memory growth if all
+    # run in a single process, not (necessarily) to parallelise computation.
+    
+    # destroy any previous parallel workers by switching to sequential model,
+    # and then recreate the parallel workers
+    plan(sequential)
+    plan(multisession,
+         workers = n_workers)
+    
+    # # if the process crashes, any zombie processes can be killed off by doing
+    # # resetWorkers(), using an identical call to the parallel call
+    # future::resetWorkers(plan(multisession, workers = n_workers))
     
     # loop through these batches, running predictions in new processes
     future_lapply(X = super_batch,
@@ -457,30 +459,6 @@ for (this_insecticide in types_save) {
                   # this probably isn't needed since we fix the seed at the
                   # level of TF, but it stops a warning from future
                   future.seed = TRUE)
-    
-    # # run once for debugging
-    # debugonce(predict_batch)
-    # predict_batch(batch_index = 98,
-    #               # raster cell numbers to loop over
-    #               cell_batches = cell_batches,
-    #               # index to the cells
-    #               cell_id_batches = cell_id_batches,
-    #               # combinations of all cells and years
-    #               cell_years_predict_index = cell_years_predict_index,
-    #               # data extracted for all cells and years
-    #               x_cell_years_predict = x_cell_years_predict,
-    #               # vector of countries to which each cell (in the full
-    #               # prediction set) belongs
-    #               cell_country_predict = cell_country_predict,
-    #               # the insecticide to compute for
-    #               insecticide_type = this_insecticide,
-    #               # an RNG seed to make sure all batches use the same posterior samples of
-    #               # parameters
-    #               rng_seed = seed)
-    
-    # destroy these workers, to hopefully reset the leaked memory
-    plan(sequential)
-    future::resetWorkers(fut)
     
   }
     
