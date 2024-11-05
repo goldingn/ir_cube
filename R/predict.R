@@ -152,10 +152,10 @@ cell_id_batches <- split(seq_along(cells_predict), batch_idx)
 n_batches <- length(cell_batches)
 
 # which to predict - just effective LLIN susceptibility for now
-types_save <- c("llin_effective")
-#   "Deltamethrin",
-#   "Permethrin",
-#   "Alpha-cypermethrin")
+types_save <- c("llin_effective",
+                "Deltamethrin",
+                "Permethrin",
+                "Alpha-cypermethrin")
 
 # loop through these batches of cells/years and insecticide outputs, and save a
 # file of the batch predictions to disk
@@ -403,14 +403,14 @@ predict_batch <- function(
 # How many parallel workers to use? n_workers = 1 is sequential mode, note that
 # prediction is memory intensive, so pick the number fo workers to fit within
 # memory when all running simultaneously
-n_workers <- 3
+n_workers <- 4
 
 # future workers are re-used within a single plan, which leads to a memory leak
 # if workers are used more than once. So define some 'super batches', so that
 # each worker only gets one job before it is reset.
 # for picking up broken runs
-batches <- 93:n_batches
-# batches <- seq_len(n_batches)
+# batches <- 93:n_batches
+batches <- seq_len(n_batches)
 super_batches <- split(batches, batches %/% n_workers)
 
 # loop through insecticides
@@ -466,8 +466,8 @@ for (this_insecticide in types_save) {
 
 for (this_insecticide in types_save) {
 
-# write code to reassemble these and save rasters to disk
-# load all the prediction files for this insecticide
+  # write code to reassemble these and save rasters to disk
+  # load all the prediction files for this insecticide
   this_pattern <- sprintf("pred_mean_%s_batch_",
                           this_insecticide)
   prediction_files <- list.files("temporary/prediction_files",
