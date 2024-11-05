@@ -325,7 +325,7 @@ predict_batch <- function(
   init_country_pred <- sweep(init_country_magnitude_pred, 2, init_frac_min, FUN = "+")
   
   # expand out to all prediction cells
-  batch_countries <- cell_country_predict[cell_batch]
+  batch_countries <- cell_country_predict[cell_id_batch]
   batch_country_id <- match(batch_countries, all_countries)
   init_array_batch <- init_country_pred[batch_country_id, ingredient_ids]
   
@@ -403,9 +403,22 @@ predict_batch <- function(
 # plan(multisession,
 #      workers = 1)
 
-# try using callr to fully shit down the workers
-plan(future.callr::callr,
-     workers = 1)
+
+# future is still gumming up memory by re-using a single worker, even though we
+# are usung future.callr, so run batches in super-batches that we know the
+# machine can tolerate memory leaks from, and flush the workers after each super
+# batch
+super_batch_bigness <- 50
+batches <- seq_len(n_batches)
+# # for picking up broken runs
+# batches <- 98:n_batches
+super_batch_idx <- batches %/% super_batch_bigness
+super_batches <- split(batches, super_batch_idx)
+n_super_batches <- length(super_batches)
+
+# How many workers to use? n_workers = 1 is sequential mode. We could try doing in
+# parallel again, but it seems to stochastically kill the container when we do
+n_workers <- 1
 
 # loop through insecticides
 for (this_insecticide in types_save) {
@@ -414,9 +427,16 @@ for (this_insecticide in types_save) {
   # # parameters over space
   # this_seed <- greta::.internals$utils$misc$get_seed()
   seed <- get_seed()
+  
+  # do a sub-batch
+  for (super_batch in super_batches) {
     
-    # run predictions in new processes
-    future_lapply(X = seq_len(n_batches),
+    # set up future workers
+    fut <- plan(multisession,  # future.callr::callr,
+                workers = n_workers)
+    
+    # loop through these batches, running predictions in new processes
+    future_lapply(X = super_batch,
                   FUN = predict_batch,
                   # raster cell numbers to loop over
                   cell_batches = cell_batches,
@@ -437,7 +457,33 @@ for (this_insecticide in types_save) {
                   # this probably isn't needed since we fix the seed at the
                   # level of TF, but it stops a warning from future
                   future.seed = TRUE)
-
+    
+    # # run once for debugging
+    # debugonce(predict_batch)
+    # predict_batch(batch_index = 98,
+    #               # raster cell numbers to loop over
+    #               cell_batches = cell_batches,
+    #               # index to the cells
+    #               cell_id_batches = cell_id_batches,
+    #               # combinations of all cells and years
+    #               cell_years_predict_index = cell_years_predict_index,
+    #               # data extracted for all cells and years
+    #               x_cell_years_predict = x_cell_years_predict,
+    #               # vector of countries to which each cell (in the full
+    #               # prediction set) belongs
+    #               cell_country_predict = cell_country_predict,
+    #               # the insecticide to compute for
+    #               insecticide_type = this_insecticide,
+    #               # an RNG seed to make sure all batches use the same posterior samples of
+    #               # parameters
+    #               rng_seed = seed)
+    
+    # destroy these workers, to hopefully reset the leaked memory
+    plan(sequential)
+    future::resetWorkers(fut)
+    
+  }
+    
 }
 
 for (this_insecticide in types_save) {
