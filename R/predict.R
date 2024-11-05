@@ -327,7 +327,7 @@ predict_batch <- function(
   # expand out to all prediction cells
   batch_countries <- cell_country_predict[cell_batch]
   batch_country_id <- match(batch_countries, all_countries)
-  init_array_batch <- init_country[batch_country_id, ingredient_ids]
+  init_array_batch <- init_country_pred[batch_country_id, ingredient_ids]
   
   # add a trailing dimension to match greta.dynamics interface
   dim(init_array_batch) <- c(dim(init_array_batch), 1)
@@ -416,8 +416,8 @@ for (this_insecticide in types_save) {
   seed <- get_seed()
     
     # run predictions in new processes
-    future_lapply(seq_len(n_batches),
-                  predict_batch,
+    future_lapply(X = seq_len(n_batches),
+                  FUN = predict_batch,
                   # raster cell numbers to loop over
                   cell_batches = cell_batches,
                   # index to the cells
@@ -428,7 +428,7 @@ for (this_insecticide in types_save) {
                   x_cell_years_predict = x_cell_years_predict,
                   # vector of countries to which each cell (in the full
                   # prediction set) belongs
-                  cell_country_predict,
+                  cell_country_predict = cell_country_predict,
                   # the insecticide to compute for
                   insecticide_type = this_insecticide,
                   # an RNG seed to make sure all batches use the same posterior samples of

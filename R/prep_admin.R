@@ -11,7 +11,7 @@ mask <- rast("data/clean/raster_mask.tif")
 africa_countries_un <- country_region_lookup()
 
 # harmonise these with the GADM layers. Need resolution <= 3 to include e.g.
-# British Indian Ocean Terrotory, which is in the UN country list
+# British Indian Ocean Territory, which is in the UN country list
 gadm <- geodata::world(resolution = 3, path = "data/raw") %>%
   st_as_sf() %>%
   mutate(
