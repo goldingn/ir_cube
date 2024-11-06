@@ -152,10 +152,18 @@ cell_id_batches <- split(seq_along(cells_predict), batch_idx)
 n_batches <- length(cell_batches)
 
 # which to predict - just effective LLIN susceptibility for now
-types_save <- c("llin_effective",
-                "Deltamethrin",
-                "Permethrin",
-                "Alpha-cypermethrin")
+types_save <- c(
+  "Permethrin",
+  "Alpha-cypermethrin",
+  "Deltamethrin",
+  "llin_effective",
+  "DDT",
+  "Pirimiphos-methyl", 
+  "Fenitrothion",
+  "Bendiocarb",
+  "Malathion", 
+  "Lambda-cyhalothrin"
+)
 
 # loop through these batches of cells/years and insecticide outputs, and save a
 # file of the batch predictions to disk
@@ -372,7 +380,7 @@ predict_batch <- function(
                           values = draws,
                           seed = rng_seed,
                           trace_batch_size = 25,
-                          nsim = 50)[[1]]
+                          nsim = 500)[[1]]
   
   # compute posterior mean over the draws, for cells and years
   batch_pred_mean <- apply(pred_batch, 2:4, mean)
@@ -518,14 +526,14 @@ for (this_insecticide in types_save) {
   
 }
 
-# copy files over to Tas
-this_insecticide <- "llin_effective"
-source_string <- sprintf("outputs/ir_maps/%s",
-                         this_insecticide)
-tifs <- list.files(source_string, pattern = "*.tif", full.names = TRUE)
-new_dest <- "/mnt/Z/gfatm_scenarios/data/IR_rasters"
-new_dir <- file.path(new_dest, this_insecticide)
-dir.create(new_dir, showWarnings = FALSE)  
-lapply(tifs,
-       file.copy,
-       to = new_dir)
+# # copy files over to Tas
+# this_insecticide <- "llin_effective"
+# source_string <- sprintf("outputs/ir_maps/%s",
+#                          this_insecticide)
+# tifs <- list.files(source_string, pattern = "*.tif", full.names = TRUE)
+# new_dest <- "/mnt/efs/transition/gfatm_scenarios/data/IR_rasters"
+# new_dir <- file.path(new_dest, this_insecticide)
+# dir.create(new_dir, showWarnings = FALSE)  
+# lapply(tifs,
+#        file.copy,
+#        to = new_dir)
