@@ -579,7 +579,6 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
     `concentration_percent`,
     `test protocol`,
     country,
-    `percent mortality`,
     `area type`,
     `citation_doi`
   ) %>%
@@ -618,10 +617,99 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
   mutate(source = "va")   # add database name
 
 
+
+# read in updated VA data
+ir_va_africa_new <- read_csv("data/raw/va_data_merged.csv") %>% 
+  # these were read in as characters and readxl is a pain to set column types
+  # keep only bioassays
+  filter(insecticide_resistance_data == "phenotypic") %>% 
+  mutate(
+    across(
+      c(`latitude_1`,
+        `longitude_1`,
+        `mosquitoes_tested_n`,
+        `percent_mortality`),
+      as.numeric)
+  ) %>%
+  mutate(
+    # change country name inconsistencies with mtm
+    country = if_else(country == "cote divoire",
+                      "Côte d’Ivoire",
+                      country),
+    country = if_else(country == "central african republic",
+                      "CAR",
+                      country),
+    country = if_else(country == "sao tome & principe",
+                      "Sao Tome & Principe",
+                      country),
+    country = if_else(country == "dr congo",
+                      "DR Congo",
+                      country),
+    # fix incorrect class
+    `insecticide class` = if_else(`insecticide_class` == "pyrethroid" &
+                                    `insecticide_tested`== c("ddt"),
+                                  "organochlorines",
+                                  `insecticide_class`),
+    `insecticide_class` = if_else(`insecticide_class` == "pyrethroid" &
+                                    `insecticide_tested` == c("malathion"),
+                                  "organophosphates",
+                                  `insecticide_class`)
+  ) %>% 
+  select(
+    `percent_mortality`,
+    `mosquitoes_tested_n`,
+    mosquitoes_dead_n,
+    `year_start`,
+    `latitude_1`,
+    `longitude_1`,
+    species,
+    `insecticide_tested`,
+    `insecticide_class`,
+    `concentration_percent`,
+    `test_protocol`,
+    country,
+    `area_type`,
+    `citation_doi`
+  ) %>%
+  # drop multipoints for now
+  filter(`area_type` == "point") %>% 
+  mutate(
+    # impute the number of mosquitoes from mortality rates where needed
+    `mosquitoes_tested_n` = case_when(
+      is.na(`mosquitoes_tested_n`) ~ infer_sample_size(`percent_mortality`),
+      .default = round(`mosquitoes_tested_n`)
+    ), 
+    # compute the integer number that died, for model
+    `mosquitoes_dead_n` = round(`mosquitoes_tested_n` * `percent_mortality` / 100)
+  ) %>%  
+  # drop those where resistance isn't recorded, for some reason
+  filter(
+    !is.na(`percent_mortality`)
+  ) %>%
+  # standardise names
+  rename(
+    died = `mosquitoes_dead_n`,
+    mosquito_number = `mosquitoes_tested_n`,
+    latitude = `latitude_1`,
+    longitude = `longitude_1`,
+    species = species,
+    insecticide_type = `insecticide_tested`,
+    concentration = `concentration_percent`,
+    test_type = `test_protocol`,
+    country_name = country,
+    mortality_adjusted = `percent_mortality`,
+    citation = `citation_doi`
+  ) %>% 
+  select(-`area_type`) %>% 
+  mutate(source = "va_new")   # add database name
+
+
+
 # bind together data note the order matters here: species goes before complex so that when removing
 # duplicates we retain the highest taxonomic resolution possible
 ir_everything <- ir_va_africa %>% 
-  bind_rows(ir_dis_mtm_africa,
+  bind_rows(ir_va_africa_new,
+            ir_dis_mtm_africa,
             ir_int_mtm_africa,
             ir_mapper_dis_species_africa,
             ir_mapper_int_complex,
@@ -718,6 +806,10 @@ ir_everything <- ir_everything %>%
          species = if_else(species == "arabiensis",
                            "Anopheles arabiensis",
                            species),
+         species = if_else(species %in% c("stephensi",
+                                          "Anopheles stephensi sl"),
+                           "Anopheles stephensi",
+                           species),
          species = if_else(species == "coluzzii (gambiae m)",
                            "Anopheles coluzzii",
                            species),
@@ -727,11 +819,18 @@ ir_everything <- ir_everything %>%
          # standardise complex names
          species = if_else(species %in% c("Funestus Subgroup",
                                           "funestus",
-                                          "Anopheles funestus s.l."),
+                                          "Anopheles funestus s.l.",
+                                          "Anopheles funestus sl",
+                                          "FUNESTUS COMPLEX"),
                            "funestus complex",
                            species),
          species = if_else(species %in% c("Gambiae Complex",
+                                          "GAMBIAE COMPLEX",
+                                          "gambiae",
+                                          "coluzzi",
                                           "Anopheles gambiae s.l.",
+                                          "Anopheles gambiae sl",
+                                          "gambiae (S_M)",
                                           "Anopheles coluzzii/gambiae"),
                            "gambiae complex",
                            species)
@@ -774,7 +873,6 @@ ir_everything <- ir_everything %>%
                                                   "Anopheles merus",
                                                   "Anopheles gambiae",
                                                   "Anopheles quadriannulatus",
-                                                  "Anopheles gambiae sl",
                                                   "Anopheles gambiae/Anopheles coluzzii",
                                                   "Anopheles gambiae ss"
   ),
@@ -783,8 +881,7 @@ ir_everything <- ir_everything %>%
   species_complex = if_else(species %in% c("funestus complex",
                                            "Anopheles funestus s.s.",
                                            "Anopheles funestus",
-                                           "Anopheles funestus ss",
-                                           "Anopheles funestus sl" 
+                                           "Anopheles funestus ss"
   ),
   "funestus complex",
   species_complex)
@@ -912,6 +1009,12 @@ ir_distinct_gambiae <- ir_distinct_gambiae %>%
 
 # check contributions from each database
 table(ir_distinct_gambiae$source) %>% sort(decreasing = TRUE)
+
+# print out some diagnostic checks for key columns
+summary(ir_distinct_gambiae$concentration)
+table(ir_distinct_gambiae$insecticide_class %>% as.factor()) %>% sort
+table(ir_distinct_gambiae$insecticide_type %>% as.factor()) %>% sort
+table(ir_distinct$species %>% as.factor()) %>% sort
 
 # # save the diagnostic interactive map
 # mapshot(mapview(ir_distinct_sf,zcol = "insecticide_type"),url = "distinct_pts.html")
