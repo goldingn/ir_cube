@@ -960,9 +960,9 @@ ir_everything <- ir_everything %>%
 ir_distinct <- ir_everything %>% 
   distinct(year_start,
            lat_round = round(latitude,
-                             digits = 2),
+                             digits = 1),
            lon_round = round(longitude,
-                             digits = 2),
+                             digits = 1),
            species_complex,
            insecticide_type,
            mosquito_number,
