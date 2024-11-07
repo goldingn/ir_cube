@@ -650,13 +650,25 @@ ir_va_africa_new <- read_csv("data/raw/va_data_merged.csv") %>%
                                     `insecticide_tested`== c("ddt"),
                                   "organochlorines",
                                   `insecticide_class`),
-    `insecticide_class` = if_else(`insecticide_class` == "pyrethroid" &
+    `insecticide_class` = if_else(`insecticide_class` %in% c("pyrethroid","carbamate") &
                                     `insecticide_tested` == c("malathion"),
                                   "organophosphates",
                                   `insecticide_class`),
     `insecticide_class` = if_else(is.na(`insecticide_class`) &
                                     `insecticide_tested` == c("dieldrin"),
                                   "organochlorines",
+                                  `insecticide_class`),
+    `insecticide_class` = if_else(`insecticide_class` == "carbamate"  &
+                                    `insecticide_tested` == c("fenitrothion"),
+                                  "organophosphate",
+                                  `insecticide_class`),
+    `insecticide_class` = if_else(`insecticide_class` == "carbamate"  &
+                                    `insecticide_tested` == c("pirimiphos_methyl"),
+                                  "organophosphate",
+                                  `insecticide_class`),
+    `insecticide_class` = if_else(is.na(`insecticide_class`)  &
+                                    `insecticide_tested` == c("pirimiphos_methyl"),
+                                  "organophosphate",
                                   `insecticide_class`)
   ) %>% 
   select(
