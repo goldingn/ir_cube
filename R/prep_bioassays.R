@@ -462,8 +462,8 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
 # bind together data note the order matters here: species goes before complex so that when removing
 # duplicates we retain the highest taxonomic resolution possible
 ir_everything <- ir_dis_mtm_africa %>% 
-  bind_rows(ir_int_mtm_africa,
-            ir_va_africa,
+  bind_rows(ir_va_africa,
+            ir_int_mtm_africa,
             ir_mapper_dis_species_africa,
             ir_mapper_int_complex,
             ir_mapper_dis_complex)
