@@ -38,7 +38,8 @@ ir_dis_mtm_africa <- read_xlsx(
     INSECTICIDE_CLASS,
     INSECTICIDE_CONC,
     TEST_TYPE,
-    COUNTRY_NAME
+    COUNTRY_NAME,
+    CITATION
   ) %>%
   mutate(
     # impute the number of mosquitoes from mortality rates where needed
@@ -105,7 +106,8 @@ ir_int_mtm_africa <- read_xlsx(
     #INSECTICIDE_INTENSITY, # don't need this because it is just a multiplier of discrimination
     #concentration
     TEST_TYPE,
-    COUNTRY_NAME
+    COUNTRY_NAME,
+    CITATION
   ) %>%
   mutate(
     # impute the number of mosquitoes from mortality rates where needed
@@ -165,7 +167,8 @@ ir_mapper_dis_species_africa <- read_csv("data/raw/2_standard-WHO-susc-test_spec
     `Test protocol`,
     Country,
     `Percent mortality`,
-    `Site type`
+    `Site type`,
+    `Source 1 citation`
   ) %>%
   # drop multipoints for now
   filter(`Site type` == "point") %>% 
@@ -205,7 +208,8 @@ ir_mapper_dis_species_africa <- read_csv("data/raw/2_standard-WHO-susc-test_spec
     concentration = `Concentration (%)`,
     test_type = `Test protocol`,
     country_name = Country,
-    mortality_adjusted = `Percent mortality`
+    mortality_adjusted = `Percent mortality`,
+    citation = `Source 1 citation`
   ) %>% 
   select(-`Site type`) %>% 
   # add database name
@@ -244,7 +248,8 @@ ir_mapper_dis_complex <- read_csv("data/raw/1_standard-WHO-susc-test_complex-sub
     `Test protocol`,
     Country,
     `Percent mortality`,
-    `Site type`
+    `Site type`,
+    `Source 1 citation`
   ) %>%
   # drop multipoints for now
   filter(`Site type` == "point") %>% 
@@ -284,7 +289,8 @@ ir_mapper_dis_complex <- read_csv("data/raw/1_standard-WHO-susc-test_complex-sub
     concentration = `Concentration (%)`,
     test_type = `Test protocol`,
     country_name = Country,
-    mortality_adjusted = `Percent mortality`
+    mortality_adjusted = `Percent mortality`,
+    citation = `Source 1 citation`
   ) %>% 
   select(-`Site type`) %>% 
   # add database name
@@ -324,7 +330,8 @@ ir_mapper_int_complex <- read_csv("data/raw/5_intensity-bioassays_complex-subgro
     `Test protocol`,
     Country,
     `Percent mortality`,
-    `Site type`
+    `Site type`,
+    `Source 1 citation`
   ) %>%
   # drop multipoints for now
   filter(`Site type` == "point") %>% 
@@ -367,7 +374,8 @@ ir_mapper_int_complex <- read_csv("data/raw/5_intensity-bioassays_complex-subgro
     concentration = `Concentration (%)`,
     test_type = `Test protocol`,
     country_name = Country,
-    mortality_adjusted = `Percent mortality`
+    mortality_adjusted = `Percent mortality`,
+    citation = `Source 1 citation`
   ) %>% 
   select(-`Site type`) %>% 
   # add database name
@@ -423,7 +431,8 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
     `test protocol`,
     country,
     `percent mortality`,
-    `area type`
+    `area type`,
+    `citation_doi`
   ) %>%
   # drop multipoints for now
   filter(`area type` == "point") %>% 
@@ -453,7 +462,8 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
     concentration = `concentration_percent`,
     test_type = `test protocol`,
     country_name = country,
-    mortality_adjusted = `percent mortality`
+    mortality_adjusted = `percent mortality`,
+    citation = `citation_doi`
   ) %>% 
   select(-`area type`) %>% 
   mutate(source = "va")   # add database name
