@@ -653,6 +653,10 @@ ir_va_africa_new <- read_csv("data/raw/va_data_merged.csv") %>%
     `insecticide_class` = if_else(`insecticide_class` == "pyrethroid" &
                                     `insecticide_tested` == c("malathion"),
                                   "organophosphates",
+                                  `insecticide_class`),
+    `insecticide_class` = if_else(is.na(`insecticide_class`) &
+                                    `insecticide_tested` == c("dieldrin"),
+                                  "organochlorines",
                                   `insecticide_class`)
   ) %>% 
   select(
