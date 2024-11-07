@@ -139,7 +139,9 @@ ir_int_mtm_africa <- read_xlsx(
   # standardise species column name
   rename(species = "vector_species")
 
-# load data from IR mapper discriminating assay data at species level
+
+
+# load data from public IR mapper discriminating assay data at species level
 # these are all Africa so no need for country subset
 ir_mapper_dis_species_africa <- read_csv("data/raw/2_standard-WHO-susc-test_species.csv",
                                          na = c("", "NA","NR","NF")) %>% 
@@ -215,7 +217,7 @@ ir_mapper_dis_species_africa <- read_csv("data/raw/2_standard-WHO-susc-test_spec
   # add database name
   mutate(source = "mapper_dis_species")
 
-# load data from IR mapper discriminating assay data at complex level
+# load data from public IR mapper discriminating assay data at complex level
 # these are all Africa so no need for country subset
 ir_mapper_dis_complex <- read_csv("data/raw/1_standard-WHO-susc-test_complex-subgroup.csv",
                                          na = c("", "NA","NR","NF")) %>% 
@@ -296,7 +298,7 @@ ir_mapper_dis_complex <- read_csv("data/raw/1_standard-WHO-susc-test_complex-sub
   # add database name
   mutate(source = "mapper_dis_complex")
 
-# load data from IR mapper intensity assay data at species level
+# load data from public IR mapper intensity assay data at species level
 # these are all Africa so no need for country subset
 ir_mapper_int_complex <- read_csv("data/raw/5_intensity-bioassays_complex-subgroup.csv",
                                   na = c("", "NA","NR","NF"),
@@ -380,6 +382,153 @@ ir_mapper_int_complex <- read_csv("data/raw/5_intensity-bioassays_complex-subgro
   select(-`Site type`) %>% 
   # add database name
   mutate(source = "mapper_int_complex")
+
+# load source IR mapper data, note these are in a different format and likely
+# contain additional data
+ir_mapper_source_2022 <- read_xlsx("data/raw/IR Mapper data August 2022.xlsx") %>% 
+  # enforce numeric column types
+  mutate(
+    across(
+      c(Latitude,
+        Longitude,
+        IR_Test_NumExposed,
+        IR_Test_mortality,
+        Mosquito_collection_Year_start,
+        Insecticide_dosage # coercing concentration to numeric would cause lots of NAs for non WHO bioassay entries due to units attached, we should deal with this later
+        ),
+      as.numeric)
+  ) %>%
+  # subset to required columns
+  select(
+    IR_Test_NumExposed,
+    Mosquito_collection_Year_start,
+    Latitude,
+    Longitude,
+    Vector_species,
+    Chemical_type,
+    Chemical_class,
+    Insecticide_dosage,
+    IR_Test_Method,
+    Country,
+    IR_Test_mortality,
+    Reference_Name
+  ) %>%
+  mutate(
+    # impute the number of mosquitoes from mortality rates where needed
+    IR_Test_NumExposed = case_when(
+      is.na(IR_Test_NumExposed) ~ infer_sample_size(IR_Test_mortality),
+      .default = round(IR_Test_NumExposed)
+    ), 
+    # compute the integer number that died, for model
+    died = round(IR_Test_NumExposed * IR_Test_mortality / 100),
+    # change country name inconsistencies with mtm
+    Country = if_else(Country == "Cote d Ivoire",
+                      "Côte d’Ivoire",
+                      Country),
+    Country = if_else(Country == "United Republic of Tanzania",
+                      "Tanzania",
+                      Country),
+    Country = if_else(Country == "Sao tome and principe",
+                      "Sao Tome & Principe",
+                      Country)
+  ) %>%  
+  # subset to africa
+  filter(Country %in% country_region_lookup()$country_name) %>% 
+  # drop those where resistance isn't recorded, likely PCR assays
+  filter(
+    !is.na(IR_Test_mortality)
+  ) %>%
+  # standardise names
+  rename(
+    mosquito_number = IR_Test_NumExposed,
+    year_start = Mosquito_collection_Year_start,
+    latitude = Latitude,
+    longitude = Longitude,
+    species = Vector_species,
+    insecticide_type = Chemical_type,
+    insecticide_class = Chemical_class,
+    concentration = Insecticide_dosage,
+    test_type = IR_Test_Method,
+    country_name = Country,
+    mortality_adjusted = IR_Test_mortality,
+    citation = Reference_Name
+  ) %>% 
+  # add database name
+  mutate(source = "mapper_source_2022")
+
+# load source IR mapper data, note these are in a different format and likely
+# contain additional data, this is the bit extra since 2022
+ir_mapper_source_2024 <- read_xlsx("data/raw/IR_Mapper_Anopheles_data_2021_Sept_2024.xlsx") %>% 
+  # enforce numeric column types
+  mutate(
+    across(
+      c(latitude,
+        longitude,
+        `iR_Test_NumExposed/Tested`,
+        iR_Test_Mortality,
+        collection_Year_Start,
+        insecticide_Dosage # coercing concentration to numeric would cause lots of NAs for non WHO bioassay entries due to units attached, we should deal with this later
+      ),
+      as.numeric)
+  ) %>%
+  # subset to required columns
+  select(
+    `iR_Test_NumExposed/Tested`,
+    collection_Year_Start,
+    latitude,
+    longitude,
+    vector_Species,
+    chemical_Type,
+    chemical_Class,
+    insecticide_Dosage,
+    iR_Test_Method,
+    country,
+    iR_Test_Mortality,
+    reference_Name
+  ) %>%
+  mutate(
+    # impute the number of mosquitoes from mortality rates where needed
+    `iR_Test_NumExposed/Tested` = case_when(
+      is.na(`iR_Test_NumExposed/Tested`) ~ infer_sample_size(iR_Test_Mortality),
+      .default = round(`iR_Test_NumExposed/Tested`)
+    ), 
+    # compute the integer number that died, for model
+    died = round(iR_Test_Mortality * iR_Test_Mortality / 100),
+    # change country name inconsistencies with mtm
+    country = if_else(country == "Cote d Ivoire",
+                      "Côte d’Ivoire",
+                      country),
+    country = if_else(country == "United Republic of Tanzania",
+                      "Tanzania",
+                      country),
+    country = if_else(country == "Sao tome and principe",
+                      "Sao Tome & Principe",
+                      country)
+  ) %>%  
+  # subset to africa
+  filter(country %in% country_region_lookup()$country_name) %>% 
+  # drop those where resistance isn't recorded, likely PCR assays
+  filter(
+    !is.na(iR_Test_Mortality)
+  ) %>%
+  # standardise names
+  rename(
+    mosquito_number = `iR_Test_NumExposed/Tested`,
+    year_start = collection_Year_Start,
+    latitude = latitude,
+    longitude = longitude,
+    species = vector_Species,
+    insecticide_type = chemical_Type,
+    insecticide_class = chemical_Class,
+    concentration = insecticide_Dosage,
+    test_type = iR_Test_Method,
+    country_name = country,
+    mortality_adjusted = iR_Test_Mortality,
+    citation = reference_Name
+  ) %>% 
+  # add database name
+  mutate(source = "mapper_source_2024")
+  
 
 # load vector atlas
 
@@ -471,12 +620,14 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
 
 # bind together data note the order matters here: species goes before complex so that when removing
 # duplicates we retain the highest taxonomic resolution possible
-ir_everything <- ir_dis_mtm_africa %>% 
-  bind_rows(ir_va_africa,
+ir_everything <- ir_va_africa %>% 
+  bind_rows(ir_dis_mtm_africa,
             ir_int_mtm_africa,
             ir_mapper_dis_species_africa,
             ir_mapper_int_complex,
-            ir_mapper_dis_complex)
+            ir_mapper_dis_complex,
+            ir_mapper_source_2022,
+            ir_mapper_source_2024)
 
 # standardise the data
 ir_everything <- ir_everything %>% 
@@ -507,6 +658,33 @@ ir_everything <- ir_everything %>%
                                insecticide_type),
     insecticide_type = if_else(insecticide_type == "pirimiphos_methyl",
                                "pirimiphos-methyl",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "alphacypermethrin 5x",
+                               "alphacypermethrin",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "alphacypermethrin 10x",
+                               "alphacypermethrin",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "deltamethrin 10x",
+                               "deltamethrin",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "deltamethrin10x",
+                               "deltamethrin",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "deltamethrin5x",
+                               "deltamethrin",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "lambda-cyhalothrin5x",
+                               "lambdacyhalothrin",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "lambda-cyhalothrin10x",
+                               "lambdacyhalothrin",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "permethrin 10x",
+                               "permethrin",
+                               insecticide_type),
+    insecticide_type = if_else(insecticide_type == "permethrin 5x",
+                               "permethrin",
                                insecticide_type)
   ) %>% 
   # standardise insecticide class nomenclature
@@ -523,6 +701,9 @@ ir_everything <- ir_everything %>%
     insecticide_class = if_else(insecticide_class == "pyrethroids",
                                 "pyrethroid",
                                 insecticide_class),
+    insecticide_class = if_else(insecticide_class == "neonicotinoids",
+                                "neonicotinoid",
+                                insecticide_class)
   ) %>% 
   # fill in missing class from va data
   mutate(
@@ -592,13 +773,18 @@ ir_everything <- ir_everything %>%
                                                   "Anopheles coluzzii",
                                                   "Anopheles merus",
                                                   "Anopheles gambiae",
-                                                  "Anopheles quadriannulatus"
+                                                  "Anopheles quadriannulatus",
+                                                  "Anopheles gambiae sl",
+                                                  "Anopheles gambiae/Anopheles coluzzii",
+                                                  "Anopheles gambiae ss"
   ),
   "gambiae complex",
   NA),
   species_complex = if_else(species %in% c("funestus complex",
                                            "Anopheles funestus s.s.",
-                                           "Anopheles funestus"
+                                           "Anopheles funestus",
+                                           "Anopheles funestus ss",
+                                           "Anopheles funestus sl" 
   ),
   "funestus complex",
   species_complex)
@@ -617,6 +803,14 @@ ir_everything <- ir_everything %>%
       insecticide_type == "fenitrothion" ~ "Fenitrothion",
       insecticide_type == "alphacypermethrin" ~ "Alpha-cypermethrin",
       insecticide_type == "malathion" ~ "Malathion",
+      insecticide_type == "carbosulfan" ~ "Carbosulfan",
+      insecticide_type == "chlorfenapyr" ~ "Chlorfenapyr",
+      insecticide_type == "propoxur" ~ "Propoxur",
+      insecticide_type == "etofenprox" ~ "Etofenprox",
+      insecticide_type == "dieldrin" ~ "Dieldrin",
+      insecticide_type == "cyfluthrin" ~ "Cyfluthrin",
+      insecticide_type == "clothianidin" ~ "Clothianidin",
+      insecticide_type == "chlorpyrifos-methyl" ~ "Chlorpyrifos-methyl",
       .default = NA
     ),
     insecticide_class = case_when(
@@ -624,6 +818,9 @@ ir_everything <- ir_everything %>%
       insecticide_class == "organophosphate" ~ "Organophosphates",
       insecticide_class == "organochlorine" ~ "Organochlorines",
       insecticide_class == "carbamate" ~ "Carbamates",
+      insecticide_class == "neonicotinoid" ~ "Neonicotinoids",
+      insecticide_class == "pyriproxyfen" ~ "Pyriproxyfen",
+      insecticide_class == "pyrroles" ~ "Pyrroles",
       .default = NA
     ),
     # capitalise countries again, then fix up errors
