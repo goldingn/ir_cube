@@ -951,6 +951,7 @@ ir_everything <- ir_everything %>%
     country_name = case_when(
       country_name == "United Republic of Tanzania" ~ "Tanzania",
       country_name == "Democratic Republic of the Congo" ~ "DR Congo",
+      country_name == "Dr Congo" ~ "DR Congo",
       country_name == "Central African Republic" ~ "CAR",
       country_name == "Sao Tome and Principe" ~ "Sao Tome & Principe",
     .default = country_name
