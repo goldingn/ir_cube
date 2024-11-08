@@ -60,7 +60,40 @@ covs_flat <- c(crops_group, crops_implicated)
 # load bioassay data
 ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 
+# numbers of unique location/time records per insecticide
+record_counts <- ir_africa %>%
+  group_by(insecticide_type, latitude, longitude, year_start) %>%
+  summarise(
+    mosquito_number = sum(mosquito_number),
+    .groups = "drop"
+  ) %>%
+  group_by(insecticide_type) %>%
+  summarise(
+    n = n(),
+    mosquito_number = mean(mosquito_number),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n))
+
+# keep only a subset of insecticide types
+
+# keep the first 9 of these: those with at least 1000 unique places/times, and
+# alpha-cypermethrin (914 unique) because of its use in LLINs.
+insecticides_keep <- c("Deltamethrin",
+                       "Permethrin",
+                       "DDT",
+                       "Bendiocarb",
+                       "Lambda-cyhalothrin", 
+                       "Pirimiphos-methyl",
+                       "Fenitrothion",
+                       "Malathion",
+                       "Alpha-cypermethrin")
+
+# # note: only one study has chlorfenapyr resistance (Benin in 2022)
+# ir_africa %>% filter(insecticide_type == "Chlorfenapyr") %>% View()
+
 df <- ir_africa %>%
+  filter(insecticide_type %in% insecticides_keep) %>%
   group_by(insecticide_type) %>%
   # subset to the most common concentration for each insecticide
   filter(
@@ -254,11 +287,8 @@ dim(fitness_array) <- c(n_times, n_unique_cells, n_types, 1)
 # baseline. More flex for DDT and less for others
 
 # prior and minimum values for the initial fractions susceptible
-
 init_frac_prior <- ifelse(types == "DDT", 0.9, 0.95)
 init_frac_min <- ifelse(types == "DDT", 0.75, 0.9)
-
-
 
 # mean logit proportion of the distance from the minimum to 1, for each type
 init_frac_relative_prior <- (init_frac_prior - init_frac_min) / (1 - init_frac_min)
@@ -469,18 +499,6 @@ system.time(
 # new data, from 1995, with hierarchical initial state
 # user    system   elapsed 
 # 23331.754  9113.193  5618.095 
-
-# new data, from 1995
-# user    system   elapsed 
-# 22645.760  9301.635  6053.067 
-
-# new data, from 2000
-# user    system   elapsed 
-# 15255.782  5870.483  3916.685 
-
-# old data, from 2000
-# user   system  elapsed
-# 7937.520 3529.599 2452.889
 
 save.image(file = "temporary/fitted_model.RData")
 

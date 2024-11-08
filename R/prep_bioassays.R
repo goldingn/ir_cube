@@ -493,7 +493,7 @@ ir_mapper_source_2024 <- read_xlsx("data/raw/IR_Mapper_Anopheles_data_2021_Sept_
       .default = round(`iR_Test_NumExposed/Tested`)
     ), 
     # compute the integer number that died, for model
-    died = round(iR_Test_Mortality * iR_Test_Mortality / 100),
+    died = round(`iR_Test_NumExposed/Tested` * iR_Test_Mortality / 100),
     # change country name inconsistencies with mtm
     country = if_else(country == "Cote d Ivoire",
                       "Côte d’Ivoire",
@@ -701,6 +701,11 @@ ir_va_africa_new <- read_csv("data/raw/va_data_merged.csv") %>%
   # drop those where resistance isn't recorded, for some reason
   filter(
     !is.na(`percent_mortality`)
+  ) %>%
+  # drop those where the number of mosquitoes tested is 0 (should probably be
+  # NA)
+  filter(
+    mosquitoes_tested_n != 0
   ) %>%
   # standardise names
   rename(
