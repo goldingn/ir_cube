@@ -46,9 +46,7 @@ df_plot <- df %>%
     .groups = "drop"
   ) %>%
   mutate(
-    type_id = match(insecticide, types),
-    type_id = factor(type_id),
-    country = factor(country)
+    country = factor(country, levels = rev(sort(unique(country))))
   )
 
 for (this_insecticide in insecticides_plot) {
@@ -78,7 +76,7 @@ for (this_insecticide in insecticides_plot) {
       limits = range(df_plot$year)
     ) +
     scale_y_discrete(
-      labels = rev(sort(unique(df_plot$country))),
+      # labels = rev(sort(unique(df_plot$country))),
       drop = FALSE
     ) +
     guides(
