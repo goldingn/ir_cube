@@ -28,8 +28,6 @@ insecticides_plot <- tibble(
   pull(insecticide)
 
 colour_types <- scales::hue_pal(direction = -1)(9)
-types_plot_id <- match(insecticides_plot, types)
-colours_plot <- colour_types[types_plot_id]
 
 df_plot <- df %>%
   rename(
@@ -53,7 +51,7 @@ df_plot <- df %>%
     country = factor(country)
   )
 
-for (this_insecticide in types) {
+for (this_insecticide in insecticides_plot) {
   df_plot %>%
     filter(
       insecticide == this_insecticide
@@ -66,7 +64,7 @@ for (this_insecticide in types) {
       )
     ) +
     geom_point(
-      fill = colours_plot[match(this_insecticide, types)],
+      fill = colour_types[match(this_insecticide, insecticides_plot)],
       shape = 21,
       alpha = 1
     ) +

@@ -79,15 +79,15 @@ record_counts <- ir_africa %>%
 
 # keep the first 9 of these: those with at least 1000 unique places/times, and
 # alpha-cypermethrin (914 unique) because of its use in LLINs.
-insecticides_keep <- c("Deltamethrin",
-                       "Permethrin",
-                       "DDT",
-                       "Bendiocarb",
+insecticides_keep <- c("Alpha-cypermethrin",
+                       "Deltamethrin",
                        "Lambda-cyhalothrin", 
-                       "Pirimiphos-methyl",
+                       "Permethrin",
                        "Fenitrothion",
                        "Malathion",
-                       "Alpha-cypermethrin")
+                       "Pirimiphos-methyl",
+                       "DDT",
+                       "Bendiocarb")
 
 # # note: only one study has chlorfenapyr resistance (Benin in 2022)
 # ir_africa %>% filter(insecticide_type == "Chlorfenapyr") %>% View()
