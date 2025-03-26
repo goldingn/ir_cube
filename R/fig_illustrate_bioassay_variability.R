@@ -253,6 +253,31 @@ ggsave(
 # distribution, with this mean, 100 samples, and correlation parameter estimate
 # from each dataset independently.
 
+# find the original sources for these and unserstand why there are soe sampled, and what was originally reported
+
+# location 339 (2012, 2014) is Busia, Western Kenya, with significant testing as
+# part of the IIR project (Implications of Insecticide Resistance consortium
+# https://parasitesandvectors.biomedcentral.com/articles/10.1186/s13071-018-3101-4)
+# and the Insecticide Resistance Project Kenya (Githinji et al.
+# https://onlinelibrary.wiley.com/doi/10.1155/2020/9423682)
+
+# location 397 (2011) is in New Halfa, Sudan, from Ismail et al., with multiple replicates
+# in these locations
+# https://parasitesandvectors.biomedcentral.com/articles/10.1186/s13071-018-2732-9
+
+# Location 5 from Benin, Yadouleton et al. (2010)
+# https://doi.org/10.1186/1475-2875-9-83 however it looks like the GPS
+# coordinates given were only for cotonou, not the specific parts there, so
+# variability could be due to local differences
+
+# Location 1014 (2015) is from Cameroon, from Mandeng et al
+df_most_sampled_stats
+df_most_sampled %>%
+  # group_by(cell_year_type, insecticide_type, source) %>%
+  # summarise(n = n()) %>%
+  View()
+
+
 
 # Using this estimate of the dispersion in susceptibility bioassays (and
 # assuming each was sampled from a single location), plot how the statistical
@@ -309,6 +334,3 @@ ggsave("figures/cluster_sampling_power.png",
        bg = "white",
        width = 6,
        height = 5)
-
-
-
