@@ -14,3 +14,34 @@ knitr::opts_chunk$set(
 # Spatiotemporal modelling of the spread of insecticide resistance in Africa
 
 This repo contains models and code to model the evolution and spread of insecticide resistance among malaria vectors in Africa. It uses a semi-mechanistic model to predict future levels of resistance across the continent, fitting closely to resistance data. 
+
+Running order of scripts:
+
+*To be tidied: this may not be the correct order*
+
+1. packages.R
+1. functions.R
+1. prep_admin.R
+1. prep_bioassays.R
+1. prep_rasters.R
+1. calculate_ingredient_fractions.R
+1. fit_model_glm.R
+1. fit_model.R
+1. illustrate_validation.R
+1. mtm_ir_explore.R
+1. ploidy_demo.R
+1. predict.R
+1. summarise_model_fit.R
+1. visualise_colony_net_bioassay.R
+1. visualise_data.R
+1. fig_admin_maps.R
+1. fig_baseline_susceptibility.R
+1. fig_bioassay_maps.R
+1. fig_covariate_effects.R
+1. fig_covariate_maps.R
+1. fig_data_distribution.R
+1. fig_illustrate_bioassay_variability.R
+1. fig_internal_validation.R
+1. fig_ir_maps.R
+1. fig_temporal_preds_data.R
+1. fig_temporal_preds_net_use.R
