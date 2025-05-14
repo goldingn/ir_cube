@@ -4,6 +4,9 @@
 source("R/packages.R")
 source("R/functions.R")
 
+
+# load in and prepare rasters
+
 insecticide_names <- c(
   "Deltamethrin",
   "Alpha-cypermethrin",
@@ -31,6 +34,8 @@ ir_rasts <- rast(ir_filenames)
 names(ir_rasts) <- insecticide_names
 
 
+# standard plot
+
 ggplot() +
   geom_spatraster(
     data = ir_rasts
@@ -50,6 +55,68 @@ ggplot() +
 
 ggsave(
   "figures/ir_map_all_insecticides_2025.png",
+  bg = "white",
+  width = 18,
+  height = 8,
+  dpi = 300
+)
+
+
+# patchwork plot to get scale into empty facet cell
+
+# function to make plot of each insecticide per above
+ir_plot_single <- function(
+    r,
+    name
+){
+  
+  ggplot() +
+    geom_spatraster(
+      data = r
+    ) +
+    scale_fill_gradient(
+      labels = scales::percent,
+      name = "Susceptibility",
+      limits = c(0, 1),
+      na.value = "transparent") +
+    labs(
+      title = name
+    ) +
+    theme_ir_maps()
+
+}
+
+# check it
+ir_plot_single(ir_rasts[[1]], name = insecticide_names[1])
+
+# make list of ggplot objects for each insecticide
+ir_map_list <- mapply(
+  ir_plot_single,
+  ir_rasts,
+  insecticide_names,
+  SIMPLIFY = FALSE
+)
+
+
+# arrange patchwork and plot
+ir_map_list[[1]] +
+  ir_map_list[[2]] +
+  ir_map_list[[3]] +
+  ir_map_list[[4]] +
+  ir_map_list[[5]] +
+  ir_map_list[[6]] +
+  ir_map_list[[7]] +
+  ir_map_list[[8]] +
+  ir_map_list[[9]] +
+  guide_area() + # this directs guide into empty cell in bottom right
+  plot_layout(
+    guides = "collect",
+    ncol = 5
+  )
+
+# save
+ggsave(
+  "figures/ir_map_all_insecticides_2025_fig2.png",
   bg = "white",
   width = 18,
   height = 8,
