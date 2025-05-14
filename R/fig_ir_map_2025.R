@@ -122,3 +122,28 @@ ggsave(
   height = 8,
   dpi = 300
 )
+
+# arrange patchwork and plot
+ir_map_list[[1]] +
+  ir_map_list[[2]] +
+  ir_map_list[[3]] +
+  ir_map_list[[4]] +
+  guide_area() + # this directs guide into empty cell in bottom right
+  ir_map_list[[5]] +
+  ir_map_list[[6]] +
+  ir_map_list[[7]] +
+  ir_map_list[[8]] +
+  ir_map_list[[9]] +
+  plot_layout(
+    guides = "collect",
+    ncol = 5
+  )
+
+# save
+ggsave(
+  "figures/ir_map_all_insecticides_2025_fig2_alt.png",
+  bg = "white",
+  width = 18,
+  height = 8,
+  dpi = 300
+)
