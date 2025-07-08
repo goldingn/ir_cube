@@ -717,5 +717,138 @@ optimal_nn_preds %>%
 # These are substantially more negative (overpredicting susceptibility) 3y into
 # the future.
 
-# Can we use Penny's previously estimated maps (to 2017) in this comparison?
-# https://doi.org/10.6084/m9.figshare.9912623 
+
+# Compute spatial extrapolation and interpolation ability based on Penny's
+# published maps, subsetted to (2010 to 2017) and only in the regions covered
+# https://doi.org/10.6084/m9.figshare.9912623
+
+hancock_preds <- terra::rast("data/clean/hancock_2020_predictions.tif")
+
+# extract predictions form Hancock layers for a given a fixed insecticide type
+# and year, and vectors of coordinates
+pred_hancock <- function(insecticide_type,
+                         year,
+                         latitude,
+                         longitude) {
+  
+  # form the coordinates matrix
+  coords <- cbind(longitude, latitude)
+  
+  # extract all the values, for all layers and reshape these to get the row
+  # number, insecticide_type, and year
+  values <- hancock_preds %>%
+    terra::extract(coords) %>%
+    as_tibble() %>%
+    mutate(
+      row = row_number()
+    ) %>%
+    pivot_longer(
+      cols = !any_of("row"),
+      names_to = c("insecticide_type", "year"),
+      names_pattern = "(.*)_(.*)",
+      values_to = "prediction"
+    ) %>%
+    mutate(
+      insecticide_type = case_when(
+        insecticide_type == "Alphacypermethrin" ~ "Alpha-cypermethrin",
+        insecticide_type == "Lambdacyhalothrin" ~ "Lambda-cyhalothrin-cypermethrin",
+        .default = insecticide_type
+      ),
+      year = as.numeric(year)
+    )
+
+  # list the data we want, and get it from the list of values
+  targets <- tibble(
+    row = seq_along(longitude),
+    insecticide_type = insecticide_type,
+    year = year
+  ) %>%
+  left_join(
+    values,
+    by = c("row", "insecticide_type", "year")
+  ) %>%
+    pull(prediction)
+
+}
+
+# for the full set of optimal nn predictions, extract the prediction from
+# Hancock and append. Then subset to only those records with Hancock predictions
+# and compute null and Hancock validation metrics
+
+
+hancock_test_set <- optimal_nn_preds %>%
+  # pre-emptively subset to Hancock prediction years and insecticides
+  filter(
+    year_start %in% 2006:2017,
+    insecticide_type %in% c("Alpha-cypermethrin",
+                            "DDT",
+                            "Deltamethrin",
+                            "Lambda-cyhalothrin",
+                            "Permethrin") 
+  ) %>%
+  # do extraction in batches of insecticide types and year, so we can extract
+  # from one raster layer at a time
+  mutate(
+    predicted_hancock = pred_hancock(insecticide_type = insecticide_type,
+                                     year = year_start,
+                                     latitude = latitude,
+                                     longitude = longitude)
+  ) %>%
+  # drop any test data for which hancock made no prediction
+  filter(
+    !is.na(predicted_hancock)
+  ) %>%
+  mutate(
+    # clamp greater-than-1 predictions to 1
+    predicted_hancock = pmin(predicted_hancock, max(predicted_hancock[predicted_hancock < 1]))
+  )
+
+# summarise these predictions and the nn predictions
+plot(hancock_test_set$predicted_hancock ~ hancock_test_set$predicted)
+range(hancock_test_set$predicted_hancock)
+
+# split these by country (spatial extrapolation) and years ahead (temporal
+# forecasting)
+hancock_test_set %>%
+  filter(
+    experiment == "spatial_interpolation"
+  ) %>%
+  group_by(
+    year_start
+  ) %>%
+  summarise(
+    pred_error_nn = betabinom_dev(died = died,
+                                  mosquito_number = mosquito_number,
+                                  predicted = predicted),
+    pred_error_hancock = betabinom_dev(died = died,
+                                  mosquito_number = mosquito_number,
+                                  predicted = predicted_hancock),
+    bias_nn = mean(predicted - observed),
+    bias_hancock = mean(predicted_hancock - observed),
+    .groups = "drop"
+  )
+# At spatial interpolation, Hancock et al. is almost always better than the
+# nearest neighbour heuristic (9 neighbour) on both prediction error, and
+# similar in terms of bias (though generally overestimating susceptibility)
+
+hancock_test_set %>%
+  filter(
+    experiment == "spatial_extrapolation"
+  ) %>%
+  group_by(
+    country_name
+  ) %>%
+  summarise(
+    pred_error_nn = betabinom_dev(died = died,
+                                  mosquito_number = mosquito_number,
+                                  predicted = predicted),
+    pred_error_hancock = betabinom_dev(died = died,
+                                       mosquito_number = mosquito_number,
+                                       predicted = predicted_hancock),
+    bias_nn = mean(predicted - observed),
+    bias_hancock = mean(predicted_hancock - observed),
+    .groups = "drop"
+  )
+# At spatial extrapolation (even though trained on data from the held-out
+# countries), Hancock et al is worse than the nearest neighbour heuristic (1
+# nearest neighbour) on both prediction error and bias
