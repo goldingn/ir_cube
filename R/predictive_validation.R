@@ -21,7 +21,6 @@ africa <- gadm_polys %>%
   # st_combine() %>%
   st_union()
 
-
 baseline_year <- 1995
 
 insecticides_keep <- c("Alpha-cypermethrin",
@@ -64,9 +63,17 @@ df <- ir_africa %>%
 # dropout), spatial interpolation (multi-area dropout), and temporal forecasting
 # (last years dropout)
 
-# Find the countries with enough data for model validation (at least 20
+# Subset the test set to only the recent period, to ensure similarity of
+# resistance levels with the present day, whilst retaining a reasonable amount
+# of data for testing.
+test_min_year <- 2010
+
+# Find the countries with enough data for model validation (at least 10
 # bioassays for each insecticide type) and make a table of counts
 country_bioassay_counts <- df %>%
+  filter(
+    year_start >= test_min_year
+  ) %>%
   group_by(
     country_name,
     insecticide_type) %>%
@@ -74,9 +81,9 @@ country_bioassay_counts <- df %>%
     records = n(),
     .groups = "drop"
   ) %>%
-  # find country/insecticide combinations with a reasonable number of records
+  # find country/insecticide combinations with a reasonable number of records in recent years
   filter(
-    records > 20
+    records > 10
   ) %>%
   # find countries with enough records of all insecticides
   group_by(
@@ -107,10 +114,17 @@ countries_to_validate
 
 # make a list of training and test datasets for out-of-sample validation
 
-# Subset a dataset based on values in a field. If keep == TRUE (the default), return the
-# subset of the dataset where field_name (a character for the column name) is
-# one of the elements in field_values (a character vector), if keep = FALSE, return everything except for those records
-split_data <- function(field_values, field_name, dataset, keep = TRUE) {
+# Subset a dataset based on values in a field. If keep == TRUE (the default),
+# return the subset of the dataset where field_name (a character for the column
+# name) is one of the elements in field_values (a character vector), if keep =
+# FALSE, return everything except for those records. When keep = TRUE, records
+# are only kept if they are after 'keep_min_year' - to optionally limit test
+# sets to recent years
+split_data <- function(field_values,
+                       field_name,
+                       dataset,
+                       keep = TRUE,
+                       keep_min_year = 1900) {
   
   if (keep) {
     
@@ -118,6 +132,9 @@ split_data <- function(field_values, field_name, dataset, keep = TRUE) {
       filter_at(
         vars(starts_with(field_name)),
         any_vars(. %in% field_values)
+      ) %>%
+      filter(
+        year_start >= keep_min_year
       )
     
   } else {
@@ -147,7 +164,8 @@ spatial_extrapolation <- list(
     split_data,
     field_name = "country_name",
     dataset = df,
-    keep = TRUE
+    keep = TRUE,
+    keep_min_year = test_min_year
   )
 )
 names(spatial_extrapolation$training) <- countries_to_validate
@@ -208,20 +226,23 @@ test_threshold <- quantile(min_dists, 0.05)
 buffer_distance <- 0.5 * test_threshold
 buffer_threshold <- test_threshold + buffer_distance
 
+# split into test (in threshold and on or after min test year), training
+# (outside buffer) and excluded points (everything else)
 df_interp <- df %>%
   mutate(
     fold = case_when(
-      min_dists < test_threshold ~ "test",
+      min_dists < test_threshold &
+        year_start >= test_min_year ~ "test",
       min_dists > buffer_threshold ~ "training",
-      .default = "buffer"
+      .default = "excluded"
     ),
-    fold = factor(fold, levels = c("buffer", "training", "test"))
+    fold = factor(fold, levels = c("excluded", "training", "test"))
   )
 
 # check the training and test splits contain all the insecticides
 df_interp %>%
   filter(
-    fold != "buffer"
+    fold != "excluded"
   ) %>%
   group_by(
     fold,
@@ -273,7 +294,7 @@ interp_plot <- df_interp %>%
     values = c(
       "training" = train_test_col[2],
       "test" = train_test_col[1],
-      "buffer" = grey(0.8)
+      "excluded" = grey(0.8)
     )
   ) +
   coord_sf(
@@ -355,12 +376,39 @@ temporal_forecasting
 # Define the null model: For each point in the training data, average over the X
 # nearest datapoints from the current and previous year
 
+# binomial deviance
+betabinom_dev <- function(died, mosquito_number, predicted, rho = 0.15) {
+  
+  # reparameterise from prediction and overdispersion ot the beta parameters
+  a <- predicted * (1 / rho - 1)
+  b <- a * (1 - predicted) / predicted
+  
+  log_probs <- extraDistr::dbbinom(x = died,
+                                   size = mosquito_number,
+                                   alpha = a,
+                                   beta = b,
+                                   log = TRUE)
+  -2 * sum(log_probs)
+}
+
+binom_dev <- function(died, mosquito_number, predicted) {
+  log_probs <- dbinom(x = died,
+                      size = mosquito_number,
+                      prob = predicted,
+                      log = TRUE)
+  -2 * sum(log_probs)
+}
+
 rmse <- function(observed, predicted) {
   sqrt(mean(observed - predicted) ^ 2)
 }
 
 mae <- function(observed, predicted) {
   mean(abs(observed - predicted))
+}
+
+prop <- function(died, tested) {
+  died / tested
 }
 
 # given vectors of latitude, longitude, year, and insecticide type for test
@@ -401,10 +449,11 @@ predict_null_fixed_nn <- function(latitude,
     # mask these (with Inf) if they are not in the same or the previous year or
     # not for the same insecticide type
     this_year <- year[i]
-    this_insecticide_type <- insecticide_type[i]
+    this_insecticide <- insecticide_type[i]
+    
     valid_years <- this_year + year_diff
-    training_year_valid <- training$year_start %in% valid_years
-    insecticide_type_valid <- training$insecticide_type == this_insecticide_type
+    training_year_valid <- training_data$year_start %in% valid_years
+    insecticide_type_valid <- training_data$insecticide_type == this_insecticide
     valid <- training_year_valid & insecticide_type_valid
     masked_distance_vec <- ifelse(valid, distance_vec, Inf)
     
@@ -416,13 +465,20 @@ predict_null_fixed_nn <- function(latitude,
     # compute a weighted mean of these as the prediction
     total_died <- sum(training_data$died[nearest_training_idx])
     total_tested <- sum(training_data$mosquito_number[nearest_training_idx])
-    preds[i] <- total_died / total_tested
+    preds[i] <- emplog_prop(total_died, total_tested)
     
   }
   
   # return the predictions
   preds
   
+}
+
+# approximate non-zero and non-one proportions by applying the empirical logit
+# transform to the data and then the inverse logit to provide a proportion
+emplog_prop <- function(died, mosquito_number) {
+  emplog <- log((died + 0.5) / (mosquito_number - died + 0.5))
+  plogis(emplog)
 }
 
 
@@ -454,7 +510,7 @@ predict_null_optimal_nn <- function(test_data,
   # test data
   grid_search <- test_data %>%
     mutate(
-      observed = died / mosquito_number
+      observed = prop(died, mosquito_number)
     ) %>%
     # add on nearest neighbour values to try (enforce integers)
     expand_grid(
@@ -476,24 +532,26 @@ predict_null_optimal_nn <- function(test_data,
     ungroup()
   
   # compute rmse for this grid search on numbers of neighbours to find the optimum
-  rmses <- grid_search %>%
+  pred_errors <- grid_search %>%
     group_by(
       n_neighbours
     ) %>%
     summarise(
-      rmse = rmse(observed, predicted)
+      pred_error = betabinom_dev(died = died,
+                                 mosquito_number = mosquito_number,
+                                 predicted = predicted)
     )
   
   # maybe plot the relationship to check for convexity
   if (plot) {
-    plot(rmse ~ n_neighbours,
-         data = rmses,
+    plot(pred_error ~ n_neighbours,
+         data = pred_errors,
          type = "b")
   }
   
   # pull out the optimal value
-  optimal_nn <- rmses %>%
-    filter(rmse == min(rmse)) %>%
+  optimal_nn <- pred_errors %>%
+    filter(pred_error == min(pred_error)) %>%
     slice(1) %>%
     pull(n_neighbours)
   
@@ -508,10 +566,9 @@ predict_null_optimal_nn <- function(test_data,
 
 # Do grid search to find the optimal number of nearest neighbours for spatial
 # interpolation and temporal forecasting
-
 spatial_interpolation_preds <- spatial_interpolation$test %>%
   mutate(
-    mortality = died / mosquito_number
+    mortality = prop(died, mosquito_number)
   ) %>%
   predict_null_optimal_nn(
     training_data = spatial_interpolation$training
@@ -521,7 +578,7 @@ spatial_interpolation_preds <- spatial_interpolation$test %>%
 # third year into the future
 temporal_forecasting_preds <- temporal_forecasting$test %>%
   mutate(
-    mortality = died / mosquito_number
+    mortality = prop(died, mosquito_number)
   ) %>%
   predict_null_optimal_nn(
     training_data = temporal_forecasting$training,
@@ -533,7 +590,7 @@ temporal_forecasting_preds <- temporal_forecasting$test %>%
 each_country_optimal_nn <- function(test, training) {
   test %>%
     mutate(
-      mortality = died / mosquito_number
+      mortality = prop(died, mosquito_number)
     ) %>%
     predict_null_optimal_nn(
       training_data = training
@@ -551,21 +608,23 @@ spatial_extrapolation_preds <- mapply(
   )
 
 # get and plot the overall rmses
-spatial_extrapolation_rmses <- spatial_extrapolation_preds %>%
+spatial_extrapolation_pred_errors <- spatial_extrapolation_preds %>%
   group_by(
     n_neighbours
   ) %>%
   summarise(
-    rmse = rmse(observed, predicted)
+    pred_error = betabinom_dev(died = died,
+                               mosquito_number = mosquito_number,
+                               predicted = predicted)
   )
 
-plot(rmse ~ n_neighbours,
-     data = spatial_extrapolation_rmses,
+plot(pred_error ~ n_neighbours,
+     data = spatial_extrapolation_pred_errors,
      type = "b")
 
 # find the optimum
-spatial_extrapolation_optimal_nn <- spatial_extrapolation_rmses %>%
-  filter(rmse == min(rmse)) %>%
+spatial_extrapolation_optimal_nn <- spatial_extrapolation_pred_errors %>%
+  filter(pred_error == min(pred_error)) %>%
   slice(1) %>%
   pull(n_neighbours)
 
@@ -597,14 +656,28 @@ optimal_nn <- optimal_nn_preds %>%
   )
 optimal_nn
 
-# compute bias and RMSE for each of these and tabulate
+# compute overall bias and RMSE for each of these and tabulate
 optimal_nn_preds %>%
   group_by(
     experiment
   ) %>%
   summarise(
-    rmse = rmse(observed, predicted),
-    mae = mae(observed, predicted),
+    pred_error = betabinom_dev(died = died,
+                               mosquito_number = mosquito_number,
+                               predicted = predicted),
+    bias = mean(predicted - observed),
+    .groups = "drop"
+  )
+
+# only for spatial interpolation
+optimal_nn_preds %>%
+  filter(
+    experiment == "spatial_interpolation"
+  ) %>%
+  summarise(
+    pred_error = betabinom_dev(died = died,
+                               mosquito_number = mosquito_number,
+                               predicted = predicted),
     bias = mean(predicted - observed),
     .groups = "drop"
   )
@@ -619,15 +692,12 @@ optimal_nn_preds %>%
     country_name
   ) %>%
   summarise(
-    rmse = rmse(observed, predicted),
-    mae = mae(observed, predicted),
+    pred_error = betabinom_dev(died = died,
+                               mosquito_number = mosquito_number,
+                               predicted = predicted),
     bias = mean(predicted - observed),
     .groups = "drop"
   )
-
-# The biases are positive for some countries and negative for others. They
-# cancel out in aggregate, but this is suboptimal
-
 
 optimal_nn_preds %>%
   filter(
@@ -637,20 +707,15 @@ optimal_nn_preds %>%
     year_start
   ) %>%
   summarise(
-    rmse = rmse(observed, predicted),
-    mae = mae(observed, predicted),
+    pred_error = betabinom_dev(died = died,
+                               mosquito_number = mosquito_number,
+                               predicted = predicted),
     bias = mean(predicted - observed),
     .groups = "drop"
   )
 
-# these are substantially more biased further into the future, as expected
-
-
-# should these validation studies be limited to dropouts in recent years, to
-# capture heterogeneity and average levels of resistance?
-
-# should the error and bias measures attempt to account for the binomial
-# variance (errors will be bigger closer to 0.5, so scale according to this?)
+# These are substantially more negative (overpredicting susceptibility) 3y into
+# the future.
 
 # Can we use Penny's previously estimated maps (to 2017) in this comparison?
 # https://doi.org/10.6084/m9.figshare.9912623 
