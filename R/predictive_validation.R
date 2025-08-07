@@ -680,8 +680,11 @@ optimal_nn_preds %>%
                                predicted = predicted),
     bias = mean(predicted - observed),
     .groups = "drop"
-  )
+  ) %>% 
+  mutate(experiment = "spatial_interpolation") -> interp_result
 
+# save null model CV results as csvs
+write_csv(interp_result,"outputs/interp_result.csv")
 # split these by country (spatial extrapolation) and years ahead (temporal
 # forecasting)
 optimal_nn_preds %>%
@@ -697,8 +700,11 @@ optimal_nn_preds %>%
                                predicted = predicted),
     bias = mean(predicted - observed),
     .groups = "drop"
-  )
+  ) %>% 
+  mutate(experiment = "spatial_extrapolation") -> extrap_result
 
+# save null model CV results as csvs
+write_csv(extrap_result,"outputs/extrap_result.csv")
 optimal_nn_preds %>%
   filter(
     experiment == "temporal_forecasting"
@@ -712,8 +718,10 @@ optimal_nn_preds %>%
                                predicted = predicted),
     bias = mean(predicted - observed),
     .groups = "drop"
-  )
-
+  ) %>% 
+  mutate(experiment = "temporal_forecasting") -> temp_forecast_result
+# save null model CV results as csvs
+write_csv(temp_forecast_result,"outputs/temp_forecast_result.csv")
 # These are substantially more negative (overpredicting susceptibility) 3y into
 # the future.
 
@@ -826,10 +834,14 @@ hancock_test_set %>%
     bias_nn = mean(predicted - observed),
     bias_hancock = mean(predicted_hancock - observed),
     .groups = "drop"
-  )
+  ) %>% 
+  mutate(experiment = "hancock_spatial_interpolation") -> hancock_interp_result
 # At spatial interpolation, Hancock et al. is almost always better than the
 # nearest neighbour heuristic (9 neighbour) on both prediction error, and
 # similar in terms of bias (though generally overestimating susceptibility)
+
+# save null model CV results as csvs
+write_csv(hancock_interp_result,"outputs/hancock_interp_result.csv")
 
 hancock_test_set %>%
   filter(
@@ -848,7 +860,11 @@ hancock_test_set %>%
     bias_nn = mean(predicted - observed),
     bias_hancock = mean(predicted_hancock - observed),
     .groups = "drop"
-  )
+  ) %>% 
+  mutate(experiment = "hancock_spatial_extrapolation") -> hancock_extrap_result
 # At spatial extrapolation (even though trained on data from the held-out
 # countries), Hancock et al is worse than the nearest neighbour heuristic (1
 # nearest neighbour) on both prediction error and bias
+
+# save null model CV results as csvs
+write_csv(hancock_extrap_result,"outputs/hancock_extrap_result.csv")
