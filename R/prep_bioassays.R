@@ -619,7 +619,7 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
 
 
 # read in updated VA data
-ir_va_africa_new <- read_csv("data/raw/va_data_merged.csv") %>% 
+ir_va_africa_new <- read_csv("data/raw/VA_FULL_DATA_20250716.csv") %>% 
   # these were read in as characters and readxl is a pain to set column types
   # keep only bioassays
   filter(insecticide_resistance_data == "phenotypic") %>% 
