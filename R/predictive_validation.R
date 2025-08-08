@@ -526,8 +526,8 @@ predict_null_optimal_nn <- function(test_data,
                                         latitude = latitude,
                                         year = year_start,
                                         insecticide_type = insecticide_type,
-                                        training = spatial_interpolation$training,
-                                        n_nearest_neighbours = n_neighbours[1])
+                                        training = training_data,
+                                        n_nearest_neighbours = n_neighbours)
     ) %>%
     ungroup()
   
@@ -593,7 +593,8 @@ each_country_optimal_nn <- function(test, training) {
       mortality = prop(died, mosquito_number)
     ) %>%
     predict_null_optimal_nn(
-      training_data = training
+      training_data = training,
+      n_nearest_neighbour_range = c(35,45)
     )
 }
 
@@ -656,6 +657,9 @@ optimal_nn <- optimal_nn_preds %>%
   )
 optimal_nn
 
+# save optimal nn numbers
+write_csv(optimal_nn,"outputs/optimal_nn.csv")
+
 # compute overall bias and RMSE for each of these and tabulate
 optimal_nn_preds %>%
   group_by(
@@ -685,6 +689,7 @@ optimal_nn_preds %>%
 
 # save null model CV results as csvs
 write_csv(interp_result,"outputs/interp_result.csv")
+
 # split these by country (spatial extrapolation) and years ahead (temporal
 # forecasting)
 optimal_nn_preds %>%
@@ -705,6 +710,7 @@ optimal_nn_preds %>%
 
 # save null model CV results as csvs
 write_csv(extrap_result,"outputs/extrap_result.csv")
+
 optimal_nn_preds %>%
   filter(
     experiment == "temporal_forecasting"
@@ -862,9 +868,11 @@ hancock_test_set %>%
     .groups = "drop"
   ) %>% 
   mutate(experiment = "hancock_spatial_extrapolation") -> hancock_extrap_result
-# At spatial extrapolation (even though trained on data from the held-out
-# countries), Hancock et al is worse than the nearest neighbour heuristic (1
-# nearest neighbour) on both prediction error and bias
+# At spatial extrapolation Hancock et al is consistently better than the nearest
+# neighbour heuristic (41 nearest neighbour) on prediction error and better on
+# bias for most countries; however Hancock et al has consistent bias of
+# overestimating susceptibility, whereas null model doesn't seem to be biased in
+# one direction on average
 
 # save null model CV results as csvs
 write_csv(hancock_extrap_result,"outputs/hancock_extrap_result.csv")
