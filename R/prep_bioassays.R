@@ -1038,6 +1038,24 @@ table(ir_distinct_gambiae$insecticide_class %>% as.factor()) %>% sort
 table(ir_distinct_gambiae$insecticide_type %>% as.factor()) %>% sort
 table(ir_distinct$species %>% as.factor()) %>% sort
 
+# tabulate canonical insecticide classification and correct errors
+insecticide_class_type_canon <- table(ir_distinct_gambiae$insecticide_type,ir_distinct_gambiae$insecticide_class) %>% 
+  as_tibble(.name_repair = "unique") %>% 
+  rename(type = ...1, class = ...2) %>% 
+  arrange(desc(n)) %>% 
+  filter(!duplicated(type)) %>% 
+  select(!n)
+  
+# override class type match based on the canonical table
+ir_distinct_gambiae$insecticide_class <- insecticide_class_type_canon$class[match(ir_distinct_gambiae$insecticide_type,insecticide_class_type_canon$type)] 
+
+# check again if every combination of type and class is unique
+(table(ir_distinct_gambiae$insecticide_type,ir_distinct_gambiae$insecticide_class) %>% 
+  as_tibble(.name_repair = "unique") %>% 
+  rename(type = ...1, class = ...2) %>% distinct(type, class) %>% nrow()) == (table(ir_distinct_gambiae$insecticide_type,ir_distinct_gambiae$insecticide_class) %>% 
+  as_tibble(.name_repair = "unique") %>% 
+  rename(type = ...1, class = ...2) %>% distinct(type, class) %>% nrow())
+
 # # save the diagnostic interactive map
 # mapshot(mapview(ir_distinct_sf,zcol = "insecticide_type"),url = "distinct_pts.html")
 
