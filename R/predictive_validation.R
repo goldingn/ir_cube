@@ -50,6 +50,8 @@ df <- ir_africa %>%
     year_start >= baseline_year
   ) %>%
   mutate(
+    # need year id for main dynamical model
+    year_id = year_start - baseline_year + 1,
     # add on cell ids corresponding to these observations,
     cell = cellFromXY(mask,
                       as.matrix(select(., longitude, latitude)))
@@ -57,6 +59,24 @@ df <- ir_africa %>%
   # drop a handful of datapoints missing covariates
   filter(
     !is.na(extract(mask, cell)[, 1])
+  )
+
+
+# indexing for main model fitting
+classes <- unique(df$insecticide_class)
+types <- unique(df$insecticide_type)
+regions <- unique(df$region)
+countries <- unique(df$country_name)
+unique_cells <- unique(df$cell)
+years <- baseline_year - 1 + sort(unique(df$year_id))
+
+df <- df %>%
+  mutate(
+    cell_id = match(cell, unique_cells),
+    region_id = match(region, regions),
+    country_id = match(country_name, countries),
+    class_id = match(insecticide_class, classes),
+    type_id = match(insecticide_type, types)
   )
 
 # Define the training and test folds for: spatial extrapolation (country
@@ -571,7 +591,9 @@ spatial_interpolation_preds <- spatial_interpolation$test %>%
     mortality = prop(died, mosquito_number)
   ) %>%
   predict_null_optimal_nn(
-    training_data = spatial_interpolation$training
+    training_data = spatial_interpolation$training,
+    n_nearest_neighbour_range = c(10,10) 
+    # just being lazy and hard coding in the optimal nn result
   )
 
 # for temporal forecasting, use up to 3 years prior to enable prediction to the
@@ -582,7 +604,8 @@ temporal_forecasting_preds <- temporal_forecasting$test %>%
   ) %>%
   predict_null_optimal_nn(
     training_data = temporal_forecasting$training,
-    n_years_prior = 3
+    n_years_prior = 3,
+    n_nearest_neighbour_range = c(16,16)
   )
 
 # for spatial extrapolation, need to run it for each country and compute the average rmses to
@@ -594,7 +617,7 @@ each_country_optimal_nn <- function(test, training) {
     ) %>%
     predict_null_optimal_nn(
       training_data = training,
-      n_nearest_neighbour_range = c(35,45)
+      n_nearest_neighbour_range = c(41,41)
     )
 }
 
