@@ -834,15 +834,11 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     filter(
       experiment == "temporal_forecasting"
     ) %>% 
-    select(died,mosquito_number,observed,year_start,
-           country_name,
-           insecticide_type) %>% 
+    select(died,mosquito_number,observed,year_start) %>% 
     mutate(predicted_test_mean = predicted_test_mean,
            rho_classes_test_indexed = rho_classes_test_indexed) %>%
     group_by(
-      year_start,
-      country_name,
-      insecticide_type
+      year_start
     ) %>% 
     summarise(
       pred_error_dynamic = betabinom_dev(died = died,
@@ -859,25 +855,21 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     filter(
       experiment == "temporal_forecasting"
     ) %>% 
-    group_by(year_start,
-             country_name,
-             insecticide_type) %>% 
+    group_by(year_start) %>% 
     summarise(
       pred_error_nn = betabinom_dev(died = died,
                                     mosquito_number = mosquito_number,
                                     predicted = predicted),
       bias_nn = mean(predicted - observed)
     ) %>% 
-    left_join(test_outcome_df,by = join_by(year_start,
-                                           country_name,
-                                           insecticide_type)) %>% 
+    left_join(test_outcome_df,by = join_by(year_start)) %>% 
     mutate(experiment = "dynmaic_temporal_forecasting")
   
-  quick_regression <- lm(bias ~ model + country_name + insecticide_type, 
-     data = dynamic_temporal_forecast_result %>% 
-       pivot_longer(cols = starts_with("bias"),names_to = "model",values_to = "bias"))
-  
-  anova(quick_regression)
+  # quick_regression <- lm(bias ~ model + country_name + insecticide_type, 
+  #    data = dynamic_temporal_forecast_result %>% 
+  #      pivot_longer(cols = starts_with("bias"),names_to = "model",values_to = "bias"))
+  # 
+  # anova(quick_regression)
   
   # save to csv
   View(dynamic_temporal_forecast_result)
