@@ -484,7 +484,7 @@ get_spatial_extrapolation_intercept_pred_error <- function(test,training) {
               bias_intercept = mean(predicted - observed)) 
 }
 
-spatial_extrapolation_intercept_intercept_error <- mapply(
+spatial_extrapolation_intercept_error <- mapply(
   get_spatial_extrapolation_intercept_pred_error,
   spatial_extrapolation$test,
   spatial_extrapolation$training,
