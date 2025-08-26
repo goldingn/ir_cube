@@ -442,10 +442,12 @@ spatial_interpolation_intercept_preds <- predict(
   type = "response")
 
 spatial_interpolation_intercept_error <- spatial_interpolation$test %>% 
-  summarise(pred_error = betabinom_dev(died = died,
+  mutate(observed = prop(died, mosquito_number)) %>% 
+  summarise(pred_error_intercept = betabinom_dev(died = died,
                                     mosquito_number = mosquito_number,
-                                    predicted = spatial_interpolation_intercept_preds)) %>% 
-  pull()
+                                    predicted = spatial_interpolation_intercept_preds),
+            bias_intercept = mean(spatial_interpolation_intercept_preds - observed)) 
+
 
 temporal_forecasting_intercept_preds <- predict(
   glm(
@@ -456,10 +458,13 @@ temporal_forecasting_intercept_preds <- predict(
   type = "response")
 
 temporal_forecasting_intercept_error <- temporal_forecasting$test %>% 
+  mutate(observed = prop(died, mosquito_number),
+         predicted = temporal_forecasting_intercept_preds) %>% 
   group_by(year_start) %>% 
-  summarise(pred_error = betabinom_dev(died = died,
+  summarise(pred_error_intercept = betabinom_dev(died = died,
                                        mosquito_number = mosquito_number,
-                                       predicted = temporal_forecasting_intercept_preds)) 
+                                       predicted = predicted),
+            bias_intercept = mean(predicted - observed)) 
 
 get_spatial_extrapolation_intercept_pred_error <- function(test,training) {
   pred <- predict(
@@ -471,10 +476,12 @@ get_spatial_extrapolation_intercept_pred_error <- function(test,training) {
     type = "response")
   
   test %>% 
-    summarise(pred_error = betabinom_dev(died = died,
+    mutate(predicted = pred,
+           observed = prop(died, mosquito_number)) %>% 
+    summarise(pred_error_intercept = betabinom_dev(died = died,
                                          mosquito_number = mosquito_number,
-                                         predicted = pred)) %>% 
-    pull()
+                                         predicted = pred),
+              bias_intercept = mean(predicted - observed)) 
 }
 
 spatial_extrapolation_intercept_intercept_error <- mapply(
@@ -486,9 +493,7 @@ spatial_extrapolation_intercept_intercept_error <- mapply(
   do.call(
     bind_rows, .
   ) %>% 
-  pivot_longer(cols= everything(),
-               names_to = "country_name",
-               values_to = "pred_error")
+  mutate(country_name = countries_to_validate)
 
 # Define the nearest neighbour null model: For each point in the training data,
 # average over the X nearest datapoints from the current and previous year
