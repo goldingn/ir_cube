@@ -442,11 +442,13 @@ spatial_interpolation_intercept_preds <- predict(
   type = "response")
 
 spatial_interpolation_intercept_error <- spatial_interpolation$test %>% 
-  mutate(observed = prop(died, mosquito_number)) %>% 
+  mutate(observed = prop(died, mosquito_number),
+         predicted = spatial_interpolation_intercept_preds) %>% 
+  group_by(year_start) %>% 
   summarise(pred_error_intercept = betabinom_dev(died = died,
                                     mosquito_number = mosquito_number,
-                                    predicted = spatial_interpolation_intercept_preds),
-            bias_intercept = mean(spatial_interpolation_intercept_preds - observed)) 
+                                    predicted = predicted),
+            bias_intercept = mean(predicted - observed)) 
 
 
 temporal_forecasting_intercept_preds <- predict(
@@ -1004,6 +1006,11 @@ hancock_test_set %>%
   filter(
     experiment == "spatial_interpolation"
   ) %>%
+  mutate(predicted_intercept = predict(
+    glm(
+      cbind(died, (mosquito_number-died)) ~ 1, 
+      family = stats::binomial), 
+    type = "response")) %>% 
   group_by(
     year_start
   ) %>%
@@ -1016,6 +1023,10 @@ hancock_test_set %>%
                                   predicted = predicted_hancock),
     bias_nn = mean(predicted - observed),
     bias_hancock = mean(predicted_hancock - observed),
+    pred_error_intercept = betabinom_dev(died = died,
+                                         mosquito_number = mosquito_number,
+                                         predicted = predicted_intercept),
+    bias_intercept = mean(predicted_intercept - observed),
     .groups = "drop"
   ) %>% 
   mutate(experiment = "hancock_spatial_interpolation") -> hancock_interp_result
@@ -1030,6 +1041,11 @@ hancock_test_set %>%
   filter(
     experiment == "spatial_extrapolation"
   ) %>%
+  mutate(predicted_intercept = predict(
+    glm(
+      cbind(died, (mosquito_number-died)) ~ 1, 
+      family = stats::binomial), 
+    type = "response")) %>% 
   group_by(
     country_name
   ) %>%
@@ -1042,6 +1058,10 @@ hancock_test_set %>%
                                        predicted = predicted_hancock),
     bias_nn = mean(predicted - observed),
     bias_hancock = mean(predicted_hancock - observed),
+    pred_error_intercept = betabinom_dev(died = died,
+                                         mosquito_number = mosquito_number,
+                                         predicted = predicted_intercept),
+    bias_intercept = mean(predicted_intercept - observed),
     .groups = "drop"
   ) %>% 
   mutate(experiment = "hancock_spatial_extrapolation") -> hancock_extrap_result
