@@ -194,7 +194,8 @@ dynamic_extrap_result <- optimal_nn_preds %>%
   ) %>% 
   mutate(pred_error_dynamic = NA,,
          bias_dynamic = NA,
-         experiment = "dynmaic_spatial_extrapolation")
+         experiment = "dynmaic_spatial_extrapolation") %>% 
+ left_join(spatial_extrapolation_intercept_error,by = join_by(country_name)) 
 
 # initialise result df for vs hancock
 dynamic_extrap_result_vs_hancock <- dynamic_extrap_result %>%
@@ -624,6 +625,7 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
       bias_nn = mean(predicted - observed)
     ) %>% 
     left_join(test_outcome_df,by = join_by(year_start)) %>% 
+    left_join(spatial_interpolation_intercept_error,by = join_by(year_start)) %>% 
     mutate(experiment = "dynmaic_spatial_interpolation")
   
   # save to csv
@@ -862,7 +864,8 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
                                     predicted = predicted),
       bias_nn = mean(predicted - observed)
     ) %>% 
-    left_join(test_outcome_df,by = join_by(year_start)) %>% 
+    left_join(test_outcome_df,by = join_by(year_start))%>% 
+    left_join(temporal_forecasting_intercept_error,by = join_by(year_start)) %>% 
     mutate(experiment = "dynmaic_temporal_forecasting")
   
   # quick_regression <- lm(bias ~ model + country_name + insecticide_type, 
