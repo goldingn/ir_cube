@@ -586,18 +586,64 @@ predict_null_optimal_nn <- function(test_data,
 
 # Do grid search to find the optimal number of nearest neighbours for spatial
 # interpolation and temporal forecasting
+
+# for a fairer test, use an 'internal' test set from the training data for
+# selecting the optimal NN number, such that the approach is not cheating wrt to
+# optimising performance on test fold
+test_internal_train <- spatial_interpolation$training %>%
+  mutate(for_optim = FALSE)
+
+set.seed(111)
+test_internal_train[sample(nrow(test_internal_train),100),'for_optim'] <- TRUE
+
+
+spatial_interpolation_optimal_nn <- test_internal_train %>%
+  filter(for_optim) %>% 
+  mutate(
+    mortality = prop(died, mosquito_number)
+  ) %>%
+  predict_null_optimal_nn(
+    training_data = test_internal_train %>%
+      filter(!for_optim)
+  ) %>%
+  filter(nn_is_optimal) %>%
+  slice(1) %>%
+  pull(n_neighbours)
+  
+# build full prediction onto the test fold
 spatial_interpolation_preds <- spatial_interpolation$test %>%
   mutate(
     mortality = prop(died, mosquito_number)
   ) %>%
   predict_null_optimal_nn(
     training_data = spatial_interpolation$training,
-    n_nearest_neighbour_range = c(10,10) 
-    # just being lazy and hard coding in the optimal nn result
+    n_nearest_neighbour_range = c(spatial_interpolation_optimal_nn,
+                                  spatial_interpolation_optimal_nn) 
   )
+
 
 # for temporal forecasting, use up to 3 years prior to enable prediction to the
 # third year into the future
+test_internal_train <- temporal_forecasting$training %>%
+  mutate(for_optim = FALSE)
+
+set.seed(111)
+test_internal_train[sample(nrow(test_internal_train),100),'for_optim'] <- TRUE
+
+
+temporal_forecasting_optimal_nn <- test_internal_train %>%
+  filter(for_optim) %>% 
+  mutate(
+    mortality = prop(died, mosquito_number)
+  ) %>%
+  predict_null_optimal_nn(
+    training_data = test_internal_train %>%
+      filter(!for_optim)
+  ) %>%
+  filter(nn_is_optimal) %>%
+  slice(1) %>%
+  pull(n_neighbours)
+
 temporal_forecasting_preds <- temporal_forecasting$test %>%
   mutate(
     mortality = prop(died, mosquito_number)
@@ -605,11 +651,62 @@ temporal_forecasting_preds <- temporal_forecasting$test %>%
   predict_null_optimal_nn(
     training_data = temporal_forecasting$training,
     n_years_prior = 3,
-    n_nearest_neighbour_range = c(16,16)
+    n_nearest_neighbour_range = c(temporal_forecasting_optimal_nn,
+                                  temporal_forecasting_optimal_nn)
   )
 
 # for spatial extrapolation, need to run it for each country and compute the average rmses to
 # RMSEs to identify the optimal number of neighbours
+
+each_country_optimal_nn_internal <- function(training) {
+  
+  test_internal_train <- training %>%
+    mutate(for_optim = FALSE)
+  
+  set.seed(111)
+  test_internal_train[sample(nrow(test_internal_train),100),'for_optim'] <- TRUE
+  
+  test_internal_train %>%
+    filter(for_optim) %>%
+    mutate(
+      mortality = prop(died, mosquito_number)
+    ) %>%
+    predict_null_optimal_nn(
+      training_data = test_internal_train %>%
+        filter(!for_optim)
+    )
+}
+
+spatial_extrapolation_internal_preds <- lapply(
+  FUN = each_country_optimal_nn_internal,
+  spatial_extrapolation$training
+) %>%
+  do.call(
+    bind_rows, .
+  )
+
+# get and plot the overall rmses
+spatial_extrapolation_internal_pred_errors <- spatial_extrapolation_internal_preds %>%
+  group_by(
+    n_neighbours
+  ) %>%
+  summarise(
+    pred_error = betabinom_dev(died = died,
+                               mosquito_number = mosquito_number,
+                               predicted = predicted)
+  )
+
+plot(pred_error ~ n_neighbours,
+     data = spatial_extrapolation_internal_pred_errors,
+     type = "b")
+
+# find the optimum
+spatial_extrapolation_optimal_nn <- spatial_extrapolation_internal_pred_errors %>%
+  filter(pred_error == min(pred_error)) %>%
+  slice(1) %>%
+  pull(n_neighbours)
+
+# make full predictions onto test fold
 each_country_optimal_nn <- function(test, training) {
   test %>%
     mutate(
@@ -617,7 +714,7 @@ each_country_optimal_nn <- function(test, training) {
     ) %>%
     predict_null_optimal_nn(
       training_data = training,
-      n_nearest_neighbour_range = c(41,41)
+      n_nearest_neighbour_range = rep(spatial_extrapolation_optimal_nn,2)
     )
 }
 
@@ -641,16 +738,6 @@ spatial_extrapolation_pred_errors <- spatial_extrapolation_preds %>%
                                mosquito_number = mosquito_number,
                                predicted = predicted)
   )
-
-plot(pred_error ~ n_neighbours,
-     data = spatial_extrapolation_pred_errors,
-     type = "b")
-
-# find the optimum
-spatial_extrapolation_optimal_nn <- spatial_extrapolation_pred_errors %>%
-  filter(pred_error == min(pred_error)) %>%
-  slice(1) %>%
-  pull(n_neighbours)
 
 # overwrite the optimal flag
 spatial_extrapolation_preds <- spatial_extrapolation_preds %>%
@@ -865,8 +952,8 @@ hancock_test_set %>%
     .groups = "drop"
   ) %>% 
   mutate(experiment = "hancock_spatial_interpolation") -> hancock_interp_result
-# At spatial interpolation, Hancock et al. is almost always better than the
-# nearest neighbour heuristic (9 neighbour) on both prediction error, and
+# At spatial interpolation, Hancock et al. is consistently better than the
+# nearest neighbour heuristic on both prediction error, and
 # similar in terms of bias (though generally overestimating susceptibility)
 
 # save null model CV results as csvs
