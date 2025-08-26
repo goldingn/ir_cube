@@ -393,9 +393,6 @@ spatial_interpolation
 temporal_forecasting
 
 
-# Define the null model: For each point in the training data, average over the X
-# nearest datapoints from the current and previous year
-
 # binomial deviance
 betabinom_dev <- function(died, mosquito_number, predicted, rho = 0.15) {
   
@@ -430,6 +427,71 @@ mae <- function(observed, predicted) {
 prop <- function(died, tested) {
   died / tested
 }
+
+# define the intercept only null model
+
+# sanity check against manual mean
+  # spatial_interpolation_intercept_preds <- mean(spatial_interpolation$training$died/spatial_interpolation$training$mosquito_number)
+
+spatial_interpolation_intercept_preds <- predict(
+  glm(
+    cbind(died, (mosquito_number-died)) ~ 1, 
+    data = spatial_interpolation$training, 
+    family = stats::binomial), 
+  newdata = spatial_interpolation$test,
+  type = "response")
+
+spatial_interpolation_intercept_error <- spatial_interpolation$test %>% 
+  summarise(pred_error = betabinom_dev(died = died,
+                                    mosquito_number = mosquito_number,
+                                    predicted = spatial_interpolation_intercept_preds)) %>% 
+  pull()
+
+temporal_forecasting_intercept_preds <- predict(
+  glm(
+    cbind(died, (mosquito_number-died)) ~ 1, 
+    data = temporal_forecasting$training, 
+    family = stats::binomial), 
+  newdata = temporal_forecasting$test,
+  type = "response")
+
+temporal_forecasting_intercept_error <- temporal_forecasting$test %>% 
+  group_by(year_start) %>% 
+  summarise(pred_error = betabinom_dev(died = died,
+                                       mosquito_number = mosquito_number,
+                                       predicted = temporal_forecasting_intercept_preds)) 
+
+get_spatial_extrapolation_intercept_pred_error <- function(test,training) {
+  pred <- predict(
+    glm(
+      cbind(died, (mosquito_number-died)) ~ 1, 
+      data = training, 
+      family = stats::binomial), 
+    newdata = test,
+    type = "response")
+  
+  test %>% 
+    summarise(pred_error = betabinom_dev(died = died,
+                                         mosquito_number = mosquito_number,
+                                         predicted = pred)) %>% 
+    pull()
+}
+
+spatial_extrapolation_intercept_intercept_error <- mapply(
+  get_spatial_extrapolation_intercept_pred_error,
+  spatial_extrapolation$test,
+  spatial_extrapolation$training,
+  SIMPLIFY = FALSE
+) %>%
+  do.call(
+    bind_rows, .
+  ) %>% 
+  pivot_longer(cols= everything(),
+               names_to = "country_name",
+               values_to = "pred_error")
+
+# Define the nearest neighbour null model: For each point in the training data,
+# average over the X nearest datapoints from the current and previous year
 
 # given vectors of latitude, longitude, year, and insecticide type for test
 # data, and a tibble of training data, return a vector of predictions of the
