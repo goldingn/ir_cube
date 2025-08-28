@@ -878,8 +878,123 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
   View(dynamic_temporal_forecast_result)
   write_csv(dynamic_temporal_forecast_result,"outputs/dynamic_temporal_forecast_result.csv")
   
-
-  
   purge_greta_model()
   gc()
 
+  # plot
+  
+  dynamic_temporal_forecast_result %>% 
+    pivot_longer(starts_with("pred_error"), 
+                 values_to = "deviance", 
+                 names_to = "model") %>% 
+    mutate(model = stringr::word(model,3,3, sep = "_"),
+           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
+    select(year_start,model, deviance) %>% 
+    ggplot(aes(x = year_start, y = deviance, col = model)) + 
+    theme_minimal() +
+    scale_x_continuous(n.breaks = 3, name = "year") + 
+    geom_point(pch = 1, size = 2) + 
+    ggtitle("Predictive deviance in temporal forecast validation experiment")
+  
+  ggsave("figures/temporal_forecast_CV_deviance.png",
+         bg = "white",
+         scale = 0.8,
+         width = 8,
+         height = 8)
+  
+  dynamic_temporal_forecast_result %>% 
+    pivot_longer(starts_with("bias"), 
+                 values_to = "bias", 
+                 names_to = "model") %>% 
+    mutate(model = stringr::word(model,2,2, sep = "_"),
+           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
+    select(year_start,model, bias) %>% 
+    ggplot(aes(x = year_start, y = bias, col = model)) + 
+    theme_minimal() +
+    scale_x_continuous(n.breaks = 3, name = "year") + 
+    geom_point(pch = 2, size = 2) + 
+    ggtitle("Predictive bias in temporal forecast validation experiment")
+  
+  ggsave("figures/temporal_forecast_CV_bias.png",
+         bg = "white",
+         scale = 0.8,
+         width = 8,
+         height = 8)
+
+  dynamic_interp_result %>% 
+    pivot_longer(starts_with("pred_error"), 
+                 values_to = "deviance", 
+                 names_to = "model") %>% 
+    mutate(model = stringr::word(model,3,3, sep = "_"),
+           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
+    select(year_start,model, deviance) %>% 
+    ggplot(aes(x = year_start, y = deviance, col = model)) + 
+    theme_minimal() +
+    scale_x_continuous(breaks = scales::breaks_pretty(),name = "year") + 
+    geom_point(pch = 1, size = 2) + 
+    ggtitle("Predictive deviance in spatial interpolation validation experiment")
+  
+  ggsave("figures/spatial_interpolation_CV_deviance.png",
+         bg = "white",
+         scale = 0.8,
+         width = 8,
+         height = 8)
+  
+  dynamic_interp_result %>% 
+    pivot_longer(starts_with("bias"), 
+                 values_to = "bias", 
+                 names_to = "model") %>% 
+    mutate(model = stringr::word(model,2,2, sep = "_"),
+           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
+    select(year_start,model, bias) %>% 
+    ggplot(aes(x = year_start, y = bias, col = model)) + 
+    theme_minimal() +
+    scale_x_continuous(breaks = scales::breaks_pretty(), name = "year") + 
+    geom_point(pch = 2, size = 2) + 
+    ggtitle("Predictive bias in spatial interpolation validation experiment")
+  
+  ggsave("figures/spatial_interpolation_CV_bias.png",
+         bg = "white",
+         scale = 0.8,
+         width = 8,
+         height = 8)
+  
+  dynamic_extrap_result %>% 
+    pivot_longer(starts_with("pred_error"), 
+                 values_to = "deviance", 
+                 names_to = "model") %>% 
+    mutate(model = stringr::word(model,3,3, sep = "_"),
+           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
+    select(country_name,model, deviance) %>% 
+    ggplot(aes(x = country_name, y = deviance, col = model)) + 
+    theme_minimal() +
+    scale_x_discrete(name = "country") + 
+    geom_point(pch = 1, size = 2) + 
+    ggtitle("Predictive deviance in spatial extrapolation validation experiment")
+  
+  ggsave("figures/spatial_extrapolation_CV_deviance.png",
+         bg = "white",
+         scale = 0.8,
+         width = 8,
+         height = 8)
+  
+  
+  dynamic_extrap_result %>% 
+    pivot_longer(starts_with("bias"), 
+                 values_to = "bias", 
+                 names_to = "model") %>% 
+    mutate(model = stringr::word(model,2,2, sep = "_"),
+           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
+    select(country_name,model, bias) %>% 
+    ggplot(aes(x = country_name, y = bias, col = model)) + 
+    theme_minimal() +
+    scale_x_discrete( name = "country") + 
+    geom_point(pch = 2, size = 2) + 
+    ggtitle("Predictive bias in spatial extrapolation validation experiment")
+  
+  ggsave("figures/spatial_extrapolation_CV_bias.png",
+         bg = "white",
+         scale = 0.8,
+         width = 8,
+         height = 8)
+  
