@@ -430,8 +430,17 @@ prop <- function(died, tested) {
 
 # define the intercept only null model
 
-# sanity check against manual mean
-  # spatial_interpolation_intercept_preds <- mean(spatial_interpolation$training$died/spatial_interpolation$training$mosquito_number)
+# sanity check that glm preds and manually calculating mean are numerically similar
+spatial_interpolation$training %>% 
+  group_by(insecticide_type) %>% 
+  summarise(mean_pred = mean(died/mosquito_number)) %>% 
+  mutate(glm_pred = predict(
+    glm(
+      cbind(died, (mosquito_number-died)) ~ insecticide_type, 
+      data = spatial_interpolation$training, 
+      family = stats::binomial), 
+    newdata = as.tibble(insecticide_type),
+    type = "response"))
 
 # predict type-specific mean predictions
 spatial_interpolation_intercept_preds <- predict(
