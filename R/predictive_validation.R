@@ -433,9 +433,10 @@ prop <- function(died, tested) {
 # sanity check against manual mean
   # spatial_interpolation_intercept_preds <- mean(spatial_interpolation$training$died/spatial_interpolation$training$mosquito_number)
 
+# predict type-specific mean predictions
 spatial_interpolation_intercept_preds <- predict(
   glm(
-    cbind(died, (mosquito_number-died)) ~ 1, 
+    cbind(died, (mosquito_number-died)) ~ insecticide_type, 
     data = spatial_interpolation$training, 
     family = stats::binomial), 
   newdata = spatial_interpolation$test,
@@ -453,7 +454,7 @@ spatial_interpolation_intercept_error <- spatial_interpolation$test %>%
 
 temporal_forecasting_intercept_preds <- predict(
   glm(
-    cbind(died, (mosquito_number-died)) ~ 1, 
+    cbind(died, (mosquito_number-died)) ~ insecticide_type, 
     data = temporal_forecasting$training, 
     family = stats::binomial), 
   newdata = temporal_forecasting$test,
@@ -471,7 +472,7 @@ temporal_forecasting_intercept_error <- temporal_forecasting$test %>%
 get_spatial_extrapolation_intercept_pred_error <- function(test,training) {
   pred <- predict(
     glm(
-      cbind(died, (mosquito_number-died)) ~ 1, 
+      cbind(died, (mosquito_number-died)) ~ insecticide_type, 
       data = training, 
       family = stats::binomial), 
     newdata = test,
@@ -1008,7 +1009,7 @@ hancock_test_set %>%
   ) %>%
   mutate(predicted_intercept = predict(
     glm(
-      cbind(died, (mosquito_number-died)) ~ 1, 
+      cbind(died, (mosquito_number-died)) ~ insecticide_type, 
       family = stats::binomial), 
     type = "response")) %>% 
   group_by(
@@ -1043,7 +1044,7 @@ hancock_test_set %>%
   ) %>%
   mutate(predicted_intercept = predict(
     glm(
-      cbind(died, (mosquito_number-died)) ~ 1, 
+      cbind(died, (mosquito_number-died)) ~ insecticide_type, 
       family = stats::binomial), 
     type = "response")) %>% 
   group_by(

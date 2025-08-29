@@ -913,6 +913,7 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     theme_minimal() +
     scale_x_continuous(n.breaks = 3, name = "year") + 
     geom_point(pch = 2, size = 2) + 
+    geom_hline(yintercept = 0) + 
     ggtitle("Predictive bias in temporal forecast validation experiment")
   
   ggsave("figures/temporal_forecast_CV_bias.png",
@@ -951,6 +952,7 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     theme_minimal() +
     scale_x_continuous(breaks = scales::breaks_pretty(), name = "year") + 
     geom_point(pch = 2, size = 2) + 
+    geom_hline(yintercept = 0) + 
     ggtitle("Predictive bias in spatial interpolation validation experiment")
   
   ggsave("figures/spatial_interpolation_CV_bias.png",
@@ -988,6 +990,7 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     ggplot(aes(x = country_name, y = bias, col = model)) + 
     theme_minimal() +
     scale_x_discrete( name = "country") + 
+    geom_hline(yintercept = 0) + 
     geom_point(pch = 2, size = 2) + 
     ggtitle("Predictive bias in spatial extrapolation validation experiment")
   
@@ -1003,12 +1006,18 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
                  names_to = "model") %>% 
     mutate(model = stringr::word(model,2,2, sep = "_"),
            model = if_else(model == "nn", "nearest neighbour", model),
-           model = if_else(model == "hancock", "Hancock et al.", model)) %>% 
+           model = if_else(model == "hancock", "Hancock et al.", model),
+           model = factor(model, levels = c("dynamic",
+                                            "intercept",
+                                            "nearest neighbour",
+                                            "Hancock et al."))
+           ) %>% 
     select(country_name,model, bias) %>% 
     ggplot(aes(x = country_name, y = bias, col = model)) + 
     theme_minimal() +
     scale_x_discrete( name = "country") + 
     geom_point(pch = 2, size = 2) + 
+    geom_hline(yintercept = 0) + 
     ggtitle("Predictive bias in spatial extrapolation validation experiment",
             subtitle = "for insecticides and years included in Hancock et al.")
   
@@ -1024,7 +1033,11 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
                  names_to = "model") %>% 
     mutate(model = stringr::word(model,3,3, sep = "_"),
            model = if_else(model == "nn", "nearest neighbour", model),
-           model = if_else(model == "hancock", "Hancock et al.", model)) %>% 
+           model = if_else(model == "hancock", "Hancock et al.", model),
+           model = factor(model, levels = c("dynamic",
+                                            "intercept",
+                                            "nearest neighbour",
+                                            "Hancock et al."))) %>% 
     select(country_name,model, deviance) %>% 
     ggplot(aes(x = country_name, y = deviance, col = model)) + 
     theme_minimal() +
@@ -1045,12 +1058,17 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
                  names_to = "model") %>% 
     mutate(model = stringr::word(model,2,2, sep = "_"),
            model = if_else(model == "nn", "nearest neighbour", model),
-           model = if_else(model == "hancock", "Hancock et al.", model)) %>% 
+           model = if_else(model == "hancock", "Hancock et al.", model),
+           model = factor(model, levels = c("dynamic",
+                                            "intercept",
+                                            "nearest neighbour",
+                                            "Hancock et al."))) %>% 
     select(year_start,model, bias) %>% 
     ggplot(aes(x = year_start, y = bias, col = model)) + 
     theme_minimal() +
     scale_x_continuous(breaks = scales::breaks_pretty(), name = "year") + 
     geom_point(pch = 2, size = 2) + 
+    geom_hline(yintercept = 0) +
     ggtitle("Predictive bias in spatial interpolation validation experiment",
             subtitle = "for insecticides and years included in Hancock et al.")
   
@@ -1066,7 +1084,11 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
                  names_to = "model") %>% 
     mutate(model = stringr::word(model,3,3, sep = "_"),
            model = if_else(model == "nn", "nearest neighbour", model),
-           model = if_else(model == "hancock", "Hancock et al.", model)) %>% 
+           model = if_else(model == "hancock", "Hancock et al.", model),
+           model = factor(model, levels = c("dynamic",
+                                            "intercept",
+                                            "nearest neighbour",
+                                            "Hancock et al."))) %>% 
     select(year_start,model, deviance) %>% 
     ggplot(aes(x = year_start, y = deviance, col = model)) + 
     theme_minimal() +
