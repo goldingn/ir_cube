@@ -87,7 +87,7 @@ apply_phenotype <- function(proportion_resistant_allele, h = NA) {
     proportion_susceptible_allele <- 1 - proportion_resistant_allele
     proportion_hom_resistant <- proportion_resistant_allele ^ 2
     proportion_hom_susceptible <- proportion_susceptible_allele ^ 2
-    proportion_het <- proportion_resistant_allele * proportion_susceptible_allele
+    proportion_het <- 2* proportion_resistant_allele * proportion_susceptible_allele
     proportion_resistant_phenotype <- proportion_hom_resistant * 1 +
       proportion_hom_susceptible * 0 +
       proportion_het * h
