@@ -44,8 +44,9 @@ for(i in seq_len(n_periods)) {
   period_yrs <- seq(period_start[i],
                     period_end[i],
                     by = 1)
-  period_ir_change <- change(ir[[names(ir) %in% period_yrs]])
-  period_ir_loss <- period_ir_change / change(period_yrs)
+  period_ir_loss <- change(ir[[names(ir) %in% period_yrs]])
+  # alternative: make this annualised to account for different-sized bins?
+  # period_ir_loss <- period_ir_loss / change(period_yrs)
   period_net_use <- mean(nets[[names(nets) %in% period_yrs]])
 
   names(period_ir_loss) <- names(period_net_use) <- period_name[i]
@@ -56,7 +57,7 @@ for(i in seq_len(n_periods)) {
 ir_loss <- rast(ir_loss_list)
 net_use <- rast(net_use_list)
 
-rate_change_fig <- ggplot() +
+ir_change_fig <- ggplot() +
   geom_spatraster(data = -ir_loss) +
   geom_sf(data = borders,
           fill = "transparent") +
@@ -64,7 +65,7 @@ rate_change_fig <- ggplot() +
   scale_fill_gradient(
     labels = scales::percent,
     high = grey(0.9),
-    limits = c(-0.08, 0),
+    # limits = c(-0.08, 0),
     low = "red",
     na.value = "transparent"
   ) +
@@ -79,7 +80,7 @@ rate_change_fig <- ggplot() +
 # save the plot
 ggsave(
   filename = "figures/ir_map_change.png",
-  plot = rate_change_fig,
+  plot = ir_change_fig,
   bg = "white",
   width = 8,
   height = 6,
