@@ -867,10 +867,13 @@ optimal_nn_preds %>%
   filter(
     experiment == "spatial_interpolation"
   ) %>%
+  group_by(row_number()) %>% 
+  mutate(pred_error = binom_dev(died = died,
+                                mosquito_number = mosquito_number,
+                                predicted = predicted)) %>% 
+  ungroup() %>% 
   summarise(
-    pred_error = betabinom_dev(died = died,
-                               mosquito_number = mosquito_number,
-                               predicted = predicted),
+    pred_error = mean(pred_error),
     bias = mean(predicted - observed),
     .groups = "drop"
   ) %>% 
@@ -885,13 +888,16 @@ optimal_nn_preds %>%
   filter(
     experiment == "spatial_extrapolation"
   ) %>%
+  group_by(row_number()) %>% 
+  mutate(pred_error = binom_dev(died = died,
+                                mosquito_number = mosquito_number,
+                                predicted = predicted)) %>% 
+  ungroup() %>% 
   group_by(
     country_name
   ) %>%
   summarise(
-    pred_error = betabinom_dev(died = died,
-                               mosquito_number = mosquito_number,
-                               predicted = predicted),
+    pred_error = mean(pred_error),
     bias = mean(predicted - observed),
     .groups = "drop"
   ) %>% 
@@ -904,13 +910,16 @@ optimal_nn_preds %>%
   filter(
     experiment == "temporal_forecasting"
   ) %>%
+  group_by(row_number()) %>% 
+  mutate(pred_error = binom_dev(died = died,
+                                mosquito_number = mosquito_number,
+                                predicted = predicted)) %>% 
+  ungroup() %>% 
   group_by(
     year_start
   ) %>%
   summarise(
-    pred_error = betabinom_dev(died = died,
-                               mosquito_number = mosquito_number,
-                               predicted = predicted),
+    pred_error = mean(pred_error),
     bias = mean(predicted - observed),
     .groups = "drop"
   ) %>% 
