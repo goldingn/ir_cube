@@ -4,8 +4,10 @@
 source("R/packages.R")
 source("R/functions.R")
 
-
 ir_yr <- 2025
+
+# load admin borders for plotting
+borders <- readRDS("data/clean/gadm_polys.RDS")
 
 # load in and prepare rasters
 
@@ -17,7 +19,7 @@ llin_filename <- sprintf(
 )
 
 llin_rast <- rast(llin_filename)
-names(llin_rast) <- "A) LLIN pyrethroids"
+names(llin_rast) <- "A) LLIN pyrethroids*"
 
 
 # now, all the individual ones
@@ -75,22 +77,27 @@ pyrethroid_fig <- ggplot() +
   geom_spatraster(
     data = llin_rast
   ) +
+  geom_sf(data = borders,
+          col = grey(0.9),
+          linewidth = 0.1,
+          fill = "transparent") +
   facet_wrap(~lyr) +
   scale_fill_gradient(
     labels = scales::percent,
     limits = c(0, 1),
     na.value = "transparent",
     name = "Susceptibility"
-    # guide = "none"
   ) +
   # coord_sf(xlim = xlim) +
   theme_ir_maps() +
   theme(
-    strip.text.x = element_text(hjust = 0)
+    strip.text.x = element_text(hjust = 0),
+    plot.margin = unit(rep(0, 4), "cm"),
+    legend.position = "inside",
+    legend.position.inside = c(0.175, 0.225)
   )
 
 # make 9 different plots, for each of the individual insecticides
-
 n_insecticides <- length(insecticide_figure_names)
 all_insecticides_fig_list <- list()
 all_insecticides_cols <- rev(scales::hue_pal()(n_insecticides))
@@ -100,6 +107,10 @@ for (i in seq_len(n_insecticides)) {
     geom_spatraster(
       data = ir_rasts[[i]]
     ) +
+    geom_sf(data = borders,
+            col = grey(0.9),
+            linewidth = 0.05,
+            fill = "transparent") +
     facet_wrap(~lyr,
                ncol = 3) +
     scale_fill_gradient(
@@ -113,7 +124,8 @@ for (i in seq_len(n_insecticides)) {
     coord_sf(xlim = xlim) +
     theme_ir_maps() +
     theme(
-      strip.text.x = element_text(hjust = 0)
+      strip.text.x = element_text(hjust = 0),
+      plot.margin = unit(rep(0, 4), "cm")
     )
 }
 
@@ -130,10 +142,7 @@ ggsave(
   filename = "figures/ir_map_all_insecticides_2025.png",
   plot = combined_fig,
   bg = "white",
-  width = 14,
+  width = 12,
   height = 6,
   scale = 0.8
 )
-
-# to do:
-# - add a legend on the side (wrap_plots(guides = "collect") ?)
