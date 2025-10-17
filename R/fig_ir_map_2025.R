@@ -57,7 +57,7 @@ insecticide_figure_names <- paste0(
 names(ir_rasts) <- insecticide_figure_names
 
 # change the coordinates for plotting all rasters, to ensure the plots are approximately square
-new_ratio <- 0.83
+new_ratio <- 0.8
 
 ext <- as.vector(ext(llin_rast))
 diffs <- diff(ext)[c(1, 3)]
@@ -80,7 +80,8 @@ pyrethroid_fig <- ggplot() +
     labels = scales::percent,
     limits = c(0, 1),
     na.value = "transparent",
-    guide = "none"
+    name = "Susceptibility"
+    # guide = "none"
   ) +
   # coord_sf(xlim = xlim) +
   theme_ir_maps() +
@@ -92,7 +93,7 @@ pyrethroid_fig <- ggplot() +
 
 n_insecticides <- length(insecticide_figure_names)
 all_insecticides_fig_list <- list()
-all_insecticides_cols <- scales::hue_pal()(n_insecticides)
+all_insecticides_cols <- rev(scales::hue_pal()(n_insecticides))
 
 for (i in seq_len(n_insecticides)) {
   all_insecticides_fig_list[[i]] <- ggplot() +
@@ -135,4 +136,4 @@ ggsave(
 )
 
 # to do:
-# - add a legend on the side (wrap_plots(guides = collect) ?)
+# - add a legend on the side (wrap_plots(guides = "collect") ?)
