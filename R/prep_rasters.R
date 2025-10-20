@@ -4,6 +4,7 @@
 source("R/packages.R")
 source("R/functions.R")
 
+
 # ITN cubes
 
 # nets per capita
@@ -280,3 +281,27 @@ crops_scaled <- crops / global(crops, "max", na.rm = TRUE)$max
 terra::writeRaster(crops_scaled,
                    "data/clean/crop_scaled.tif",
                    overwrite = TRUE)
+
+# download and cache (against the risk of the package breaking) MAP's PfPR for
+# 2000, and use to to get the limits of transmission for plotting
+pr2000_file <- "data/clean/pfpr_2000.tif"
+pf_limits_file <- "data/clean/pfpr_limits.tif"
+pr_files_available <- file.exists(pr2000_file) & file.exists(pf_limits_file)
+if (!pr_files_available) {
+  pr2000_all <- malariaAtlas::getRaster("Malaria__202508_Global_Pf_Parasite_Rate",
+                                        year = 2000)
+  mask <- rast("data/clean/raster_mask.tif")
+  pr2000 <- crop(pr2000_all[[1]], mask)
+  
+  # use this to get the limits of transmission
+  pf_limits <- pr2000 * 0 + 1
+  pf_limits[is.na(pf_limits)] <- 0
+  pf_limits <- mask(pf_limits, mask)
+  names(pf_limits) <- "limits_of_Pf_transmission"
+  writeRaster(pf_limits, pf_limits_file, overwrite = TRUE)
+  
+  pr2000[is.na(pr2000)] <- 0
+  pr2000 <- mask(pr2000, mask)
+  names(pr2000) <- "PfPR_2000"
+  writeRaster(pr2000, pr2000_file, overwrite = TRUE)
+}
