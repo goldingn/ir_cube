@@ -181,16 +181,10 @@ haploid_next <- function(state, iter, w) {
 #####do spatial extrapolation 
 
 # initialise result df
-dynamic_extrap_result <- optimal_nn_preds %>%
-  filter(
-    experiment == "spatial_extrapolation"
-  ) %>% 
-  group_by(country_name) %>% 
-  summarise(
-    pred_error_nn = betabinom_dev(died = died,
-                                  mosquito_number = mosquito_number,
-                                  predicted = predicted),
-    bias_nn = mean(predicted - observed)
+dynamic_extrap_result <- extrap_result %>% 
+  rename(
+    pred_error_nn = pred_error,
+    bias_nn = bias
   ) %>% 
   mutate(pred_error_dynamic = NA,,
          bias_dynamic = NA,
@@ -382,10 +376,14 @@ test_outcome_df <- optimal_nn_preds %>%
   ) %>% 
   select(died,mosquito_number,observed,in_hancock)
 
-pred_error_dynamic <- betabinom_dev(died = test_outcome_df$died,
-                                    mosquito_number = test_outcome_df$mosquito_number,
-                                    predicted = predicted_test_mean,
-                                    rho = rho_classes_test_indexed)
+pred_error_dynamic <- tibble(died = test_outcome_df$died,
+                             mosquito_number = test_outcome_df$mosquito_number,
+                             predicted = predicted_test_mean) %>% 
+  group_by(row_number()) %>% 
+  mutate(pred_error = binom_dev(died, mosquito_number, predicted)) %>% 
+  ungroup() %>% 
+  summarise(pred_error = mean(pred_error)) %>% 
+  pull(pred_error)
 
 bias_dynamic  <- mean(predicted_test_mean - test_outcome_df$observed)
 
@@ -394,18 +392,18 @@ dynamic_extrap_result[dynamic_extrap_result$country_name == this_country,'pred_e
 dynamic_extrap_result[dynamic_extrap_result$country_name == this_country,'bias_dynamic'] <- bias_dynamic
 
 
-# vs hancock
-
-pred_error_dynamic_vs_hancock <- betabinom_dev(died = test_outcome_df$died[test_outcome_df$in_hancock],
-                                               mosquito_number = test_outcome_df$mosquito_number[test_outcome_df$in_hancock],
-                                               predicted = predicted_test_mean[test_outcome_df$in_hancock],
-                                               rho = rho_classes_test_indexed[test_outcome_df$in_hancock])
-
-bias_dynamic_vs_hancock  <- mean(predicted_test_mean[test_outcome_df$in_hancock] - test_outcome_df$observed[test_outcome_df$in_hancock])
-
-# iteratively insert the results into the result df
-dynamic_extrap_result_vs_hancock[dynamic_extrap_result_vs_hancock$country_name == this_country,'pred_error_dynamic'] <- pred_error_dynamic_vs_hancock
-dynamic_extrap_result_vs_hancock[dynamic_extrap_result_vs_hancock$country_name == this_country,'bias_dynamic'] <- bias_dynamic_vs_hancock
+# # vs hancock
+# 
+# pred_error_dynamic_vs_hancock <- betabinom_dev(died = test_outcome_df$died[test_outcome_df$in_hancock],
+#                                                mosquito_number = test_outcome_df$mosquito_number[test_outcome_df$in_hancock],
+#                                                predicted = predicted_test_mean[test_outcome_df$in_hancock],
+#                                                rho = rho_classes_test_indexed[test_outcome_df$in_hancock])
+# 
+# bias_dynamic_vs_hancock  <- mean(predicted_test_mean[test_outcome_df$in_hancock] - test_outcome_df$observed[test_outcome_df$in_hancock])
+# 
+# # iteratively insert the results into the result df
+# dynamic_extrap_result_vs_hancock[dynamic_extrap_result_vs_hancock$country_name == this_country,'pred_error_dynamic'] <- pred_error_dynamic_vs_hancock
+# dynamic_extrap_result_vs_hancock[dynamic_extrap_result_vs_hancock$country_name == this_country,'bias_dynamic'] <- bias_dynamic_vs_hancock
 
 
 
@@ -863,6 +861,9 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
   
   temporal_forecasting$test <- tibble(temporal_forecasting$test, predicted_dynamic = predicted_test_mean)
   
+  # save pred outcome in case need to recalculate eval metrics
+  write_csv(temporal_forecasting$test,"outputs/dynamic_temporal_forecast_pred.csv")
+  
   rho_classes_test_mean <- apply(rho_classes_test[[1]],2:3,mean) %>% as.numeric()
   
   rho_classes_test_indexed <- rho_classes_test_mean[fold_test_df$class_id]
@@ -874,31 +875,25 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     select(died,mosquito_number,observed,year_start) %>% 
     mutate(predicted_test_mean = predicted_test_mean,
            rho_classes_test_indexed = rho_classes_test_indexed) %>%
+    group_by(row_number()) %>% 
+    mutate(pred_error = binom_dev(died = died,
+                                  mosquito_number = mosquito_number,
+                                  predicted = predicted_test_mean)) %>% 
+    ungroup() %>% 
     group_by(
       year_start
     ) %>% 
     summarise(
-      pred_error_dynamic = betabinom_dev(died = died,
-                                         mosquito_number = mosquito_number,
-                                         predicted = predicted_test_mean,
-                                         rho = rho_classes_test_indexed),
+      pred_error_dynamic = mean(pred_error),
       bias_dynamic = mean(predicted_test_mean - observed),
       .groups = "drop"
     ) 
   
   
   # result df
-  dynamic_temporal_forecast_result <- optimal_nn_preds %>%
-    filter(
-      experiment == "temporal_forecasting"
-    ) %>% 
-    group_by(year_start) %>% 
-    summarise(
-      pred_error_nn = betabinom_dev(died = died,
-                                    mosquito_number = mosquito_number,
-                                    predicted = predicted),
-      bias_nn = mean(predicted - observed)
-    ) %>% 
+  dynamic_temporal_forecast_result <- temp_forecast_result %>% 
+    rename(pred_error_nn = pred_error,
+           bias_nn = bias) %>% 
     left_join(test_outcome_df,by = join_by(year_start))%>% 
     left_join(temporal_forecasting_intercept_error,by = join_by(year_start)) %>% 
     mutate(experiment = "dynmaic_temporal_forecasting")
@@ -958,6 +953,8 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
          height = 8)
 
   dynamic_interp_result %>% 
+    filter(year_start != "overall") %>% 
+    mutate(year_start = as.numeric(year_start)) %>% 
     pivot_longer(starts_with("pred_error"), 
                  values_to = "deviance", 
                  names_to = "model") %>% 
@@ -968,6 +965,8 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     theme_minimal() +
     scale_x_continuous(breaks = scales::breaks_pretty(),name = "year") + 
     geom_point(pch = 1, size = 2) + 
+    scale_y_continuous(name = "mean deviance") + 
+    viridis::scale_color_viridis(discrete=TRUE, option="viridis") + 
     ggtitle("Predictive deviance in spatial interpolation validation experiment")
   
   ggsave("figures/spatial_interpolation_CV_deviance.png",
