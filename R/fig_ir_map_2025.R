@@ -74,12 +74,6 @@ xdiff <- diffs[2] / new_ratio
 # rebuild the limits
 xlim <- xmid + xdiff * c(-0.5, 0.5)
 
-
-# limits_overlay <- pf_limits
-# limits_overlay[limits_overlay == 1] <- NA
-
-# make the limits of transmission a vector layer!
-
 llin_rast_mask <- mask(llin_rast, pf_water_mask)
 ir_rasts_mask <- mask(ir_rasts, pf_water_mask)
 

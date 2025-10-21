@@ -11,6 +11,9 @@ source("R/functions.R")
 # load admin borders for plotting
 borders <- readRDS("data/clean/gadm_polys.RDS")
 
+# load mask with limits of transmission and water bodies for plotting
+pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
+
 # load in and prepare rasters
 
 # First, the LLIN use
@@ -57,10 +60,23 @@ for(i in seq_len(n_periods)) {
 ir_loss <- rast(ir_loss_list)
 net_use <- rast(net_use_list)
 
+# grey background for Africa
+africa_bg <- geom_sf(data = borders,
+                     linewidth = 0,
+                     fill = grey(0.75))
+
+border_col <- grey(0.4)
+
+country_borders <- geom_sf(data = borders,
+                           col = border_col,
+                           linewidth = 0.1,
+                           fill = "transparent")
+
+ir_loss_mask <- mask(ir_loss, pf_water_mask)
 ir_change_fig <- ggplot() +
-  geom_spatraster(data = -ir_loss) +
-  geom_sf(data = borders,
-          fill = "transparent") +
+  africa_bg +
+  geom_spatraster(data = -ir_loss_mask) +
+  country_borders +
   facet_wrap(~lyr, nrow = 2) +
   scale_fill_gradient(
     labels = scales::percent,
