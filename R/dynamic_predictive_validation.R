@@ -2,7 +2,7 @@ source("R/predictive_validation.R")
 
 # build a filter flag for in Hancock et al or not to compare with our model
 optimal_nn_preds <- optimal_nn_preds %>%
-  # pre-emptively subset to Hancock prediction years and insecticides
+  # pre-emptively flag Hancock prediction years and insecticides
   mutate(in_hancock =
            (year_start %in% 2006:2017 &
               insecticide_type %in% c("Alpha-cypermethrin",
@@ -588,6 +588,9 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
   
   spatial_interpolation$test <- tibble(spatial_interpolation$test, predicted_dynamic = predicted_test_mean)
   
+  # save pred outcome in case need to recalculate eval metrics
+  write_csv(spatial_interpolation$test,"outputs/dynamic_interp_pred.csv")
+  
   rho_classes_test_mean <- apply(rho_classes_test[[1]],2:3,mean) %>% as.numeric()
   
   rho_classes_test_indexed <- rho_classes_test_mean[fold_test_df$class_id]
@@ -599,14 +602,16 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     select(died,mosquito_number,observed,year_start) %>% 
     mutate(predicted_test_mean = predicted_test_mean,
            rho_classes_test_indexed = rho_classes_test_indexed) %>%
+    group_by(row_number()) %>% 
+    mutate(pred_error = binom_dev(died = died,
+                                  mosquito_number = mosquito_number,
+                                  predicted = predicted_test_mean)) %>% 
+    ungroup() %>% 
     group_by(
       year_start
     ) %>% 
     summarise(
-      pred_error_dynamic = betabinom_dev(died = died,
-                                       mosquito_number = mosquito_number,
-                                       predicted = predicted_test_mean,
-                                       rho = rho_classes_test_indexed),
+      pred_error_dynamic = mean(pred_error),
       bias_dynamic = mean(predicted_test_mean - observed),
       .groups = "drop"
     ) 
@@ -616,49 +621,79 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
   dynamic_interp_result <- optimal_nn_preds %>%
     filter(
       experiment == "spatial_interpolation"
+    ) %>%
+    group_by(row_number()) %>% 
+    mutate(pred_error = binom_dev(died = died,
+                                  mosquito_number = mosquito_number,
+                                  predicted = predicted)) %>% 
+    ungroup() %>% 
+    group_by(
+      year_start
     ) %>% 
-    group_by(year_start) %>% 
     summarise(
-      pred_error_nn = betabinom_dev(died = died,
-                                    mosquito_number = mosquito_number,
-                                    predicted = predicted),
-      bias_nn = mean(predicted - observed)
+      pred_error_nn = mean(pred_error),
+      bias_nn = mean(predicted - observed),
+      .groups = "drop"
     ) %>% 
     left_join(test_outcome_df,by = join_by(year_start)) %>% 
     left_join(spatial_interpolation_intercept_error,by = join_by(year_start)) %>% 
     mutate(experiment = "dynmaic_spatial_interpolation")
+  
+  # add overall result not stratified by year
+  dynamic_interp_result <- dynamic_interp_result %>% 
+    mutate(year_start = as.character(year_start)) %>% 
+    bind_rows(optimal_nn_preds %>%
+    filter(
+      experiment == "spatial_interpolation"
+    ) %>% 
+    select(died,mosquito_number,observed,year_start) %>% 
+    mutate(predicted_test_mean = predicted_test_mean,
+           rho_classes_test_indexed = rho_classes_test_indexed) %>%
+    group_by(row_number()) %>% 
+    mutate(pred_error = binom_dev(died = died,
+                                  mosquito_number = mosquito_number,
+                                  predicted = predicted_test_mean)) %>% 
+    ungroup() %>% 
+    summarise(
+      pred_error_dynamic = mean(pred_error),
+      bias_dynamic = mean(predicted_test_mean - observed),
+      .groups = "drop"
+    ) %>% 
+    bind_cols(interp_result) %>% 
+    bind_cols(spatial_interpolation_intercept_error_overall) %>% 
+    mutate(year_start = "overall"))
   
   # save to csv
   dynamic_interp_result
   write_csv(dynamic_interp_result,"outputs/dynamic_interp_result.csv")
   
 # vs hancock
-  test_outcome_df_vs_hancock <- optimal_nn_preds %>%
-    filter(
-      experiment == "spatial_interpolation"
-    ) %>% 
-    select(died,mosquito_number,observed,year_start,in_hancock) %>% 
-    mutate(predicted_test_mean = predicted_test_mean,
-           rho_classes_test_indexed = rho_classes_test_indexed) %>%
-    filter(in_hancock) %>% 
-    group_by(
-      year_start
-    ) %>% 
-    summarise(
-      pred_error_dynamic = betabinom_dev(died = died,
-                                         mosquito_number = mosquito_number,
-                                         predicted = predicted_test_mean,
-                                         rho = rho_classes_test_indexed),
-      bias_dynamic = mean(predicted_test_mean - observed),
-      .groups = "drop"
-    ) 
-  
-  dynamic_interp_result_vs_hancock <- hancock_interp_result %>% 
-    left_join(test_outcome_df_vs_hancock,by = join_by(year_start)) %>% 
-    mutate(experiment = "dynmaic_spatial_interpolation_vs_hancock") 
-  
-  dynamic_interp_result_vs_hancock
-  write_csv(dynamic_interp_result_vs_hancock,"outputs/dynamic_interp_result_vs_hancock.csv")
+  # test_outcome_df_vs_hancock <- optimal_nn_preds %>%
+  #   filter(
+  #     experiment == "spatial_interpolation"
+  #   ) %>% 
+  #   select(died,mosquito_number,observed,year_start,in_hancock) %>% 
+  #   mutate(predicted_test_mean = predicted_test_mean,
+  #          rho_classes_test_indexed = rho_classes_test_indexed) %>%
+  #   filter(in_hancock) %>% 
+  #   group_by(
+  #     year_start
+  #   ) %>% 
+  #   summarise(
+  #     pred_error_dynamic = betabinom_dev(died = died,
+  #                                        mosquito_number = mosquito_number,
+  #                                        predicted = predicted_test_mean,
+  #                                        rho = rho_classes_test_indexed),
+  #     bias_dynamic = mean(predicted_test_mean - observed),
+  #     .groups = "drop"
+  #   ) 
+  # 
+  # dynamic_interp_result_vs_hancock <- hancock_interp_result %>% 
+  #   left_join(test_outcome_df_vs_hancock,by = join_by(year_start)) %>% 
+  #   mutate(experiment = "dynmaic_spatial_interpolation_vs_hancock") 
+  # 
+  # dynamic_interp_result_vs_hancock
+  # write_csv(dynamic_interp_result_vs_hancock,"outputs/dynamic_interp_result_vs_hancock.csv")
   
   purge_greta_model()
   gc()

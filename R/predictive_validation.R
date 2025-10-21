@@ -454,12 +454,27 @@ spatial_interpolation_intercept_preds <- predict(
 spatial_interpolation_intercept_error <- spatial_interpolation$test %>% 
   mutate(observed = prop(died, mosquito_number),
          predicted = spatial_interpolation_intercept_preds) %>% 
+  group_by(row_number()) %>% 
+  mutate(pred_error = binom_dev(died = died,
+                                mosquito_number = mosquito_number,
+                                predicted = predicted)) %>% 
+  ungroup() %>% 
   group_by(year_start) %>% 
-  summarise(pred_error_intercept = betabinom_dev(died = died,
-                                    mosquito_number = mosquito_number,
-                                    predicted = predicted),
-            bias_intercept = mean(predicted - observed)) 
+  summarise(
+    pred_error_intercept = mean(pred_error),
+    bias_intercept = mean(predicted - observed)) 
 
+spatial_interpolation_intercept_error_overall <- spatial_interpolation$test %>% 
+  mutate(observed = prop(died, mosquito_number),
+         predicted = spatial_interpolation_intercept_preds) %>% 
+  group_by(row_number()) %>% 
+  mutate(pred_error = binom_dev(died = died,
+                                mosquito_number = mosquito_number,
+                                predicted = predicted)) %>% 
+  ungroup() %>% 
+  summarise(
+    pred_error_intercept = mean(pred_error),
+    bias_intercept = mean(predicted - observed)) 
 
 temporal_forecasting_intercept_preds <- predict(
   glm(
@@ -873,8 +888,8 @@ optimal_nn_preds %>%
                                 predicted = predicted)) %>% 
   ungroup() %>% 
   summarise(
-    pred_error = mean(pred_error),
-    bias = mean(predicted - observed),
+    pred_error_nn = mean(pred_error),
+    bias_nn = mean(predicted - observed),
     .groups = "drop"
   ) %>% 
   mutate(experiment = "spatial_interpolation") -> interp_result
