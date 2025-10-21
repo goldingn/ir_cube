@@ -9,16 +9,8 @@ ir_yr <- 2025
 # load admin borders for plotting
 borders <- readRDS("data/clean/gadm_polys.RDS")
 
-# load limits of transmission for plotting
-mask <- rast("data/clean/raster_mask.tif")
-pf_limits <- rast("data/clean/pfpr_limits.tif")
-
-# make a new mask of only the limits of transmission
-pf_limits_mask <- pf_limits
-pf_limits_mask[pf_limits_mask != 2] <- NA
-
-# make a shapefile for all of Africa, to plot in grey as the background
-
+# load mask with limits of transmission and water bodies for plotting
+pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 
 # load in and prepare estimate rasters
 
@@ -88,8 +80,8 @@ xlim <- xmid + xdiff * c(-0.5, 0.5)
 
 # make the limits of transmission a vector layer!
 
-llin_rast_mask <- mask(llin_rast, pf_limits_mask)
-ir_rasts_mask <- mask(ir_rasts, pf_limits_mask)
+llin_rast_mask <- mask(llin_rast, pf_water_mask)
+ir_rasts_mask <- mask(ir_rasts, pf_water_mask)
 
 # grey background for Africa
 africa_bg <- geom_sf(data = borders,

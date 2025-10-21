@@ -7,13 +7,8 @@ source("R/functions.R")
 # load admin borders for plotting
 borders <- readRDS("data/clean/gadm_polys.RDS")
 
-# load limits of transmission for plotting
-mask <- rast("data/clean/raster_mask.tif")
-pf_limits <- rast("data/clean/pfpr_limits.tif")
-
-# make a new mask of only the limits of transmission
-pf_limits_mask <- pf_limits
-pf_limits_mask[pf_limits_mask != 2] <- NA
+# load mask with limits of transmission and water bodies for plotting
+pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 
 # grey background for Africa
 africa_bg <- geom_sf(data = borders,
@@ -60,7 +55,7 @@ for (this_insecticide in insecticides_plot) {
   names(this_raster) <- plot_years
   
   # mask by transmission limits
-  this_raster <- mask(this_raster, pf_limits_mask)
+  this_raster <- mask(this_raster, pf_water_mask)
   
   insecticide_name <- switch(this_insecticide,
                              llin_effective = "LLIN pyrethroids",

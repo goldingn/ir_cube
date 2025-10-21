@@ -307,3 +307,29 @@ if (!file.exists(pf_limits_file)) {
   writeRaster(pf_limits, pf_limits_file, overwrite = TRUE)
 }
 
+# reload the main mask
+mask <- rast("data/clean/raster_mask.tif")
+
+# load lakes and rivers layer
+water <- rast("data/raw/WorldCover_water_30s.tif")
+water <- crop(water, mask)
+water <- aggregate(water, 5, fun = "modal")
+
+# convert it into a mask
+water_mask <- water
+water_mask[is.na(water_mask)] <- 0
+water_mask[water_mask == 1] <- NA
+water_mask <- mask(water_mask, mask)
+water_mask <- water_mask * 0
+
+# combine with the pf limits to amke a mask of limits and water
+pf_limits <- rast(pf_limits_file)
+pf_limits_mask <- pf_limits
+pf_limits_mask[pf_limits_mask != 2] <- NA
+pf_limits_mask <- pf_limits_mask * 0
+pf_limits_water_mask <- mask(pf_limits_mask, water_mask)
+
+writeRaster(pf_limits_water_mask,
+            "data/clean/pfpr_water_mask.tif",
+            overwrite = TRUE)
+
