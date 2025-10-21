@@ -119,9 +119,7 @@ pyrethroid_fig <- ggplot() +
     name = "Susceptibility",
     guide = guide_colorbar(frame.colour = border_col,
                            frame.linewidth = 0.1)
-    
   ) +
-  # coord_sf(xlim = xlim) +
   theme_ir_maps() +
   theme(
     strip.text.x = element_text(hjust = 0),
