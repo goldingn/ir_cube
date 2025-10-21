@@ -285,23 +285,25 @@ terra::writeRaster(crops_scaled,
 # download and cache (against the risk of the package breaking) MAP's PfPR for
 # 2000, and use to to get the limits of transmission for plotting
 pr2000_file <- "data/clean/pfpr_2000.tif"
-pf_limits_file <- "data/clean/pfpr_limits.tif"
-pr_files_available <- file.exists(pr2000_file) & file.exists(pf_limits_file)
-if (!pr_files_available) {
+
+if (!file.exists(pr2000_file)) {
   pr2000_all <- malariaAtlas::getRaster("Malaria__202508_Global_Pf_Parasite_Rate",
                                         year = 2000)
   mask <- rast("data/clean/raster_mask.tif")
   pr2000 <- crop(pr2000_all[[1]], mask)
-  
-  # use this to get the limits of transmission
-  pf_limits <- pr2000 * 0 + 1
-  pf_limits[is.na(pf_limits)] <- 0
-  pf_limits <- mask(pf_limits, mask)
-  names(pf_limits) <- "limits_of_Pf_transmission"
-  writeRaster(pf_limits, pf_limits_file, overwrite = TRUE)
-  
   pr2000[is.na(pr2000)] <- 0
   pr2000 <- mask(pr2000, mask)
   names(pr2000) <- "PfPR_2000"
   writeRaster(pr2000, pr2000_file, overwrite = TRUE)
 }
+
+
+pf_limits_file <- "data/clean/pfpr_limits.tif"
+if (!file.exists(pf_limits_file)) {
+  pf_limits <- malariaAtlas::getRaster("Explorer__2010_Pf_Limits_Decompressed")
+  pf_limits <- crop(pf_limits, llin_rast)
+  pf_limits <- terra::aggregate(pf_limits, 5, fun = "modal")
+  pf_limits <- mask(pf_limits, llin_rast)
+  writeRaster(pf_limits, pf_limits_file, overwrite = TRUE)
+}
+

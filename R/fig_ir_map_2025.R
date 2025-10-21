@@ -9,7 +9,18 @@ ir_yr <- 2025
 # load admin borders for plotting
 borders <- readRDS("data/clean/gadm_polys.RDS")
 
-# load in and prepare rasters
+# load limits of transmission for plotting
+mask <- rast("data/clean/raster_mask.tif")
+pf_limits <- rast("data/clean/pfpr_limits.tif")
+
+# make a new mask of only the limits of transmission
+pf_limits_mask <- pf_limits
+pf_limits_mask[pf_limits_mask != 2] <- NA
+
+# make a shapefile for all of Africa, to plot in grey as the background
+
+
+# load in and prepare estimate rasters
 
 # First, the pyrethroids used in LLINs:
 
@@ -20,7 +31,6 @@ llin_filename <- sprintf(
 
 llin_rast <- rast(llin_filename)
 names(llin_rast) <- "A) LLIN pyrethroids*"
-
 
 # now, all the individual ones
 insecticide_names <- c(
@@ -43,18 +53,19 @@ ir_filenames <- sprintf(
 
 ir_rasts <- rast(ir_filenames)
 
-pyrethroid_names <- c("Alpha-cypermethrin",
-                      "Deltamethrin",
-                      "Lambda-cyhalothrin",
-                      "Permethrin")
-pyrethroid_star <- ifelse(insecticide_names %in% pyrethroid_names, "*", "")
+llin_pyrethroid_names <- c("Alpha-cypermethrin",
+                           "Deltamethrin",
+                           "Permethrin")
+llin_pyrethroid_star <- ifelse(insecticide_names %in% llin_pyrethroid_names,
+                          "*",
+                          "")
 
 # make figure names, with panel letters and asterisks
 insecticide_figure_names <- paste0(
   LETTERS[2:10],
   ") ",
   insecticide_names,
-  pyrethroid_star)
+  llin_pyrethroid_star)
 
 names(ir_rasts) <- insecticide_figure_names
 
@@ -72,21 +83,43 @@ xdiff <- diffs[2] / new_ratio
 xlim <- xmid + xdiff * c(-0.5, 0.5)
 
 
+# limits_overlay <- pf_limits
+# limits_overlay[limits_overlay == 1] <- NA
+
+# make the limits of transmission a vector layer!
+
+llin_rast_mask <- mask(llin_rast, pf_limits_mask)
+ir_rasts_mask <- mask(ir_rasts, pf_limits_mask)
+
+# grey background for Africa
+africa_bg <- geom_sf(data = borders,
+                     linewidth = 0,
+                     fill = grey(0.75))
+
+border_col <- grey(0.4)
+
 # make a plot of susceptibility to Pyrethroid insecticides in 2025
 pyrethroid_fig <- ggplot() +
+  africa_bg +
   geom_spatraster(
-    data = llin_rast
+    data = llin_rast_mask,
   ) +
   geom_sf(data = borders,
-          col = grey(0.9),
+          col = border_col,
           linewidth = 0.1,
           fill = "transparent") +
   facet_wrap(~lyr) +
   scale_fill_gradient(
     labels = scales::percent,
     limits = c(0, 1),
+    breaks = c(0, 0.5, 1),
+    high = "#56B1F7",
+    low = "white",
     na.value = "transparent",
-    name = "Susceptibility"
+    name = "Susceptibility",
+    guide = guide_colorbar(frame.colour = border_col,
+                           frame.linewidth = 0.1)
+    
   ) +
   # coord_sf(xlim = xlim) +
   theme_ir_maps() +
@@ -94,7 +127,9 @@ pyrethroid_fig <- ggplot() +
     strip.text.x = element_text(hjust = 0),
     plot.margin = unit(rep(0, 4), "cm"),
     legend.position = "inside",
-    legend.position.inside = c(0.175, 0.225)
+    legend.position.inside = c(0.2, 0.25),
+    legend.text.position = "left",
+    legend.ticks = element_blank()
   )
 
 # make 9 different plots, for each of the individual insecticides
@@ -104,28 +139,39 @@ all_insecticides_cols <- rev(scales::hue_pal()(n_insecticides))
 
 for (i in seq_len(n_insecticides)) {
   all_insecticides_fig_list[[i]] <- ggplot() +
+    africa_bg +
     geom_spatraster(
-      data = ir_rasts[[i]]
+      data = ir_rasts_mask[[i]]
     ) +
     geom_sf(data = borders,
-            col = grey(0.9),
+            col = border_col,
             linewidth = 0.05,
             fill = "transparent") +
-    facet_wrap(~lyr,
-               ncol = 3) +
+    facet_wrap(~lyr) +
     scale_fill_gradient(
       labels = scales::percent,
-      name = "Susceptibility",
+      name = "",
+      breaks = c(0, 1),
       high = all_insecticides_cols[i],
-      guide = "none",
+      low = "white",
       limits = c(0, 1),
-      na.value = "transparent"
+      na.value = "transparent",
+      guide = guide_colorbar(frame.colour = border_col,
+                             frame.linewidth = 0.05)
     ) +
     coord_sf(xlim = xlim) +
     theme_ir_maps() +
     theme(
       strip.text.x = element_text(hjust = 0),
-      plot.margin = unit(rep(0, 4), "cm")
+      plot.margin = unit(rep(0, 4), "cm"),
+      legend.position = "inside",
+      legend.position.inside = c(0.2, 0.3),
+      legend.key.height = rel(0.3),
+      legend.key.width = rel(0.5),
+      legend.ticks = element_blank(),
+      legend.text.position = "left",
+      legend.text = element_text(size = rel(0.6),
+                                 margin = margin(r = 1))
     )
 }
 
@@ -146,3 +192,4 @@ ggsave(
   height = 6,
   scale = 0.8
 )
+
