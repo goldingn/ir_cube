@@ -4,6 +4,23 @@
 source("R/packages.R")
 source("R/functions.R")
 
+# load admin borders for plotting
+borders <- readRDS("data/clean/gadm_polys.RDS")
+
+# load mask with limits of transmission and water bodies for plotting
+pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
+
+# grey background for Africa
+africa_bg <- geom_sf(data = borders,
+                     linewidth = 0,
+                     fill = grey(0.75))
+
+border_col <- grey(0.4)
+country_borders <- geom_sf(data = borders,
+                           col = border_col,
+                           linewidth = 0.1,
+                           fill = "transparent")
+
 # plot time-varying covariates
 itn <- rast("data/clean/net_use_cube.tif")
 itn_plot_years <- c(2000, 2005, 2010, 2015, 2020)
@@ -27,17 +44,20 @@ names(pop_plot) <- pop_plot_years
 pop_dens_plot <- pop_plot / terra::cellSize(pop_plot[[1]], unit = "km")
 
 # plot ITN
-max_nets <- max(global(itn_plot, "max", na.rm = TRUE))
+itn_plot_mask <- mask(itn_plot, pf_water_mask)
+max_nets <- max(global(itn_plot_mask, "max", na.rm = TRUE))
 ggplot() +
+  africa_bg +
   geom_spatraster(
-    data = itn_plot
+    data = itn_plot_mask
   ) +
+  country_borders +
   scale_fill_gradient(
     name = "LLIN use",
     labels = scales::percent,
     limits = c(0, 1),
-    low = grey(0.9),
-    high = grey(0.2),
+    low = "pink",
+    high = "purple",
     na.value = "transparent") +
   facet_wrap(~lyr, nrow = 1) +
   ggtitle(
@@ -52,14 +72,17 @@ ggsave("figures/itn_map.png",
        dpi = 300)
 
 # plot IRS
+irs_plot_mask <- mask(irs_plot, pf_water_mask)
 ggplot() +
+  africa_bg +
   geom_spatraster(
-    data = irs_plot
+    data = irs_plot_mask
   ) +
+  country_borders +
   scale_fill_gradient(
     labels = scales::percent,
-    low = grey(0.9),
-    high = grey(0.2),
+    low = "pink",
+    high = "purple",
     name = "Coverage",
     limits = c(0, 1),
     na.value = "transparent") +
@@ -77,15 +100,18 @@ ggsave("figures/irs_map.png",
 
 
 # plot pop
+pop_dens_plot_mask <- mask(pop_dens_plot, pf_water_mask)
 ggplot() +
+  africa_bg +
   geom_spatraster(
-    data = pop_dens_plot
+    data = pop_dens_plot_mask
   ) +
+  country_borders +
   scale_fill_continuous(
     trans = "log1p",
     labels = scales::number_format(big.mark = ","),
-    low = grey(0.9),
-    high = grey(0.2),
+    low = "lightblue",
+    high = "navy",
     breaks = c(1e1, 1e2, 1e3, 1e4),
     name = "People per km<sup>2</sup>",
     na.value = "transparent") +
@@ -129,15 +155,19 @@ crops_implicated <- c(
 # combine all temporally-static covariates
 crops <- c(crops_group, crops_implicated)
 names(crops) <- str_to_sentence(names(crops))
+
+crops_mask <- mask(crops, pf_water_mask)
 ggplot() +
+  africa_bg +
   geom_spatraster(
-    data = crops
+    data = crops_mask
   ) +
+  country_borders +
   scale_fill_gradient(
     # labels = scales::percent,
     transform = "sqrt",
-    low = grey(0.9),
-    high = grey(0.2),
+    low = "lightgreen",
+    high = "darkgreen",
     name = "Relative yield",
     limits = c(0, 1),
     na.value = "transparent") +
