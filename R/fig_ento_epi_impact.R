@@ -30,11 +30,6 @@ source("R/functions.R")
 # years to plot for
 years_plot <- 2000:2030
 
-# spatial:
-
-# - Country borders for plotting
-borders <- readRDS("data/clean/gadm_polys.RDS")
-
 # - IR layers (susceptibility to the pyrethroids used in LLINs)
 ir_filenames <- sprintf(
   "outputs/ir_maps/llin_effective/ir_%s_susceptibility.tif",
@@ -49,7 +44,6 @@ names(nets) <- str_remove(names(nets), "^nets_")
 latest_nets <- max(as.numeric(names(nets)))
 end_year <- max(years_plot)
 nets <- post_pad_cube(nets, end_year)
-
 
 # - MAP PR 2000 baseline
 pr2000 <- rast("data/clean/pfpr_2000.tif")
@@ -70,18 +64,28 @@ pop_all <- c(pop, pop_future)
 ss_est <- read_excel("data/raw/41467_2022_30700_MOESM3_ESM.xlsx",
                         sheet = 4,
                         range = "A15:Y117") %>%
+  # get required columns
   select(
     resistance = "Pyrethroid resistance approximated from susceptibility bioassay",
-    kill = "dN0_4"
+    kill_logistic = "dN0_1",  # logistic model
+    kill_log_logistic = "dN0_4" # log-logistic model
   ) %>%
+  # remove empty row
   slice(
     -1
+  ) %>%
+  # split apart by model type
+  pivot_longer(
+    cols = starts_with("kill"),
+    names_to = "model",
+    values_to = "kill",
+    names_prefix = "kill_"
   ) %>%
   mutate(
     susceptibility = 1 - resistance,
     relative_killing_effect = kill / max(kill)
   )
-# 
+
 # # plot to check against paper figures
 # ss_est %>%
 #   ggplot(
@@ -90,18 +94,43 @@ ss_est <- read_excel("data/raw/41467_2022_30700_MOESM3_ESM.xlsx",
 #       y = kill
 #     )
 #   ) +
+#   facet_wrap(~model) +
 #   geom_line() +
+#   coord_cartesian(ylim = c(0, 1)) +
 #   theme_minimal()
 
-# produce an interpolating function to get the relative killing effect
-killing_function <- splinefun(x = ss_est$susceptibility,
-                              y = ss_est$relative_killing_effect)
 
-# check this interpolator behaves appropriately at the edges and throughout
-stopifnot(identical(killing_function(0), 0))
-stopifnot(identical(killing_function(1), 1))
-stopifnot(identical(killing_function(ss_est$susceptibility),
-                    ss_est$relative_killing_effect))
+ss_est_logistic <- ss_est %>%
+  filter(model == "logistic")
+
+ss_est_log_logistic <- ss_est %>%
+  filter(model == "log_logistic")
+
+# produce interpolating functions to get the relative killing effect
+killing_function_logistic <- splinefun(
+  x = ss_est_logistic$susceptibility,
+  y = ss_est_logistic$relative_killing_effect
+)
+
+killing_function_log_logistic <- splinefun(
+  x = ss_est_log_logistic$susceptibility,
+  y = ss_est_log_logistic$relative_killing_effect
+)
+
+# check the interpolators behave appropriately
+stopifnot(
+  identical(
+    killing_function_logistic(ss_est_logistic$susceptibility),
+    ss_est_logistic$relative_killing_effect
+  )
+)
+
+stopifnot(
+  identical(
+    killing_function_log_logistic(ss_est_log_logistic$susceptibility),
+    ss_est_log_logistic$relative_killing_effect
+  )
+)
 
 # encode Symons et al. PMI function for relative effectiveness of ITNs at
 # reducing logit-PfPR (reduction in on the log-odds ratio), compared to in the absence
@@ -128,15 +157,15 @@ epi_function <- function(susceptibility) {
 
 
 # make a cube of the killing effect of ITNs, over time and space
-relative_killing <- terra::app(ir, killing_function)
-names(relative_killing) <- names(ir)
+relative_killing_logistic <- terra::app(ir, killing_function_logistic)
+names(relative_killing_logistic) <- names(ir)
+
+relative_killing_log_logistic <- terra::app(ir, killing_function_log_logistic)
+names(relative_killing_log_logistic) <- names(ir)
 
 # make a cube of the epi impact of ITNs, over time and space
 relative_epi_impact <- terra::app(ir, epi_function)
 names(relative_epi_impact) <- names(ir)
-
-# plot(relative_epi_impact[[c("2000", "2010", "2020", "2030")]],
-#      range = c(0, 1))
 
 # first, average the killing effects and the epi impact of the nets in use
 # across Africa to get the temporal trends in impact of each net
@@ -149,13 +178,23 @@ normalise <- function(x) {
 net_weights <- sapp(nets, normalise)
 
 # average the killing effect and epi impact of nets over the nets in use
-average_killing <- global(relative_killing * net_weights,
-                          fun = "sum",
-                          na.rm = TRUE)
+average_killing_logistic <- global(
+  x = relative_killing_logistic * net_weights,
+  fun = "sum",
+  na.rm = TRUE
+)
 
-average_epi_impact <- global(relative_epi_impact * net_weights,
-                          fun = "sum",
-                          na.rm = TRUE)
+average_killing_log_logistic <- global(
+  x = relative_killing_log_logistic * net_weights,
+  fun = "sum",
+  na.rm = TRUE
+)
+
+average_epi_impact <- global(
+  x = relative_epi_impact * net_weights,
+  fun = "sum",
+  na.rm = TRUE
+)
 
 
 # plot the relative impact of nets on the whole continent by both measures, with
@@ -165,17 +204,30 @@ average_epi_impact <- global(relative_epi_impact * net_weights,
 infection_weights <- sapp(pop_all * pr2000, normalise)
 
 # average net use over these locations
-net_impact_no_ir <- global(nets * infection_weights,
-                           fun = "sum",
-                           na.rm = TRUE)
-# apply the impact of IR and recalculate average
-net_impact_killing <- global(nets * relative_killing * infection_weights,
-                             fun = "sum",
-                             na.rm = TRUE)
+net_impact_no_ir <- global(
+  x = nets * infection_weights,
+  fun = "sum",
+  na.rm = TRUE
+)
 
-net_impact_epi_impact <- global(nets * relative_epi_impact * infection_weights,
-                             fun = "sum",
-                             na.rm = TRUE)
+# apply the impact of IR and recalculate average
+net_impact_killing_logistic <- global(
+  x = nets * relative_killing_logistic * infection_weights,
+  fun = "sum",
+  na.rm = TRUE
+)
+
+net_impact_killing_log_logistic <- global(
+  x = nets * relative_killing_log_logistic * infection_weights,
+  fun = "sum",
+  na.rm = TRUE
+)
+
+net_impact_epi_impact <- global(
+  x = nets * relative_epi_impact * infection_weights,
+  fun = "sum",
+  na.rm = TRUE
+)
 
 par(mfrow = c(1, 3),
     mar = c(2, 5, 3, 2))
@@ -190,9 +242,13 @@ plot(no_change ~ years_plot,
      xlab = "",
      ylab = "Relative effectiveness",
      ylim = c(0, 1))
-lines(average_killing$sum ~ years_plot,
-     col = "red",
-     lwd = 2)
+lines(average_killing_logistic$sum ~ years_plot,
+      col = "red",
+      lwd = 2)
+lines(average_killing_log_logistic$sum ~ years_plot,
+      col = "red",
+      lty = 2,
+      lwd = 2)
 abline(v = latest_nets, lty = 2)
 title(main = "Vector killing")
 
@@ -228,5 +284,4 @@ title(main = "Impact of\nnet distribution")
 # do summaries for a few specific countries, or regions of countries, to make
 # the point about stratification (make sure the raw data aligns first!)
 
-# add limits of transmission mask to other maps
 
