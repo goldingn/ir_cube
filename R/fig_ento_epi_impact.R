@@ -81,6 +81,9 @@ ss_est <- read_excel("data/raw/41467_2022_30700_MOESM3_ESM.xlsx",
     values_to = "kill",
     names_prefix = "kill_"
   ) %>%
+  group_by(
+    model
+  ) %>%
   mutate(
     susceptibility = 1 - resistance,
     relative_killing_effect = kill / max(kill)
@@ -98,7 +101,6 @@ ss_est <- read_excel("data/raw/41467_2022_30700_MOESM3_ESM.xlsx",
 #   geom_line() +
 #   coord_cartesian(ylim = c(0, 1)) +
 #   theme_minimal()
-
 
 ss_est_logistic <- ss_est %>%
   filter(model == "logistic")
@@ -229,7 +231,7 @@ net_impact_epi_impact <- global(
   na.rm = TRUE
 )
 
-par(mfrow = c(1, 3),
+par(mfrow = c(1, 2),
     mar = c(2, 5, 3, 2))
 
 # Effectiveness\n of single-AI nets
@@ -249,22 +251,11 @@ lines(average_killing_log_logistic$sum ~ years_plot,
       col = "red",
       lty = 2,
       lwd = 2)
-abline(v = latest_nets, lty = 2)
-title(main = "Vector killing")
-
-plot(no_change ~ years_plot,
-     type = "l",
-     col = grey(0.3),
-     lwd = 2,
-     xlab = "",
-     ylab = "Relative effectiveness",
-     ylim = c(0, 1))
 lines(average_epi_impact$sum ~ years_plot,
       col = "blue",
       lwd = 2)
 abline(v = latest_nets, lty = 2)
-title(main = "Transmission\nreduction")
-
+# directly label these
 
 plot(net_impact_no_ir$sum ~ years_plot,
      type = "l",
@@ -279,9 +270,103 @@ lines(net_impact_epi_impact$sum ~ years_plot,
 abline(v = latest_nets, lty = 2)
 title(main = "Impact of\nnet distribution")
 
+df_plot <- tibble(
+  year = years_plot,
+  `impact_direct/no resistance` = 1,
+  `impact_direct/vector killing (logistic)` = average_killing_logistic$sum,
+  `impact_direct/vector killing (log-logistic)` = average_killing_log_logistic$sum,
+  `impact_direct/transmission reduction` = average_epi_impact$sum,
+  `impact_overall/no resistance` = net_impact_no_ir$sum,
+  `impact_overall/transmission reduction` = net_impact_epi_impact$sum
+) %>%
+  pivot_longer(
+    cols = starts_with("impact"),
+    names_to = c("scale", "impact_type"),
+    names_pattern = "impact_(.*)/(.*)",
+    values_to = "impact",
+    # names_prefix = "impact_"
+  )
+
+plot_direct <- df_plot %>%
+  filter(
+    scale == "direct"
+  ) %>%
+  mutate(
+    phase = case_when(
+      year > latest_nets ~ "future",
+      .default = "past"
+    )
+  ) %>%
+  ggplot(
+    aes(
+      x = year,
+      y = impact,
+      colour = impact_type,
+      linetype = phase
+    )
+  ) +
+  geom_vline(
+    aes(
+      xintercept = latest_nets
+    ),
+    col = grey(0.6),
+    linetype = 2
+  ) +
+  geom_line(
+    linewidth = 0.8
+  ) +
+  scale_y_continuous(
+    labels = scales::percent,
+    limits = c(0, 1)
+  ) +
+  scale_colour_manual(
+    values = c(
+      "transmission reduction" = "blue",
+      "vector killing (log-logistic)" = "coral",
+      "vector killing (logistic)" = "coral3",
+      "no resistance" = grey(0.4)
+    )
+  ) +
+  scale_linetype_manual(
+    values = c(
+      "past" = 1,
+      "future" = 3
+    ),
+    guide = "none"
+  ) +
+  ylab(
+    "Effectiveness"
+  ) +
+  xlab(
+    ""
+  ) +
+  theme_minimal() +
+  theme(
+    legend.title = element_blank(),
+    # legend.position = "bottom"
+  )
+
+   
+plot_direct
+
 # redo in ggplot and make future lines dotted
 
-# do summaries for a few specific countries, or regions of countries, to make
-# the point about stratification (make sure the raw data aligns first!)
 
+# apply uncertainty to Tas' model and plot as a ribbon (CIs) in both plots; this
+# should expand as susceptibility decreases
 
+# four panel:
+
+# A) Declining effectiveness of nets
+# remove the 'no resistance' line and killing effects
+# add ribbon of uncertainty on Tas'
+
+# B) Declining impact of net distribution
+# plot the 'no resistance' line in the second plot
+# add ribbon of uncertainty on Tas'
+
+# C) Significant spatial variation in impact of net distributions
+# plot overall impact of nets as averages in quantiles based on 2025 IR
+
+# D) Spatial distribution of these for stratification
+# plot the different quantiles on a map (small version of 2025 map)
