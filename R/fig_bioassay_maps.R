@@ -8,9 +8,8 @@ source("R/functions.R")
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
 
-# load time-varying net coverage data and flatten it
-mask <- rast("data/clean/raster_mask.tif")
-mask_poly <- as.polygons(mask)
+# load admin borders for plotting
+borders <- readRDS("data/clean/gadm_polys.RDS")
 
 # set colours
 pyrethroid_blue <- "#56B1F7"
@@ -80,13 +79,21 @@ points_all <- df_sub %>%
     by = "insecticide"
   ) %>%
   arrange(mosquito_number)
+
+# continent background
+africa_bg <- geom_sf(data = borders,
+                     linewidth = 0,
+                     fill = grey(0.85))
+
+# border colour
+border_col <- grey(0.4)
  
 pyrethroid_spatial_plot <- ggplot() +
-  geom_spatvector(
-    data = mask_poly,
-    colour = "transparent",
-    fill = grey(0.9)
-  ) +
+  africa_bg +
+  geom_sf(data = borders,
+          col = border_col,
+          linewidth = 0.1,
+          fill = "transparent") +
   geom_point(
     aes(
       x = longitude,
@@ -115,11 +122,11 @@ pyrethroid_spatial_plot <- ggplot() +
   )
 
 all_spatial_plot <- ggplot() +
-  geom_spatvector(
-    data = mask_poly,
-    colour = "transparent",
-    fill = grey(0.9)
-  ) +
+  africa_bg +
+  geom_sf(data = borders,
+          col = border_col,
+          linewidth = 0.05,
+          fill = "transparent") +
   geom_point(
     aes(
       x = longitude,
@@ -132,7 +139,7 @@ all_spatial_plot <- ggplot() +
   ) +
   scale_fill_discrete(
     direction = -1,
-    guide = FALSE) +
+    guide = "none") +
   scale_size_area(
     max_size = 4
   ) +
