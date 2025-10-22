@@ -278,7 +278,7 @@ panel_a_data_future <- panel_a_data %>%
     year >= latest_nets
   )
 
-ggplot(
+panel_a <- ggplot(
   mapping = aes(
     x = year,
     y = mean,
@@ -288,7 +288,8 @@ ggplot(
 ) +
   scale_y_continuous(
     labels = scales::percent,
-    limits = c(0, 1)
+    limits = c(0, 1),
+    name = "LLIN effectiveness"
   ) +
   # past data
   geom_ribbon(
@@ -298,7 +299,7 @@ ggplot(
   geom_line(
     data = panel_a_data_past,
     colour = grey(0.2),
-    linewidth = 0.8
+    # linewidth = 0.8
   ) + 
   # future projections; 1/3 of the alpha and dashed lines
   geom_ribbon(
@@ -312,16 +313,13 @@ ggplot(
     colour = grey(0.2),
     alpha = 0.5,
     linetype = 3,
-    linewidth = 0.8
+    # linewidth = 0.8
   ) + 
   # vertical dividing line for past and future
   geom_vline(
     xintercept = latest_nets,
     color = grey(0.6),
     linetype = 2
-  ) +
-  ylab(
-    "LLIN effectiveness"
   ) +
   xlab("") +
   theme_minimal()
@@ -330,6 +328,117 @@ ggplot(
 # B) Declining impact of net distribution
 # plot the 'no resistance' line in the second plot
 # add ribbon of uncertainty on Tas'
+
+# all data
+panel_b_data <- tibble(
+  year = years_plot,
+  mean = net_impact_epi_impact_mean$sum,
+  upper = net_distribution_impact_cis[1, ],
+  lower = net_distribution_impact_cis[2, ],
+  mean_no_ir = net_impact_no_ir$sum  
+)
+
+# split into past and future, both including the latest year of data so there is
+# no break in lines or ribbons
+panel_b_data_past <- panel_b_data %>%
+  filter(
+    year <= latest_nets
+  )
+
+panel_b_data_future <- panel_b_data %>%
+  filter(
+    year >= latest_nets
+  )
+
+panel_b_final <- panel_b_data %>%
+  filter(
+    year == max(year)
+  )
+
+panel_b <- ggplot(
+  mapping = aes(
+    x = year,
+    y = mean,
+    ymin = lower,
+    ymax = upper
+  )
+) +
+  scale_y_continuous(
+    labels = scales::percent,
+    limits = c(0, 0.6),
+    name = "Impact of LLIN distribution"
+  ) +
+  # vertical dividing line for past and future
+  geom_vline(
+    xintercept = latest_nets,
+    color = grey(0.6),
+    linetype = 2
+  ) +
+  # net impact with no IR, past then future
+  geom_line(
+    data = panel_b_data_past,
+    aes(
+      y = mean_no_ir
+    ),
+    colour = grey(0.5),
+    # linewidth = 0.8
+  ) +
+  # net impact with no IR, past then future
+  geom_line(
+    data = panel_b_data_future,
+    aes(
+      y = mean_no_ir
+    ),
+    colour = grey(0.5),
+    # linewidth = 0.8,
+    linetype = 3
+  ) +
+  # past data
+  geom_ribbon(
+    data = panel_b_data_past,
+    fill = "#56B1F7"
+  ) +
+  geom_line(
+    data = panel_b_data_past,
+    colour = grey(0.2),
+    # linewidth = 0.8
+  ) + 
+  # future projections; 1/3 of the alpha and dashed lines
+  geom_ribbon(
+    data = panel_b_data_future,
+    fill = "#56B1F7",
+    alpha = 0.5,
+    linetype = 3
+  ) +
+  geom_line(
+    data = panel_b_data_future,
+    colour = grey(0.2),
+    alpha = 0.5,
+    linetype = 3,
+    # linewidth = 0.8
+  ) + 
+  xlab("") +
+  theme_minimal() #+
+  # # annotate the projection line
+  # annotate("text",
+  #          x = latest_nets + 0.5,
+  #          y = 1,
+  #          label = "projected",
+  #          colour = grey(0.6),
+  #          hjust = 0,
+  #          vjust = 0,
+  #          srt = -90) +
+  # # annotate the no IR line
+  # annotate("text",
+  #          x = 2030,
+  #          y = panel_b_final$mean_no_ir + 0.02,
+  #          label = "no resistance", 
+  #          hjust = 1,
+  #          vjust = 0,
+  #          colour = grey(0.2))
+
+
+panel_a + panel_b
 
 # C) Significant spatial variation in impact of net distributions
 # plot overall impact of nets as averages in quantiles based on 2025 IR
