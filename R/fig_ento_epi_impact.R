@@ -12,11 +12,10 @@
 # plot the 'no resistance' line in the second plot
 # add ribbon of uncertainty on Tas'
 
-# C) Significant spatial variation in impact of net distributions
-# plot overall impact of nets as averages in quantiles based on 2025 IR
+# C) Spatial variation in effectiveness: plot quantiles of IR (2025) on a map
 
-# D) Spatial distribution of these for stratification
-# plot the different quantiles on a map (small version of 2025 map)
+# D) Significant spatial variation in impact of net distributions:
+# plot overall impact of nets as averages in these quantiles
 
 
 # load packages and functions
@@ -27,6 +26,7 @@ source("R/functions.R")
 
 # spatial:
 # - Country borders for plotting
+# - pf transmission limits and water mask for plotting
 # - IR layers
 # - MAP net use (to manually project to 2030)
 # - MAP PR 2000 baseline
@@ -37,6 +37,12 @@ source("R/functions.R")
 
 # years to plot for
 years_plot <- 2000:2030
+
+# load admin borders for plotting
+borders <- readRDS("data/clean/gadm_polys.RDS")
+
+# load mask with limits of transmission and water bodies for plotting
+pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 
 # - IR layers (susceptibility to the pyrethroids used in LLINs)
 ir_filenames <- sprintf(
@@ -211,13 +217,95 @@ net_impact_epi_impact_mean <- global(
   na.rm = TRUE
 )
 
+
+# compute population-at-risk-weighted quantiles of 2025 LLIN effectiveness, to
+# divide up the map into different regions
+vals <- infection_weights[["2025"]][]
+cells <- which(!is.na(vals) & vals > 0)
+
+impact_2025 <- relative_epi_impact_mean[["2025"]][cells][, 1]
+infection_weights_2025 <- infection_weights[["2025"]][cells][, 1]
+
+# n_bands <- 3
+# cuts <- seq(0, 1, length.out = n_bands + 1)
+cuts <- c(0, 0.5, 0.9, 1)
+quants <- Hmisc::wtd.quantile(x = impact_2025,
+                              weights = infection_weights_2025,
+                              probs = cuts,
+                              normwt = TRUE)
+
+# redefine endpoints, in case there are out-of-bounds effectiveness results
+# outside PAR
+n_quants <- length(quants)
+quants[1] <- 0
+quants[n_quants] <- 1
+
+# do reclassification on ir_2025 to map the bands. Do 'right = NA' to include
+# both upper and lower bounds
+rcl <- cbind(from = quants[-n_quants],
+             to = quants[-1],
+             becomes = seq_len(n_quants - 1))
+bands <- terra::classify(relative_epi_impact_mean[["2025"]],
+                         rcl,
+                         right = NA)
+names <- data.frame(
+  from = 3:1,
+  to = c("highest", "medium", "lowest")
+)
+levels(bands) <- names
+
+# create net weights and infection weights subsetted to each of these bands, to
+# compute effectiveness over time in each
+
+nets_highest <- nets * (bands == "highest")
+net_weights_highest <- sapp(nets_highest, normalise)
+
+nets_medium <- nets * (bands == "medium")
+net_weights_medium <- sapp(nets_medium, normalise)
+
+nets_lowest <- nets * (bands == "lowest")
+net_weights_lowest <- sapp(nets_lowest, normalise)
+
+# compute posterior means for these
+average_epi_impact_mean_highest <- global(
+  x = relative_epi_impact_mean * net_weights_highest,
+  fun = "sum",
+  na.rm = TRUE
+)
+
+average_epi_impact_mean_medium <- global(
+  x = relative_epi_impact_mean * net_weights_medium,
+  fun = "sum",
+  na.rm = TRUE
+)
+
+average_epi_impact_mean_lowest <- global(
+  x = relative_epi_impact_mean * net_weights_lowest,
+  fun = "sum",
+  na.rm = TRUE
+)
+
+# 
+# plot(average_epi_impact_mean_lowest$sum ~ years_plot,
+#      ylim = c(0, 1),
+#      type = "l")
+# lines(average_epi_impact_mean_medium$sum ~ years_plot)
+# lines(average_epi_impact_mean_highest$sum ~ years_plot)
+# abline(v = latest_nets)
+
 # Now do the same under a Monte Carlo simulation, to get credible intervals on
 # these
 n_years <- length(years_plot)
-individual_net_impact_sims <- matrix(NA, nrow = n_years, ncol = n_sims)
-net_distribution_impact_sims <- matrix(NA, nrow = n_years, ncol = n_sims)
-rownames(individual_net_impact_sims) <- years_plot
-rownames(net_distribution_impact_sims) <- years_plot
+individual_net_impact_sims <- 
+  individual_net_impact_sims_highest <- 
+  individual_net_impact_sims_medium <- 
+  individual_net_impact_sims_lowest <- 
+  net_distribution_impact_sims <- matrix(NA, nrow = n_years, ncol = n_sims)
+rownames(individual_net_impact_sims) <-
+  rownames(individual_net_impact_sims_highest) <-
+  rownames(individual_net_impact_sims_medium) <-
+  rownames(individual_net_impact_sims_lowest) <- 
+  rownames(net_distribution_impact_sims) <- years_plot
 
 for (i in seq_len(n_sims)) {
   print(i)
@@ -233,6 +321,27 @@ for (i in seq_len(n_sims)) {
   
   individual_net_impact_sims[, i] <- average_epi_impact_sim$sum
   
+  # same for low, medium, high
+  average_epi_impact_sim_highest <- global(
+    x = relative_epi_impact_sim * net_weights_highest,
+    fun = "sum",
+    na.rm = TRUE
+  )
+  average_epi_impact_sim_medium <- global(
+    x = relative_epi_impact_sim * net_weights_medium,
+    fun = "sum",
+    na.rm = TRUE
+  )
+  average_epi_impact_sim_lowest <- global(
+    x = relative_epi_impact_sim * net_weights_lowest,
+    fun = "sum",
+    na.rm = TRUE
+  )
+  individual_net_impact_sims_highest[, i] <- average_epi_impact_sim_highest$sum
+  individual_net_impact_sims_medium[, i] <- average_epi_impact_sim_medium$sum
+  individual_net_impact_sims_lowest[, i] <- average_epi_impact_sim_lowest$sum
+  
+  # now (for all bands) do the impact of net distribution
   net_impact_epi_impact_sim <- global(
     x = nets * relative_epi_impact_sim * infection_weights,
     fun = "sum",
@@ -248,12 +357,24 @@ for (i in seq_len(n_sims)) {
 individual_net_impact_cis <- apply(individual_net_impact_sims,
                                    1,
                                    quantile,
-                                   c(0.025, 0.975))
-
+                                   c(0.25, 0.75))
+individual_net_impact_cis_highest <- apply(individual_net_impact_sims_highest,
+                                          1,
+                                          quantile,
+                                          c(0.25, 0.75))
+individual_net_impact_cis_medium <- apply(individual_net_impact_sims_medium,
+                                          1,
+                                          quantile,
+                                          c(0.25, 0.75))
+individual_net_impact_cis_lowest <- apply(individual_net_impact_sims_lowest,
+                                          1,
+                                          quantile,
+                                          c(0.25, 0.75))
 net_distribution_impact_cis <- apply(net_distribution_impact_sims,
-                                   1,
-                                   quantile,
-                                   c(0.025, 0.975))
+                                     1,
+                                     quantile,
+                                     c(0.25, 0.75))
+
 
 # panel A: Declining effectiveness of nets
 # mean and CI of "individual_net_impact" over time
@@ -418,265 +539,414 @@ panel_b <- ggplot(
     # linewidth = 0.8
   ) + 
   xlab("") +
-  theme_minimal() #+
-  # # annotate the projection line
-  # annotate("text",
-  #          x = latest_nets + 0.5,
-  #          y = 1,
-  #          label = "projected",
-  #          colour = grey(0.6),
-  #          hjust = 0,
-  #          vjust = 0,
-  #          srt = -90) +
-  # # annotate the no IR line
-  # annotate("text",
-  #          x = 2030,
-  #          y = panel_b_final$mean_no_ir + 0.02,
-  #          label = "no resistance", 
-  #          hjust = 1,
-  #          vjust = 0,
-  #          colour = grey(0.2))
+  theme_minimal()
 
+# C) Spatial variation in effectiveness: plot quantiles of LLIN effectiveness
+# (2025) on a map
 
-panel_a + panel_b
+bands_mask <- terra::mask(bands, pf_water_mask)
 
-# C) Significant spatial variation in impact of net distributions
-# plot overall impact of nets as averages in quantiles based on 2025 IR
+# grey background for Africa
+africa_bg <- geom_sf(data = borders,
+                     linewidth = 0,
+                     fill = grey(0.75))
 
-# D) Spatial distribution of these for stratification
-# plot the different quantiles on a map (small version of 2025 map)
+border_col <- grey(0.4)
 
+band_pal <- colorRampPalette(
+  rev(RColorBrewer::brewer.pal(9, "RdPu"))
+)
+band_cols <- band_pal(5)[2:4]
 
-
-
-# maybe plot the killing effects from Nash & Sherrard-Smith
-
-# - Nash/Sherrard-Smith killing effect estimates.
-
-# load in and prepare curves from Nash/Sherard-Smith, given in supp to Sherard
-# Smith paper: https://doi.org/10.1038/s41467-022-30700-1
-ss_est <- read_excel("data/raw/41467_2022_30700_MOESM3_ESM.xlsx",
-                     sheet = 4,
-                     range = "A15:Y117") %>%
-  # get required columns
-  select(
-    resistance = "Pyrethroid resistance approximated from susceptibility bioassay",
-    kill_logistic = "dN0_1",  # logistic model
-    kill_log_logistic = "dN0_4" # log-logistic model
-  ) %>%
-  # remove empty row
-  slice(
-    -1
-  ) %>%
-  # split apart by model type
-  pivot_longer(
-    cols = starts_with("kill"),
-    names_to = "model",
-    values_to = "kill",
-    names_prefix = "kill_"
-  ) %>%
-  group_by(
-    model
-  ) %>%
-  mutate(
-    susceptibility = 1 - resistance,
-    relative_killing_effect = kill / max(kill)
+panel_c <- ggplot() +
+  africa_bg +
+  geom_spatraster(
+    data = bands_mask,
+  ) +
+  geom_sf(data = borders,
+          col = border_col,
+          linewidth = 0.1,
+          fill = "transparent") +
+  scale_fill_manual(
+    values = c(
+      lowest = band_cols[3],
+      medium = band_cols[2],
+      highest = band_cols[1]
+    ),
+    na.translate = FALSE,
+    name = "LLIN effectiveness 2025",
+    na.value = "transparent",
+  ) +
+  theme_ir_maps() +
+  theme(
+    strip.text.x = element_text(hjust = 0),
+    plot.margin = unit(rep(0, 4), "cm"),
+    legend.position = "inside",
+    legend.position.inside = c(0.2, 0.25),
+    legend.text.position = "left",
+    legend.ticks = element_blank()
   )
 
-# # plot to check against paper figures
-# ss_est %>%
-#   ggplot(
-#     aes(
-#       x = resistance,
-#       y = kill
-#     )
-#   ) +
-#   facet_wrap(~model) +
-#   geom_line() +
-#   coord_cartesian(ylim = c(0, 1)) +
-#   theme_minimal()
-
-ss_est_logistic <- ss_est %>%
-  filter(model == "logistic")
-
-ss_est_log_logistic <- ss_est %>%
-  filter(model == "log_logistic")
-
-# produce interpolating functions to get the relative killing effect
-killing_function_logistic <- splinefun(
-  x = ss_est_logistic$susceptibility,
-  y = ss_est_logistic$relative_killing_effect
-)
-
-killing_function_log_logistic <- splinefun(
-  x = ss_est_log_logistic$susceptibility,
-  y = ss_est_log_logistic$relative_killing_effect
-)
-
-# check the interpolators behave appropriately
-stopifnot(
-  identical(
-    killing_function_logistic(ss_est_logistic$susceptibility),
-    ss_est_logistic$relative_killing_effect
-  )
-)
-
-stopifnot(
-  identical(
-    killing_function_log_logistic(ss_est_log_logistic$susceptibility),
-    ss_est_log_logistic$relative_killing_effect
-  )
-)
+# This displays the continent in classes of LLIN effectiveness, with the third
+# of the population at risk with the highest LLIN effectiveness (>25%
+# susceptibility), the third with the lowest LLIN effectiveness (>25%
+# susceptibility)
 
 
-# make a cube of the killing effect of ITNs, over time and space
-relative_killing_logistic <- terra::app(ir, killing_function_logistic)
-names(relative_killing_logistic) <- names(ir)
-
-relative_killing_log_logistic <- terra::app(ir, killing_function_log_logistic)
-names(relative_killing_log_logistic) <- names(ir)
 
 
-# average the killing effect and epi impact of nets over the nets in use
-average_killing_logistic <- global(
-  x = relative_killing_logistic * net_weights,
-  fun = "sum",
-  na.rm = TRUE
-)
 
-average_killing_log_logistic <- global(
-  x = relative_killing_log_logistic * net_weights,
-  fun = "sum",
-  na.rm = TRUE
-)
-
-# apply the impact of IR and recalculate average
-net_impact_killing_logistic <- global(
-  x = nets * relative_killing_logistic * infection_weights,
-  fun = "sum",
-  na.rm = TRUE
-)
-
-net_impact_killing_log_logistic <- global(
-  x = nets * relative_killing_log_logistic * infection_weights,
-  fun = "sum",
-  na.rm = TRUE
-)
+# panel D should show effectiveness in these bands, in these colours, like panel
+# A
 
 
-par(mfrow = c(1, 2),
-    mar = c(2, 5, 3, 2))
-
-# Effectiveness\n of single-AI nets
-no_change <- rep(1, length(years_plot))
-# impact of each net
-plot(no_change ~ years_plot,
-     type = "l",
-     col = grey(0.3),
-     lwd = 2,
-     xlab = "",
-     ylab = "Relative effectiveness",
-     ylim = c(0, 1))
-lines(average_killing_logistic$sum ~ years_plot,
-      col = "red",
-      lwd = 2)
-lines(average_killing_log_logistic$sum ~ years_plot,
-      col = "red",
-      lty = 2,
-      lwd = 2)
-lines(average_epi_impact$sum ~ years_plot,
-      col = "blue",
-      lwd = 2)
-abline(v = latest_nets, lty = 2)
-# directly label these
-
-plot(net_impact_no_ir$sum ~ years_plot,
-     type = "l",
-     lwd = 2,
-     col = grey(0.3),
-     ylab = "Relative impact",
-     xlab = "",
-     ylim = c(0, 1))
-lines(net_impact_epi_impact$sum ~ years_plot,
-      col = "blue",
-      lwd = 2)
-abline(v = latest_nets, lty = 2)
-title(main = "Impact of\nnet distribution")
-
-df_plot <- tibble(
+panel_d_data <- tibble(
   year = years_plot,
-  `impact_direct/no resistance` = 1,
-  `impact_direct/vector killing (logistic)` = average_killing_logistic$sum,
-  `impact_direct/vector killing (log-logistic)` = average_killing_log_logistic$sum,
-  `impact_direct/transmission reduction` = average_epi_impact$sum,
-  `impact_overall/no resistance` = net_impact_no_ir$sum,
-  `impact_overall/transmission reduction` = net_impact_epi_impact$sum
+  mean_highest = average_epi_impact_mean_highest$sum,
+  upper_highest = individual_net_impact_cis_highest[1, ],
+  lower_highest = individual_net_impact_cis_highest[2, ],
+  mean_medium = average_epi_impact_mean_medium$sum,
+  upper_medium = individual_net_impact_cis_medium[1, ],
+  lower_medium = individual_net_impact_cis_medium[2, ],
+  mean_lowest = average_epi_impact_mean_lowest$sum,
+  upper_lowest = individual_net_impact_cis_lowest[1, ],
+  lower_lowest = individual_net_impact_cis_lowest[2, ],
 ) %>%
   pivot_longer(
-    cols = starts_with("impact"),
-    names_to = c("scale", "impact_type"),
-    names_pattern = "impact_(.*)/(.*)",
-    values_to = "impact",
-    # names_prefix = "impact_"
-  )
-
-plot_direct <- df_plot %>%
-  filter(
-    scale == "direct"
+    cols = starts_with(c("mean", "upper", "lower")),
+    names_pattern = "(.*)_(.*)",
+    names_to = c("statistic", "band"),
+    values_to = "effectiveness"
+  ) %>%
+  pivot_wider(
+    names_from = statistic,
+    values_from = effectiveness
   ) %>%
   mutate(
-    phase = case_when(
-      year > latest_nets ~ "future",
-      .default = "past"
-    )
-  ) %>%
-  ggplot(
-    aes(
-      x = year,
-      y = impact,
-      colour = impact_type,
-      linetype = phase
-    )
-  ) +
-  geom_vline(
-    aes(
-      xintercept = latest_nets
-    ),
-    col = grey(0.6),
-    linetype = 2
-  ) +
-  geom_line(
-    linewidth = 0.8
-  ) +
-  scale_y_continuous(
-    labels = scales::percent,
-    limits = c(0, 1)
-  ) +
-  scale_colour_manual(
-    values = c(
-      "transmission reduction" = "blue",
-      "vector killing (log-logistic)" = "coral",
-      "vector killing (logistic)" = "coral3",
-      "no resistance" = grey(0.4)
-    )
-  ) +
-  scale_linetype_manual(
-    values = c(
-      "past" = 1,
-      "future" = 3
-    ),
-    guide = "none"
-  ) +
-  ylab(
-    "Effectiveness"
-  ) +
-  xlab(
-    ""
-  ) +
-  theme_minimal() +
-  theme(
-    legend.title = element_blank(),
-    # legend.position = "bottom"
+    band = factor(band,
+                  levels = c("highest",
+                             "medium",
+                             "lowest"))
   )
 
-plot_direct
+# split into past and future, both including the latest year of data so there is
+# no break in lines or ribbons
+panel_d_data_past <- panel_d_data %>%
+  filter(
+    year <= latest_nets
+  )
+
+panel_d_data_future <- panel_d_data %>%
+  filter(
+    year >= latest_nets
+  )
+
+panel_d <- ggplot(
+  mapping = aes(
+    x = year,
+    y = mean,
+    ymin = lower,
+    ymax = upper,
+    fill = band
+  )
+) +
+  scale_y_continuous(
+    labels = scales::percent,
+    limits = c(0, 1),
+    name = "LLIN effectiveness"
+  ) +
+  scale_fill_manual(
+    values = c(
+      lowest = band_cols[3],
+      medium = band_cols[2],
+      highest = band_cols[1]
+    ),
+    guide = "none",
+    na.translate = FALSE,
+    name = "LLIN effectiveness",
+    na.value = "transparent",
+  ) +
+  # past data
+  geom_ribbon(
+    data = panel_d_data_past,
+  ) +
+  geom_line(
+    data = panel_d_data_past,
+    colour = grey(0.2)
+  ) + 
+  # future projections; 1/3 of the alpha and dashed lines
+  geom_ribbon(
+    data = panel_d_data_future,
+    alpha = 0.5,
+    linetype = 3
+  ) +
+  geom_line(
+    data = panel_d_data_future,
+    colour = grey(0.2),
+    alpha = 0.5,
+    linetype = 3
+  ) + 
+  # vertical dividing line for past and future
+  geom_vline(
+    xintercept = latest_nets,
+    color = grey(0.6),
+    linetype = 2
+  ) +
+  xlab("") +
+  theme_minimal()
+
+plots_all <- panel_a +
+  panel_b +
+  panel_c +
+  panel_d +
+  plot_layout(
+    ncol = 2,
+    nrow = 2,
+    widths = rep(1, 4)
+  ) +
+  plot_annotation(
+    tag_levels = "A"
+  )
+
+ggsave(
+  filename = "figures/epi_impact.png",
+  plot = plots_all,
+  bg = "white",
+  width = 6,
+  height = 6,
+  scale = 1,
+  dpi = 300
+)
+
+
+# # maybe plot the killing effects from Nash & Sherrard-Smith
+# 
+# # - Nash/Sherrard-Smith killing effect estimates.
+# 
+# # load in and prepare curves from Nash/Sherard-Smith, given in supp to Sherard
+# # Smith paper: https://doi.org/10.1038/s41467-022-30700-1
+# ss_est <- read_excel("data/raw/41467_2022_30700_MOESM3_ESM.xlsx",
+#                      sheet = 4,
+#                      range = "A15:Y117") %>%
+#   # get required columns
+#   select(
+#     resistance = "Pyrethroid resistance approximated from susceptibility bioassay",
+#     kill_logistic = "dN0_1",  # logistic model
+#     kill_log_logistic = "dN0_4" # log-logistic model
+#   ) %>%
+#   # remove empty row
+#   slice(
+#     -1
+#   ) %>%
+#   # split apart by model type
+#   pivot_longer(
+#     cols = starts_with("kill"),
+#     names_to = "model",
+#     values_to = "kill",
+#     names_prefix = "kill_"
+#   ) %>%
+#   group_by(
+#     model
+#   ) %>%
+#   mutate(
+#     susceptibility = 1 - resistance,
+#     relative_killing_effect = kill / max(kill)
+#   )
+# 
+# # # plot to check against paper figures
+# # ss_est %>%
+# #   ggplot(
+# #     aes(
+# #       x = resistance,
+# #       y = kill
+# #     )
+# #   ) +
+# #   facet_wrap(~model) +
+# #   geom_line() +
+# #   coord_cartesian(ylim = c(0, 1)) +
+# #   theme_minimal()
+# 
+# ss_est_logistic <- ss_est %>%
+#   filter(model == "logistic")
+# 
+# ss_est_log_logistic <- ss_est %>%
+#   filter(model == "log_logistic")
+# 
+# # produce interpolating functions to get the relative killing effect
+# killing_function_logistic <- splinefun(
+#   x = ss_est_logistic$susceptibility,
+#   y = ss_est_logistic$relative_killing_effect
+# )
+# 
+# killing_function_log_logistic <- splinefun(
+#   x = ss_est_log_logistic$susceptibility,
+#   y = ss_est_log_logistic$relative_killing_effect
+# )
+# 
+# # check the interpolators behave appropriately
+# stopifnot(
+#   identical(
+#     killing_function_logistic(ss_est_logistic$susceptibility),
+#     ss_est_logistic$relative_killing_effect
+#   )
+# )
+# 
+# stopifnot(
+#   identical(
+#     killing_function_log_logistic(ss_est_log_logistic$susceptibility),
+#     ss_est_log_logistic$relative_killing_effect
+#   )
+# )
+# 
+# 
+# # make a cube of the killing effect of ITNs, over time and space
+# relative_killing_logistic <- terra::app(ir, killing_function_logistic)
+# names(relative_killing_logistic) <- names(ir)
+# 
+# relative_killing_log_logistic <- terra::app(ir, killing_function_log_logistic)
+# names(relative_killing_log_logistic) <- names(ir)
+# 
+# 
+# # average the killing effect and epi impact of nets over the nets in use
+# average_killing_logistic <- global(
+#   x = relative_killing_logistic * net_weights,
+#   fun = "sum",
+#   na.rm = TRUE
+# )
+# 
+# average_killing_log_logistic <- global(
+#   x = relative_killing_log_logistic * net_weights,
+#   fun = "sum",
+#   na.rm = TRUE
+# )
+# 
+# # apply the impact of IR and recalculate average
+# net_impact_killing_logistic <- global(
+#   x = nets * relative_killing_logistic * infection_weights,
+#   fun = "sum",
+#   na.rm = TRUE
+# )
+# 
+# net_impact_killing_log_logistic <- global(
+#   x = nets * relative_killing_log_logistic * infection_weights,
+#   fun = "sum",
+#   na.rm = TRUE
+# )
+# 
+# 
+# par(mfrow = c(1, 2),
+#     mar = c(2, 5, 3, 2))
+# 
+# # Effectiveness\n of single-AI nets
+# no_change <- rep(1, length(years_plot))
+# # impact of each net
+# plot(no_change ~ years_plot,
+#      type = "l",
+#      col = grey(0.3),
+#      lwd = 2,
+#      xlab = "",
+#      ylab = "Relative effectiveness",
+#      ylim = c(0, 1))
+# lines(average_killing_logistic$sum ~ years_plot,
+#       col = "red",
+#       lwd = 2)
+# lines(average_killing_log_logistic$sum ~ years_plot,
+#       col = "red",
+#       lty = 2,
+#       lwd = 2)
+# lines(average_epi_impact$sum ~ years_plot,
+#       col = "blue",
+#       lwd = 2)
+# abline(v = latest_nets, lty = 2)
+# # directly label these
+# 
+# plot(net_impact_no_ir$sum ~ years_plot,
+#      type = "l",
+#      lwd = 2,
+#      col = grey(0.3),
+#      ylab = "Relative impact",
+#      xlab = "",
+#      ylim = c(0, 1))
+# lines(net_impact_epi_impact$sum ~ years_plot,
+#       col = "blue",
+#       lwd = 2)
+# abline(v = latest_nets, lty = 2)
+# title(main = "Impact of\nnet distribution")
+# 
+# df_plot <- tibble(
+#   year = years_plot,
+#   `impact_direct/no resistance` = 1,
+#   `impact_direct/vector killing (logistic)` = average_killing_logistic$sum,
+#   `impact_direct/vector killing (log-logistic)` = average_killing_log_logistic$sum,
+#   `impact_direct/transmission reduction` = average_epi_impact$sum,
+#   `impact_overall/no resistance` = net_impact_no_ir$sum,
+#   `impact_overall/transmission reduction` = net_impact_epi_impact$sum
+# ) %>%
+#   pivot_longer(
+#     cols = starts_with("impact"),
+#     names_to = c("scale", "impact_type"),
+#     names_pattern = "impact_(.*)/(.*)",
+#     values_to = "impact",
+#     # names_prefix = "impact_"
+#   )
+# 
+# plot_direct <- df_plot %>%
+#   filter(
+#     scale == "direct"
+#   ) %>%
+#   mutate(
+#     phase = case_when(
+#       year > latest_nets ~ "future",
+#       .default = "past"
+#     )
+#   ) %>%
+#   ggplot(
+#     aes(
+#       x = year,
+#       y = impact,
+#       colour = impact_type,
+#       linetype = phase
+#     )
+#   ) +
+#   geom_vline(
+#     aes(
+#       xintercept = latest_nets
+#     ),
+#     col = grey(0.6),
+#     linetype = 2
+#   ) +
+#   geom_line(
+#     linewidth = 0.8
+#   ) +
+#   scale_y_continuous(
+#     labels = scales::percent,
+#     limits = c(0, 1)
+#   ) +
+#   scale_colour_manual(
+#     values = c(
+#       "transmission reduction" = "blue",
+#       "vector killing (log-logistic)" = "coral",
+#       "vector killing (logistic)" = "coral3",
+#       "no resistance" = grey(0.4)
+#     )
+#   ) +
+#   scale_linetype_manual(
+#     values = c(
+#       "past" = 1,
+#       "future" = 3
+#     ),
+#     guide = "none"
+#   ) +
+#   ylab(
+#     "Effectiveness"
+#   ) +
+#   xlab(
+#     ""
+#   ) +
+#   theme_minimal() +
+#   theme(
+#     legend.title = element_blank(),
+#     # legend.position = "bottom"
+#   )
+# 
+# plot_direct
