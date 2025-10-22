@@ -574,17 +574,23 @@ panel_c <- ggplot() +
       highest = band_cols[1]
     ),
     na.translate = FALSE,
-    name = "LLIN effectiveness 2025",
-    na.value = "transparent",
+    # note we arre using element_markdown() for legend titles so need this html
+    # linebreak version
+    name = "LLIN effectiveness<br>(2025)",
+    na.value = "transparent"
   ) +
   theme_ir_maps() +
   theme(
     strip.text.x = element_text(hjust = 0),
     plot.margin = unit(rep(0, 4), "cm"),
     legend.position = "inside",
-    legend.position.inside = c(0.2, 0.25),
+    legend.position.inside = c(0.05, 0.25),
+    legend.key.height = rel(0.8),
+    legend.key.width = rel(0.8),
     legend.text.position = "left",
-    legend.ticks = element_blank()
+    legend.ticks = element_blank(),
+    legend.title = element_markdown(size = rel(0.8),
+                                    hjust = 1)
   )
 
 # This displays the continent in classes of LLIN effectiveness, with the third
@@ -712,7 +718,7 @@ ggsave(
   filename = "figures/epi_impact.png",
   plot = plots_all,
   bg = "white",
-  width = 6,
+  width = 7,
   height = 6,
   scale = 1,
   dpi = 300
