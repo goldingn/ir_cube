@@ -939,6 +939,9 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
     mutate(is_best = abs(value) == min(abs(value))) %>%
     ungroup()
   
+  # write transformed plotting data to disk
+  write_csv(result_for_plot,"outputs/CV_result_for_plot.csv")
+  
   result_for_plot %>% 
     filter(metric == "deviance") %>% 
     ggplot(aes(x = facet, y = model, fill = value)) + 
