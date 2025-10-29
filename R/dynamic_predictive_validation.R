@@ -593,12 +593,13 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
   
   spatial_interpolation$test <- tibble(spatial_interpolation$test, predicted_dynamic = predicted_test_mean)
   
-  # save pred outcome in case need to recalculate eval metrics
-  write_csv(spatial_interpolation$test,"outputs/dynamic_interp_pred.csv")
-  
   rho_classes_test_mean <- apply(rho_classes_test[[1]],2:3,mean) %>% as.numeric()
   
   rho_classes_test_indexed <- rho_classes_test_mean[fold_test_df$class_id]
+  
+  spatial_interpolation$test <- tibble(spatial_interpolation$test, rho_classes_test_indexed = rho_classes_test_indexed)
+  # save pred outcome in case need to recalculate eval metrics
+  write_csv(spatial_interpolation$test,"outputs/dynamic_interp_pred.csv")
   
   test_outcome_df <- optimal_nn_preds %>%
     filter(
@@ -870,12 +871,14 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
   
   temporal_forecasting$test <- tibble(temporal_forecasting$test, predicted_dynamic = predicted_test_mean)
   
-  # save pred outcome in case need to recalculate eval metrics
-  write_csv(temporal_forecasting$test,"outputs/dynamic_temporal_forecast_pred.csv")
-  
   rho_classes_test_mean <- apply(rho_classes_test[[1]],2:3,mean) %>% as.numeric()
   
   rho_classes_test_indexed <- rho_classes_test_mean[fold_test_df$class_id]
+  
+  temporal_forecasting$test <- tibble(temporal_forecasting$test, rho_classes_test_indexed = rho_classes_test_indexed)
+  
+  # save pred outcome in case need to recalculate eval metrics
+  write_csv(temporal_forecasting$test,"outputs/dynamic_temporal_forecast_pred.csv")
   
   test_outcome_df <- optimal_nn_preds %>%
     filter(
