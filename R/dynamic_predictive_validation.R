@@ -191,9 +191,9 @@ dynamic_extrap_result <- extrap_result %>%
          experiment = "dynmaic_spatial_extrapolation") %>% 
  left_join(spatial_extrapolation_intercept_error,by = join_by(country_name)) 
 
-# initialise result df for vs hancock
-dynamic_extrap_result_vs_hancock <- dynamic_extrap_result %>%
-  select(country_name,pred_error_dynamic,bias_dynamic) 
+# # initialise result df for vs hancock
+# dynamic_extrap_result_vs_hancock <- dynamic_extrap_result %>%
+#   select(country_name,pred_error_dynamic,bias_dynamic) 
 
 for (country_idx in seq_along(countries_to_validate)) {
   
@@ -274,7 +274,7 @@ logit_init_country <- sweep(init_country_overall_effect,
 # convert from relative (0-1) to the constrained scale (above init_frac_min)
 init_country_relative <- ilogit(logit_init_country)
 init_range <- 1 - init_frac_min
-init_country_magnitude <- sweep(init_country_relative, 2, init_range, FUN = "*") 
+init_country_magnitude <- sweep(init_country_relative, 2, init_range, FUN = "*")
 init_country <- sweep(init_country_magnitude, 2, init_frac_min, FUN = "+")
 
 cell_country_lookup <- df %>%
@@ -367,6 +367,9 @@ rho_classes_test_indexed <- rho_classes_test_mean[fold_test_df$class_id]
 # put back into the test df
 spatial_extrapolation$test[[country_idx]] <- tibble(spatial_extrapolation$test[[country_idx]], rho_classes_test_indexed = rho_classes_test_indexed)
 
+# # extract pre-fitted results from saved obj if needed
+# predicted_test_mean <- spatial_extrapolation$test[[country_idx]]$predicted_dynamic
+# rho_classes_test_indexed <- spatial_extrapolation$test[[country_idx]]$rho_classes_test_indexed
 
 # calculate deviance and bias on test fold results
 test_outcome_df <- optimal_nn_preds %>%
@@ -374,14 +377,15 @@ test_outcome_df <- optimal_nn_preds %>%
     experiment == "spatial_extrapolation",
     country_name == this_country
   ) %>% 
-  select(died,mosquito_number,observed,in_hancock)
+  select(died,mosquito_number,observed)
 
 pred_error_dynamic <- tibble(died = test_outcome_df$died,
                              mosquito_number = test_outcome_df$mosquito_number,
-                             predicted = predicted_test_mean) %>% 
-  group_by(row_number()) %>% 
-  mutate(pred_error = binom_dev(died, mosquito_number, predicted)) %>% 
-  ungroup() %>% 
+                             predicted = predicted_test_mean,
+                             rho = rho_classes_test_indexed) %>% 
+  group_by(row_number()) %>%
+  mutate(pred_error = betabinom_dev(died, mosquito_number, predicted,rho = rho)) %>%
+  ungroup() %>%
   summarise(pred_error = mean(pred_error)) %>% 
   pull(pred_error)
 
@@ -411,15 +415,18 @@ purge_greta_model()
 gc()
 }
 
-dynamic_extrap_result
+View(dynamic_extrap_result)
 write_csv(dynamic_extrap_result,"outputs/dynamic_extrap_result.csv")
 
-dynamic_extrap_result_vs_hancock_joined <- hancock_extrap_result %>% 
-  left_join(dynamic_extrap_result_vs_hancock,by = join_by(country_name)) %>% 
-  mutate(experiment = "dynmaic_spatial_extrapolation_vs_hancock") 
+# save mean predictions
+saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pred.rds")
 
-dynamic_extrap_result_vs_hancock_joined
-write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result_vs_hancock.csv")
+# dynamic_extrap_result_vs_hancock_joined <- hancock_extrap_result %>% 
+#   left_join(dynamic_extrap_result_vs_hancock,by = join_by(country_name)) %>% 
+#   mutate(experiment = "dynmaic_spatial_extrapolation_vs_hancock") 
+# 
+# dynamic_extrap_result_vs_hancock_joined
+# write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result_vs_hancock.csv")
 
 
 #####do spatial interpolation
@@ -601,9 +608,10 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     mutate(predicted_test_mean = predicted_test_mean,
            rho_classes_test_indexed = rho_classes_test_indexed) %>%
     group_by(row_number()) %>% 
-    mutate(pred_error = binom_dev(died = died,
+    mutate(pred_error = betabinom_dev(died = died,
                                   mosquito_number = mosquito_number,
-                                  predicted = predicted_test_mean)) %>% 
+                                  predicted = predicted_test_mean,
+                                  rho = rho_classes_test_indexed)) %>% 
     ungroup() %>% 
     group_by(
       year_start
@@ -621,7 +629,7 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
       experiment == "spatial_interpolation"
     ) %>%
     group_by(row_number()) %>% 
-    mutate(pred_error = binom_dev(died = died,
+    mutate(pred_error = betabinom_dev(died = died,
                                   mosquito_number = mosquito_number,
                                   predicted = predicted)) %>% 
     ungroup() %>% 
@@ -648,9 +656,10 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     mutate(predicted_test_mean = predicted_test_mean,
            rho_classes_test_indexed = rho_classes_test_indexed) %>%
     group_by(row_number()) %>% 
-    mutate(pred_error = binom_dev(died = died,
+    mutate(pred_error = betabinom_dev(died = died,
                                   mosquito_number = mosquito_number,
-                                  predicted = predicted_test_mean)) %>% 
+                                  predicted = predicted_test_mean,
+                                  rho_classes_test_indexed)) %>% 
     ungroup() %>% 
     summarise(
       pred_error_dynamic = mean(pred_error),
@@ -876,7 +885,7 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     mutate(predicted_test_mean = predicted_test_mean,
            rho_classes_test_indexed = rho_classes_test_indexed) %>%
     group_by(row_number()) %>% 
-    mutate(pred_error = binom_dev(died = died,
+    mutate(pred_error = betabinom_dev(died = died,
                                   mosquito_number = mosquito_number,
                                   predicted = predicted_test_mean)) %>% 
     ungroup() %>% 
@@ -1006,6 +1015,8 @@ write_csv(dynamic_extrap_result_vs_hancock_joined,"outputs/dynamic_extrap_result
     theme_minimal() +
     scale_x_discrete(name = "country") + 
     geom_point(pch = 1, size = 2) + 
+    scale_y_continuous(name = "mean deviance") + 
+    viridis::scale_color_viridis(discrete=TRUE, option="viridis") + 
     ggtitle("Predictive deviance in spatial extrapolation validation experiment")
   
   ggsave("figures/spatial_extrapolation_CV_deviance.png",

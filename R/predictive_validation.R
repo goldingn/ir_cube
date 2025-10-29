@@ -428,12 +428,21 @@ prop <- function(died, tested) {
   died / tested
 }
 
+# approximate non-zero and non-one proportions by applying the empirical logit
+# transform to the data and then the inverse logit to provide a proportion
+emplog_prop <- function(died, mosquito_number) {
+  emplog <- log((died + 0.5) / (mosquito_number - died + 0.5))
+  plogis(emplog)
+}
+
 # define the intercept only null model
 
 # sanity check that glm preds and manually calculating mean are numerically similar
 spatial_interpolation$training %>% 
   group_by(insecticide_type) %>% 
-  summarise(mean_pred = mean(died/mosquito_number)) %>% 
+  mutate(prop_pred = emplog_prop(died,mosquito_number)) %>% 
+  summarise(prop_pred = mean(prop_pred),
+            mean_pred = mean(died/mosquito_number)) %>% 
   mutate(glm_pred = predict(
     glm(
       cbind(died, (mosquito_number-died)) ~ insecticide_type, 
@@ -455,7 +464,7 @@ spatial_interpolation_intercept_error <- spatial_interpolation$test %>%
   mutate(observed = prop(died, mosquito_number),
          predicted = spatial_interpolation_intercept_preds) %>% 
   group_by(row_number()) %>% 
-  mutate(pred_error = binom_dev(died = died,
+  mutate(pred_error = betabinom_dev(died = died,
                                 mosquito_number = mosquito_number,
                                 predicted = predicted)) %>% 
   ungroup() %>% 
@@ -468,7 +477,7 @@ spatial_interpolation_intercept_error_overall <- spatial_interpolation$test %>%
   mutate(observed = prop(died, mosquito_number),
          predicted = spatial_interpolation_intercept_preds) %>% 
   group_by(row_number()) %>% 
-  mutate(pred_error = binom_dev(died = died,
+  mutate(pred_error = betabinom_dev(died = died,
                                 mosquito_number = mosquito_number,
                                 predicted = predicted)) %>% 
   ungroup() %>% 
@@ -488,7 +497,7 @@ temporal_forecasting_intercept_error <- temporal_forecasting$test %>%
   mutate(observed = prop(died, mosquito_number),
          predicted = temporal_forecasting_intercept_preds) %>% 
   group_by(row_number()) %>% 
-  mutate(pred_error = binom_dev(died = died,
+  mutate(pred_error = betabinom_dev(died = died,
                                 mosquito_number = mosquito_number,
                                 predicted = predicted)) %>% 
   ungroup() %>% 
@@ -509,11 +518,12 @@ get_spatial_extrapolation_intercept_pred_error <- function(test,training) {
     mutate(predicted = pred,
            observed = prop(died, mosquito_number)) %>% 
     group_by(row_number()) %>% 
-    mutate(pred_error = binom_dev(died = died,
+    mutate(pred_error = betabinom_dev(died = died,
                                   mosquito_number = mosquito_number,
                                   predicted = predicted)) %>% 
     ungroup() %>% 
     summarise(pred_error_intercept = mean(pred_error),
+              #full_deviance = sum(pred_error),
               bias_intercept = mean(predicted - observed)) 
 }
 
@@ -593,14 +603,6 @@ predict_null_fixed_nn <- function(latitude,
   preds
   
 }
-
-# approximate non-zero and non-one proportions by applying the empirical logit
-# transform to the data and then the inverse logit to provide a proportion
-emplog_prop <- function(died, mosquito_number) {
-  emplog <- log((died + 0.5) / (mosquito_number - died + 0.5))
-  plogis(emplog)
-}
-
 
 # given tibbles of test and training data, return the test data tibble augmented
 # with observed and predicted values of the susceptibility fraction from a
@@ -889,7 +891,7 @@ optimal_nn_preds %>%
     experiment == "spatial_interpolation"
   ) %>%
   group_by(row_number()) %>% 
-  mutate(pred_error = binom_dev(died = died,
+  mutate(pred_error = betabinom_dev(died = died,
                                 mosquito_number = mosquito_number,
                                 predicted = predicted)) %>% 
   ungroup() %>% 
@@ -910,7 +912,7 @@ optimal_nn_preds %>%
     experiment == "spatial_extrapolation"
   ) %>%
   group_by(row_number()) %>% 
-  mutate(pred_error = binom_dev(died = died,
+  mutate(pred_error = betabinom_dev(died = died,
                                 mosquito_number = mosquito_number,
                                 predicted = predicted)) %>% 
   ungroup() %>% 
@@ -918,6 +920,7 @@ optimal_nn_preds %>%
     country_name
   ) %>%
   summarise(
+    #full_deviance = sum(pred_error),
     pred_error = mean(pred_error),
     bias = mean(predicted - observed),
     .groups = "drop"
@@ -932,7 +935,7 @@ optimal_nn_preds %>%
     experiment == "temporal_forecasting"
   ) %>%
   group_by(row_number()) %>% 
-  mutate(pred_error = binom_dev(died = died,
+  mutate(pred_error = betabinom_dev(died = died,
                                 mosquito_number = mosquito_number,
                                 predicted = predicted)) %>% 
   ungroup() %>% 
