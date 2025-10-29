@@ -922,229 +922,73 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
 
   # plot
   
-  dynamic_temporal_forecast_result %>% 
-    pivot_longer(starts_with("pred_error"), 
-                 values_to = "deviance", 
+  result_for_plot <- dynamic_temporal_forecast_result %>% 
+    mutate(facet = as.character(year_start),.keep = "unused") %>% 
+    bind_rows(dynamic_extrap_result %>% 
+                mutate(facet = as.character(country_name),.keep = "unused")) %>% 
+    bind_rows(dynamic_interp_result%>% 
+                mutate(facet = as.character(year_start),.keep = "unused")) %>% 
+    mutate(experiment = stringr::word(experiment,-1,-1, sep = "_")) %>% 
+    pivot_longer(starts_with(c("pred_error","bias")), 
+                 values_to = "value", 
                  names_to = "model") %>% 
-    mutate(model = stringr::word(model,3,3, sep = "_"),
+    mutate(metric = if_else(stringr::word(model,1,1,sep = "_") == "bias","bias","deviance"),
+      model = stringr::word(model,-1,-1, sep = "_"),
            model = if_else(model == "nn", "nearest neighbour", model)) %>% 
-    select(year_start,model, deviance) %>% 
-    ggplot(aes(x = year_start, y = deviance, col = model)) + 
-    theme_minimal() +
-    scale_x_continuous(n.breaks = 3, name = "year") + 
-    geom_point(pch = 1, size = 2) + 
-    ggtitle("Predictive deviance in temporal forecast validation experiment")
+    group_by(facet,experiment,metric) %>% 
+    mutate(is_best = abs(value) == min(abs(value))) %>%
+    ungroup()
   
-  ggsave("figures/temporal_forecast_CV_deviance.png",
+  result_for_plot %>% 
+    filter(metric == "deviance") %>% 
+    ggplot(aes(x = facet, y = model, fill = value)) + 
+    facet_wrap(~ experiment,scales = "free",
+               nrow = 3,
+               ncol = 1) + 
+    geom_tile() + 
+    theme_minimal() + 
+    scale_x_discrete(name = "") + 
+    geom_text(aes(label = round(value,1), 
+                  fontface = ifelse(is_best, "bold", "plain"), 
+                  family = ifelse(is_best,"sans","arial"),
+                  col = is_best,
+                  size = 1/value),
+              show.legend = FALSE) + 
+    scale_color_manual(values = c("#FFEBEB","#E6F3FF")) + 
+    scale_size_continuous(range = c(3.5, 4.5)) +
+    scale_fill_gradient(low = "light grey", high = "red") + 
+    ggtitle("Predictive deviance in cross validation experiments",
+            subtitle = "values in bold indicate best performing model")
+  
+  ggsave("figures/CV_deviance.png",
          bg = "white",
          scale = 0.8,
-         width = 8,
-         height = 8)
+         width = 10,
+         height = 10)
   
-  dynamic_temporal_forecast_result %>% 
-    pivot_longer(starts_with("bias"), 
-                 values_to = "bias", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,2,2, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
-    select(year_start,model, bias) %>% 
-    ggplot(aes(x = year_start, y = bias, col = model)) + 
-    theme_minimal() +
-    scale_x_continuous(n.breaks = 3, name = "year") + 
-    geom_point(pch = 2, size = 2) + 
-    geom_hline(yintercept = 0) + 
-    ggtitle("Predictive bias in temporal forecast validation experiment")
+  result_for_plot %>% 
+    filter(metric == "bias") %>% 
+    ggplot(aes(x = facet, y = model, fill = value)) + 
+    facet_wrap(~ experiment,scales = "free",
+               nrow = 3,
+               ncol = 1) + 
+    geom_tile() + 
+    theme_minimal() + 
+    scale_x_discrete(name = "") + 
+    geom_text(aes(label = round(value,2), 
+                  fontface = ifelse(is_best, "bold", "plain"), 
+                  family = ifelse(is_best,"sans","arial"),
+                  col = is_best),
+              show.legend = FALSE) + 
+    scale_color_manual(values = c("#FFEBEB","#E6F3FF")) + 
+    scale_size_continuous(range = c(3.5, 4.5)) +
+    scale_fill_gradient(low = "light grey", high = "purple") + 
+    ggtitle("Predictive bias in cross validation experiments",
+            subtitle = "values in bold indicate best performing model")
   
-  ggsave("figures/temporal_forecast_CV_bias.png",
+  ggsave("figures/CV_bias.png",
          bg = "white",
          scale = 0.8,
-         width = 8,
-         height = 8)
-
-  dynamic_interp_result %>% 
-    filter(year_start != "overall") %>% 
-    mutate(year_start = as.numeric(year_start)) %>% 
-    pivot_longer(starts_with("pred_error"), 
-                 values_to = "deviance", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,3,3, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
-    select(year_start,model, deviance) %>% 
-    ggplot(aes(x = year_start, y = deviance, col = model)) + 
-    theme_minimal() +
-    scale_x_continuous(breaks = scales::breaks_pretty(),name = "year") + 
-    geom_point(pch = 1, size = 2) + 
-    scale_y_continuous(name = "mean deviance") + 
-    viridis::scale_color_viridis(discrete=TRUE, option="viridis") + 
-    ggtitle("Predictive deviance in spatial interpolation validation experiment")
-  
-  ggsave("figures/spatial_interpolation_CV_deviance.png",
-         bg = "white",
-         scale = 0.8,
-         width = 8,
-         height = 8)
-  
-  dynamic_interp_result %>% 
-    pivot_longer(starts_with("bias"), 
-                 values_to = "bias", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,2,2, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
-    select(year_start,model, bias) %>% 
-    ggplot(aes(x = year_start, y = bias, col = model)) + 
-    theme_minimal() +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = "year") + 
-    geom_point(pch = 2, size = 2) + 
-    geom_hline(yintercept = 0) + 
-    ggtitle("Predictive bias in spatial interpolation validation experiment")
-  
-  ggsave("figures/spatial_interpolation_CV_bias.png",
-         bg = "white",
-         scale = 0.8,
-         width = 8,
-         height = 8)
-  
-  dynamic_extrap_result %>% 
-    pivot_longer(starts_with("pred_error"), 
-                 values_to = "deviance", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,3,3, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
-    select(country_name,model, deviance) %>% 
-    ggplot(aes(x = country_name, y = deviance, col = model)) + 
-    theme_minimal() +
-    scale_x_discrete(name = "country") + 
-    geom_point(pch = 1, size = 2) + 
-    scale_y_continuous(name = "mean deviance") + 
-    viridis::scale_color_viridis(discrete=TRUE, option="viridis") + 
-    ggtitle("Predictive deviance in spatial extrapolation validation experiment")
-  
-  ggsave("figures/spatial_extrapolation_CV_deviance.png",
-         bg = "white",
-         scale = 0.8,
-         width = 8,
-         height = 8)
-  
-  dynamic_extrap_result %>% 
-    pivot_longer(starts_with("bias"), 
-                 values_to = "bias", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,2,2, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model)) %>% 
-    select(country_name,model, bias) %>% 
-    ggplot(aes(x = country_name, y = bias, col = model)) + 
-    theme_minimal() +
-    scale_x_discrete( name = "country") + 
-    geom_hline(yintercept = 0) + 
-    geom_point(pch = 2, size = 2) + 
-    ggtitle("Predictive bias in spatial extrapolation validation experiment")
-  
-  ggsave("figures/spatial_extrapolation_CV_bias.png",
-         bg = "white",
-         scale = 0.8,
-         width = 8,
-         height = 8)
-  
-  dynamic_extrap_result_vs_hancock_joined %>% 
-    pivot_longer(starts_with("bias"), 
-                 values_to = "bias", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,2,2, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model),
-           model = if_else(model == "hancock", "Hancock et al.", model),
-           model = factor(model, levels = c("dynamic",
-                                            "intercept",
-                                            "nearest neighbour",
-                                            "Hancock et al."))
-           ) %>% 
-    select(country_name,model, bias) %>% 
-    ggplot(aes(x = country_name, y = bias, col = model)) + 
-    theme_minimal() +
-    scale_x_discrete( name = "country") + 
-    geom_point(pch = 2, size = 2) + 
-    geom_hline(yintercept = 0) + 
-    ggtitle("Predictive bias in spatial extrapolation validation experiment",
-            subtitle = "for insecticides and years included in Hancock et al.")
-  
-  ggsave("figures/spatial_extrapolation_vs_hancock_CV_bias.png",
-         bg = "white",
-         scale = 0.8,
-         width = 8,
-         height = 8)
-  
-  dynamic_extrap_result_vs_hancock_joined %>% 
-    pivot_longer(starts_with("pred_error"), 
-                 values_to = "deviance", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,3,3, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model),
-           model = if_else(model == "hancock", "Hancock et al.", model),
-           model = factor(model, levels = c("dynamic",
-                                            "intercept",
-                                            "nearest neighbour",
-                                            "Hancock et al."))) %>% 
-    select(country_name,model, deviance) %>% 
-    ggplot(aes(x = country_name, y = deviance, col = model)) + 
-    theme_minimal() +
-    scale_x_discrete(name = "country") + 
-    geom_point(pch = 1, size = 2) + 
-    ggtitle("Predictive deviance in spatial extrapolation validation experiment",
-            subtitle = "for insecticides and years included in Hancock et al.")
-  
-  ggsave("figures/spatial_extrapolation_vs_hancock_CV_deviance.png",
-         bg = "white",
-         scale = 0.8,
-         width = 8,
-         height = 8)
-  
-  dynamic_interp_result_vs_hancock %>% 
-    pivot_longer(starts_with("bias"), 
-                 values_to = "bias", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,2,2, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model),
-           model = if_else(model == "hancock", "Hancock et al.", model),
-           model = factor(model, levels = c("dynamic",
-                                            "intercept",
-                                            "nearest neighbour",
-                                            "Hancock et al."))) %>% 
-    select(year_start,model, bias) %>% 
-    ggplot(aes(x = year_start, y = bias, col = model)) + 
-    theme_minimal() +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = "year") + 
-    geom_point(pch = 2, size = 2) + 
-    geom_hline(yintercept = 0) +
-    ggtitle("Predictive bias in spatial interpolation validation experiment",
-            subtitle = "for insecticides and years included in Hancock et al.")
-  
-  ggsave("figures/spatial_interpolation_vs_hancock_CV_bias.png",
-         bg = "white",
-         scale = 0.8,
-         width = 8,
-         height = 8)
-  
-  dynamic_interp_result_vs_hancock %>% 
-    pivot_longer(starts_with("pred_error"), 
-                 values_to = "deviance", 
-                 names_to = "model") %>% 
-    mutate(model = stringr::word(model,3,3, sep = "_"),
-           model = if_else(model == "nn", "nearest neighbour", model),
-           model = if_else(model == "hancock", "Hancock et al.", model),
-           model = factor(model, levels = c("dynamic",
-                                            "intercept",
-                                            "nearest neighbour",
-                                            "Hancock et al."))) %>% 
-    select(year_start,model, deviance) %>% 
-    ggplot(aes(x = year_start, y = deviance, col = model)) + 
-    theme_minimal() +
-    scale_x_continuous(breaks = scales::breaks_pretty(), name = "year") + 
-    geom_point(pch = 1, size = 2) + 
-    ggtitle("Predictive deviance in spatial interpolation validation experiment",
-            subtitle = "for insecticides and years included in Hancock et al.")
-  
-  ggsave("figures/spatial_interpolation_vs_hancock_CV_deviance.png",
-         bg = "white",
-         scale = 0.8,
-         width = 8,
-         height = 8)
+         width = 10,
+         height = 10)
   
