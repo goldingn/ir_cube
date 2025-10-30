@@ -31,7 +31,6 @@ init_country_raw_all[countries_unobserved_index, ] <- init_country_raw_unobserve
 # countries
 init_country_effect_all <- sweep(init_country_raw_all, 2, init_country_sd, FUN = "*")
 
-
 country_region_index_all <- gadm_polys %>%
   as_tibble() %>%
   mutate(

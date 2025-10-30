@@ -4,23 +4,38 @@
 source("R/packages.R")
 source("R/functions.R")
 
+ir_yr <- 2025
 
-# load in and prepare rasters
+# load admin borders for plotting
+borders <- readRDS("data/clean/gadm_polys.RDS")
 
-insecticide_names <- c(
-  "Deltamethrin",
-  "Alpha-cypermethrin",
-  "Pirimiphos-methyl", 
-  "Permethrin",
-  "DDT",
-  "Bendiocarb",
-  "Malathion",
-  "Fenitrothion", 
-  "Lambda-cyhalothrin"#,
-  #"llin_effective"
+# load mask with limits of transmission and water bodies for plotting
+pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
+
+# load in and prepare estimate rasters
+
+# First, the pyrethroids used in LLINs:
+
+llin_filename <- sprintf(
+  "outputs/ir_maps/llin_effective/ir_%s_susceptibility.tif",
+  ir_yr
 )
 
-ir_yr <- 2025
+llin_rast <- rast(llin_filename)
+names(llin_rast) <- "A) LLIN pyrethroids*"
+
+# now, all the individual ones
+insecticide_names <- c(
+  "Alpha-cypermethrin",
+  "Deltamethrin",
+  "Lambda-cyhalothrin",
+  "Permethrin",
+  "Fenitrothion", 
+  "Malathion",
+  "Pirimiphos-methyl", 
+  "DDT",
+  "Bendiocarb"
+)
 
 ir_filenames <- sprintf(
   "outputs/ir_maps/%s/ir_%s_susceptibility.tif",
@@ -28,122 +43,137 @@ ir_filenames <- sprintf(
   ir_yr
 )
 
-
 ir_rasts <- rast(ir_filenames)
 
-names(ir_rasts) <- insecticide_names
+llin_pyrethroid_names <- c("Alpha-cypermethrin",
+                           "Deltamethrin",
+                           "Permethrin")
+llin_pyrethroid_star <- ifelse(insecticide_names %in% llin_pyrethroid_names,
+                          "*",
+                          "")
 
+# make figure names, with panel letters and asterisks
+insecticide_figure_names <- paste0(
+  LETTERS[2:10],
+  ") ",
+  insecticide_names,
+  llin_pyrethroid_star)
 
-# standard plot
+names(ir_rasts) <- insecticide_figure_names
 
-ggplot() +
+# change the coordinates for plotting all rasters, to ensure the plots are approximately square
+new_ratio <- 0.8
+
+ext <- as.vector(ext(llin_rast))
+diffs <- diff(ext)[c(1, 3)]
+
+# keep the y limits the same, and adjust the x limits
+xmid <- ext[1] + 0.5 * diffs[1]
+xdiff <- diffs[2] / new_ratio
+
+# rebuild the limits
+xlim <- xmid + xdiff * c(-0.5, 0.5)
+
+llin_rast_mask <- mask(llin_rast, pf_water_mask)
+ir_rasts_mask <- mask(ir_rasts, pf_water_mask)
+
+# grey background for Africa
+africa_bg <- geom_sf(data = borders,
+                     linewidth = 0,
+                     fill = grey(0.75))
+
+border_col <- grey(0.4)
+
+# make a plot of susceptibility to Pyrethroid insecticides in 2025
+pyrethroid_fig <- ggplot() +
+  africa_bg +
   geom_spatraster(
-    data = ir_rasts
+    data = llin_rast_mask,
   ) +
+  geom_sf(data = borders,
+          col = border_col,
+          linewidth = 0.1,
+          fill = "transparent") +
+  facet_wrap(~lyr) +
   scale_fill_gradient(
     labels = scales::percent,
-    name = "Susceptibility",
     limits = c(0, 1),
-    na.value = "transparent") +
-  facet_wrap(~lyr, nrow = 2, ncol = 5) +
-  labs(
-    #subtitle = "Susceptibility of An. gambiae (s.l./s.s.) in WHO bioassays in 2025"
-    subtitle = expression(Susceptibility~of~italic("An. gambiae")~`(s.l./s.s.)`~`in`~WHO~bioassays~`in`~2025)
+    breaks = c(0, 0.5, 1),
+    high = "#56B1F7",
+    low = "white",
+    na.value = "transparent",
+    name = "Susceptibility",
+    guide = guide_colorbar(frame.colour = border_col,
+                           frame.linewidth = 0.1)
   ) +
-  theme_ir_maps()
+  theme_ir_maps() +
+  theme(
+    strip.text.x = element_text(hjust = 0),
+    plot.margin = unit(rep(0, 4), "cm"),
+    legend.position = "inside",
+    legend.position.inside = c(0.2, 0.25),
+    legend.text.position = "left",
+    legend.ticks = element_blank()
+  )
 
+# make 9 different plots, for each of the individual insecticides
+n_insecticides <- length(insecticide_figure_names)
+all_insecticides_fig_list <- list()
+all_insecticides_cols <- rev(scales::hue_pal()(n_insecticides))
 
-ggsave(
-  "figures/ir_map_all_insecticides_2025.png",
-  bg = "white",
-  width = 18,
-  height = 8,
-  dpi = 300
-)
-
-
-# patchwork plot to get scale into empty facet cell
-
-# function to make plot of each insecticide per above
-ir_plot_single <- function(
-    r,
-    name
-){
-  
-  ggplot() +
+for (i in seq_len(n_insecticides)) {
+  all_insecticides_fig_list[[i]] <- ggplot() +
+    africa_bg +
     geom_spatraster(
-      data = r
+      data = ir_rasts_mask[[i]]
     ) +
+    geom_sf(data = borders,
+            col = border_col,
+            linewidth = 0.05,
+            fill = "transparent") +
+    facet_wrap(~lyr) +
     scale_fill_gradient(
       labels = scales::percent,
-      name = "Susceptibility",
+      name = "",
+      breaks = c(0, 1),
+      high = all_insecticides_cols[i],
+      low = "white",
       limits = c(0, 1),
-      na.value = "transparent") +
-    labs(
-      title = name
+      na.value = "transparent",
+      guide = guide_colorbar(frame.colour = border_col,
+                             frame.linewidth = 0.05)
     ) +
-    theme_ir_maps()
-
+    coord_sf(xlim = xlim) +
+    theme_ir_maps() +
+    theme(
+      strip.text.x = element_text(hjust = 0),
+      plot.margin = unit(rep(0, 4), "cm"),
+      legend.position = "inside",
+      legend.position.inside = c(0.2, 0.3),
+      legend.key.height = rel(0.3),
+      legend.key.width = rel(0.5),
+      legend.ticks = element_blank(),
+      legend.text.position = "left",
+      legend.text = element_text(size = rel(0.6),
+                                 margin = margin(r = 1))
+    )
 }
 
-# check it
-ir_plot_single(ir_rasts[[1]], name = insecticide_names[1])
+# make a 9-panel plot of susceptibility to all insecticides in 2025
+all_insecticides_fig <- patchwork::wrap_plots(all_insecticides_fig_list,
+                                              ncol = 3) +
+  plot_layout()
 
-# make list of ggplot objects for each insecticide
-ir_map_list <- mapply(
-  ir_plot_single,
-  ir_rasts,
-  insecticide_names,
-  SIMPLIFY = FALSE
-)
+# combine them to plot
+combined_fig <- pyrethroid_fig + all_insecticides_fig
 
-
-# arrange patchwork and plot
-ir_map_list[[1]] +
-  ir_map_list[[2]] +
-  ir_map_list[[3]] +
-  ir_map_list[[4]] +
-  ir_map_list[[5]] +
-  ir_map_list[[6]] +
-  ir_map_list[[7]] +
-  ir_map_list[[8]] +
-  ir_map_list[[9]] +
-  guide_area() + # this directs guide into empty cell in bottom right
-  plot_layout(
-    guides = "collect",
-    ncol = 5
-  )
-
-# save
+# save the plot
 ggsave(
-  "figures/ir_map_all_insecticides_2025_fig2.png",
+  filename = "figures/ir_map_all_insecticides_2025.png",
+  plot = combined_fig,
   bg = "white",
-  width = 18,
-  height = 8,
-  dpi = 300
+  width = 12,
+  height = 6,
+  scale = 0.8
 )
 
-# arrange patchwork and plot
-ir_map_list[[1]] +
-  ir_map_list[[2]] +
-  ir_map_list[[3]] +
-  ir_map_list[[4]] +
-  guide_area() + # this directs guide into empty cell in bottom right
-  ir_map_list[[5]] +
-  ir_map_list[[6]] +
-  ir_map_list[[7]] +
-  ir_map_list[[8]] +
-  ir_map_list[[9]] +
-  plot_layout(
-    guides = "collect",
-    ncol = 5
-  )
-
-# save
-ggsave(
-  "figures/ir_map_all_insecticides_2025_fig2_alt.png",
-  bg = "white",
-  width = 18,
-  height = 8,
-  dpi = 300
-)

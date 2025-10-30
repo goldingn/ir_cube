@@ -4,6 +4,7 @@
 source("R/packages.R")
 source("R/functions.R")
 
+
 # ITN cubes
 
 # nets per capita
@@ -280,3 +281,55 @@ crops_scaled <- crops / global(crops, "max", na.rm = TRUE)$max
 terra::writeRaster(crops_scaled,
                    "data/clean/crop_scaled.tif",
                    overwrite = TRUE)
+
+# download and cache (against the risk of the package breaking) MAP's PfPR for
+# 2000, and use to to get the limits of transmission for plotting
+pr2000_file <- "data/clean/pfpr_2000.tif"
+
+if (!file.exists(pr2000_file)) {
+  pr2000_all <- malariaAtlas::getRaster("Malaria__202508_Global_Pf_Parasite_Rate",
+                                        year = 2000)
+  mask <- rast("data/clean/raster_mask.tif")
+  pr2000 <- crop(pr2000_all[[1]], mask)
+  pr2000[is.na(pr2000)] <- 0
+  pr2000 <- mask(pr2000, mask)
+  names(pr2000) <- "PfPR_2000"
+  writeRaster(pr2000, pr2000_file, overwrite = TRUE)
+}
+
+
+pf_limits_file <- "data/clean/pfpr_limits.tif"
+if (!file.exists(pf_limits_file)) {
+  pf_limits <- malariaAtlas::getRaster("Explorer__2010_Pf_Limits_Decompressed")
+  pf_limits <- crop(pf_limits, llin_rast)
+  pf_limits <- terra::aggregate(pf_limits, 5, fun = "modal")
+  pf_limits <- mask(pf_limits, llin_rast)
+  writeRaster(pf_limits, pf_limits_file, overwrite = TRUE)
+}
+
+# reload the main mask
+mask <- rast("data/clean/raster_mask.tif")
+
+# load lakes and rivers layer
+water <- rast("data/raw/WorldCover_water_30s.tif")
+water <- crop(water, mask)
+water <- aggregate(water, 5, fun = "modal")
+
+# convert it into a mask
+water_mask <- water
+water_mask[is.na(water_mask)] <- 0
+water_mask[water_mask == 1] <- NA
+water_mask <- mask(water_mask, mask)
+water_mask <- water_mask * 0
+
+# combine with the pf limits to amke a mask of limits and water
+pf_limits <- rast(pf_limits_file)
+pf_limits_mask <- pf_limits
+pf_limits_mask[pf_limits_mask != 2] <- NA
+pf_limits_mask <- pf_limits_mask * 0
+pf_limits_water_mask <- mask(pf_limits_mask, water_mask)
+
+writeRaster(pf_limits_water_mask,
+            "data/clean/pfpr_water_mask.tif",
+            overwrite = TRUE)
+
