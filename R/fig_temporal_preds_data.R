@@ -29,6 +29,12 @@ pyrethroids <- tibble(
   filter(class == "Pyrethroids") %>%
   pull(insecticide)
 
+# list the pyrethroids used in LLINs (ie. not Lambda-cyhalothrin), these are the
+# products in all nets recorded in surveys
+llin_pyrethroids <- c("Alpha-cypermethrin",
+                      "Deltamethrin",
+                      "Permethrin")
+
 # tidy up column names
 df_sub <- df %>%
   rename(
@@ -40,7 +46,8 @@ df_sub <- df %>%
 # subset to pyrethroids, and add on UN geoscheme regions for Africa
 df_pyrethroids <- df_sub %>%
   filter(
-    insecticide_class == "Pyrethroids",
+    insecticide %in% llin_pyrethroids
+    # insecticide_class == "Pyrethroids",
   )
 
 # compute predicted population-level resistance to these pyrethroids, weighted
@@ -115,7 +122,7 @@ pyrethroid_weights <- df_sub %>%
     .groups = "drop"
   ) %>%
   mutate(
-    is_a_pyrethroid = insecticide %in% pyrethroids,
+    is_a_pyrethroid = insecticide %in% llin_pyrethroids,
     mosquito_number = mosquito_number * as.numeric(is_a_pyrethroid),
     weight = mosquito_number / sum(mosquito_number)
   ) %>%
@@ -211,7 +218,7 @@ insecticides_plot <- tibble(
 insecticide_type_labels <- sprintf("%s) %s%s",
                                    LETTERS[1 + seq_along(insecticides_plot)],
                                    insecticides_plot,
-                                   ifelse(insecticides_plot %in% pyrethroids,
+                                   ifelse(insecticides_plot %in% llin_pyrethroids,
                                           "*",
                                           ""))
 
@@ -226,7 +233,7 @@ insecticides_plot_lookup <- tibble(
   mutate(
     idx = row_number(),
     suffix = case_when(
-      insecticides_plot %in% pyrethroids ~ "*",
+      insecticides_plot %in% llin_pyrethroids ~ "*",
       .default = ""
     ),
     insecticide_type_label = sprintf("%s) %s%s",
@@ -362,7 +369,7 @@ df_overall_plot <- df_sub %>%
 # between years
 df_pyrethroids_plot <- df_overall_plot %>%
   filter(
-    insecticide %in% pyrethroids
+    insecticide %in% llin_pyrethroids
   ) %>%
 
   # compute target weights for different pyrethroids over the whole dataset
@@ -460,7 +467,7 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
   guides(
     size = "none"
   ) +
-  facet_wrap(~ "A) All pyrethroids*") +
+  facet_wrap(~ "A) LLIN pyrethroids*") +
   scale_y_continuous(
     labels = scales::percent) +
   scale_size_area(
