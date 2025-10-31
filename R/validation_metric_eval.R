@@ -1,6 +1,6 @@
 # evaluate validation metrics against bias and error for different true
 # population-level susceptibility fractions
-rbetabinom <- function(n, probability, mosquito_number = 100, rho = 0.15) {
+rbetabinom <- function(n, probability, mosquito_number = 100, rho = 0.14) {
 
   # reparameterise from prediction and overdispersion ot the beta parameters
   a <- probability * (1 / rho - 1)
@@ -13,7 +13,7 @@ rbetabinom <- function(n, probability, mosquito_number = 100, rho = 0.15) {
   
 }
 
-betabinom_dev <- function(died, mosquito_number, predicted, rho = 0.15) {
+betabinom_dev <- function(died, mosquito_number, predicted, rho = 0.14) {
   
   # reparameterise from prediction and overdispersion ot the beta parameters
   a <- predicted * (1 / rho - 1)
@@ -45,7 +45,7 @@ mae <- function(observed, predicted) {
   mean(abs(observed - predicted))
 }
 
-crps <- function(died, mosquito_number, predicted, rho = 0.15, n_sims = 1000) {
+crps <- function(died, mosquito_number, predicted, rho = 0.14, n_sims = 1000) {
   
   ratio_observed <- died / mosquito_number
   n <- length(ratio_observed)
@@ -91,7 +91,7 @@ crps <- function(died, mosquito_number, predicted, rho = 0.15, n_sims = 1000) {
                             dat = ratio_sims)
 }
 
-mean_crps <- function(died, mosquito_number, predicted, rho = 0.15, n_sims = 1000) {
+mean_crps <- function(died, mosquito_number, predicted, rho = 0.14, n_sims = 1000) {
   mean(
     crps(died = died,
          mosquito_number = mosquito_number,
@@ -102,7 +102,7 @@ mean_crps <- function(died, mosquito_number, predicted, rho = 0.15, n_sims = 100
 }
 
 # CDF of the betabinomial distribution
-pbetabinom <- function(q, size, prob, rho = 0.15) {
+pbetabinom <- function(q, size, prob, rho = 0.14) {
   
   # reparameterise from prediction and overdispersion ot the beta parameters
   a <- prob * (1 / rho - 1)
@@ -123,7 +123,7 @@ ks_stat <- function(u) {
 }
 
 # Kolmogorov-Smirnov test statistic of deviation from the betabinomial distribution
-ks_pred <- function(died, mosquito_number, probability, rho = 0.15) {
+ks_pred <- function(died, mosquito_number, probability, rho = 0.14) {
   # compute the CDF of the distribution at these data, given the prediction and
   # the data-assumed rho
   u <- pbetabinom(q = died,
@@ -144,7 +144,7 @@ cvm_stat <- function(u) {
 
 # Cramer von Mises test criterion of deviation from the betabinomial
 # distribution
-cvm_pred <- function(died, mosquito_number, probability, rho = 0.15) {
+cvm_pred <- function(died, mosquito_number, probability, rho = 0.14) {
   # compute the CDF of the distribution at these data, given the prediction and
   # the data-assumed rho
   u <- pbetabinom(q = died,

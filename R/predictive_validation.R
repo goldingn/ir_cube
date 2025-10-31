@@ -396,7 +396,7 @@ temporal_forecasting
 
 
 # binomial deviance
-betabinom_dev <- function(died, mosquito_number, predicted, rho = 0.15) {
+betabinom_dev <- function(died, mosquito_number, predicted, rho = 0.14) {
   
   # reparameterise from prediction and overdispersion ot the beta parameters
   a <- predicted * (1 / rho - 1)
