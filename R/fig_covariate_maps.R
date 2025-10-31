@@ -44,7 +44,7 @@ names(pop_plot) <- pop_plot_years
 pop_dens_plot <- pop_plot / terra::cellSize(pop_plot[[1]], unit = "km")
 
 # plot ITN
-itn_plot_mask <- mask(itn_plot, pf_water_mask)
+itn_plot_mask <- terra::mask(itn_plot, pf_water_mask)
 max_nets <- max(global(itn_plot_mask, "max", na.rm = TRUE))
 ggplot() +
   africa_bg +
@@ -72,7 +72,7 @@ ggsave("figures/itn_map.png",
        dpi = 300)
 
 # plot IRS
-irs_plot_mask <- mask(irs_plot, pf_water_mask)
+irs_plot_mask <- terra::mask(irs_plot, pf_water_mask)
 ggplot() +
   africa_bg +
   geom_spatraster(
@@ -100,7 +100,7 @@ ggsave("figures/irs_map.png",
 
 
 # plot pop
-pop_dens_plot_mask <- mask(pop_dens_plot, pf_water_mask)
+pop_dens_plot_mask <- terra::mask(pop_dens_plot, pf_water_mask)
 ggplot() +
   africa_bg +
   geom_spatraster(
@@ -156,7 +156,7 @@ crops_implicated <- c(
 crops <- c(crops_group, crops_implicated)
 names(crops) <- str_to_sentence(names(crops))
 
-crops_mask <- mask(crops, pf_water_mask)
+crops_mask <- terra::mask(crops, pf_water_mask)
 ggplot() +
   africa_bg +
   geom_spatraster(
