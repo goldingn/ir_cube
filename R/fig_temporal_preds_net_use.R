@@ -10,7 +10,7 @@ load(file = "temporary/fitted_model.RData")
 
 # load time-varying net coverage data and flatten it
 nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
-years_sub <- 2010:2022
+years_sub <- 2010:2024
 nets_cube_sub <- nets_cube[[paste0("nets_", years_sub)]]
 nets_flat <- app(nets_cube_sub, "mean")
 
@@ -545,7 +545,7 @@ net_class_fig <- pyrethroid_net_class_points %>%
   scale_size_area() +
   xlab("") +
   ylab("Susceptibility to pyrethroids") +
-  coord_cartesian(xlim = c(2000, 2022),
+  coord_cartesian(xlim = c(2000, 2024),
                   ylim = c(0, 1)) +
   theme_minimal() +
   theme(

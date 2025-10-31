@@ -9,6 +9,9 @@ source("R/functions.R")
 # nets
 baseline_year <- 1995
 
+# set the final year of data (insufficient and spatially biased data for 2025)
+final_data_year <- 2024
+
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
@@ -107,7 +110,8 @@ df <- ir_africa %>%
   ungroup() %>%
   filter(
     # drop any from before the baseline
-    year_start >= baseline_year
+    year_start >= baseline_year,
+    year_start <= final_data_year
   ) %>%
   mutate(
     # create an index to the simulation year (in 1-indexed integers)

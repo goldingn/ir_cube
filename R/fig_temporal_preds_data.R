@@ -468,7 +468,7 @@ pyrethroid_fig <- pop_mort_sry_pyrethroid %>%
   ) +
   xlab("") +
   ylab("Susceptibility") +
-  coord_cartesian(xlim = c(1995, 2022),
+  coord_cartesian(xlim = c(1995, 2024),
                   ylim = c(0, 1)) +
   theme_minimal() +
   theme(
@@ -527,7 +527,7 @@ all_insecticides_fig <- pop_mort_sry %>%
   xlab("") +
   # suppress ylab, as it is on the other panel
   ylab("") +
-  coord_cartesian(xlim = c(1995, 2022)) +
+  coord_cartesian(xlim = c(1995, 2024)) +
   theme_minimal() +
   theme(
     strip.text.x = element_text(hjust = 0)
@@ -837,7 +837,7 @@ region_all <- region_pop_mort_sry %>%
   xlab("") +
   # suppress ylab, as it is on the other panel
   ylab("") +
-  coord_cartesian(xlim = c(1995, 2022)) +
+  coord_cartesian(xlim = c(1995, 2024)) +
   guides(
     fill = guide_legend(title = "")
   ) +

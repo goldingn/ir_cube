@@ -497,7 +497,7 @@ preds_plot %>%
   ) +
   xlab("") +
   coord_cartesian(
-    xlim = c(1998, 2022),
+    xlim = c(1998, 2024),
     ylim = c(0, 1)
   ) +
   theme_minimal() +
