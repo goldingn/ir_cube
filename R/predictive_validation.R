@@ -22,6 +22,7 @@ africa <- gadm_polys %>%
   st_union()
 
 baseline_year <- 1995
+final_data_year <- 2024
 
 insecticides_keep <- c("Alpha-cypermethrin",
                        "Deltamethrin",
@@ -47,7 +48,8 @@ df <- ir_africa %>%
   ungroup() %>%
   filter(
     # drop any from before the baseline
-    year_start >= baseline_year
+    year_start >= baseline_year,
+    year_start <= final_data_year
   ) %>%
   mutate(
     # need year id for main dynamical model
