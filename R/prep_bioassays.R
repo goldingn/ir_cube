@@ -952,7 +952,9 @@ ir_everything <- ir_everything %>%
       country_name == "Democratic Republic of the Congo" ~ "DR Congo",
       country_name == "Dr Congo" ~ "DR Congo",
       country_name == "Central African Republic" ~ "CAR",
+      country_name == "Car" ~ "CAR",
       country_name == "Sao Tome and Principe" ~ "Sao Tome & Principe",
+      country_name == "Guinea Bissau" ~ "Guinea-Bissau",
     .default = country_name
     )
   ) %>%
