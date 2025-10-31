@@ -7,7 +7,7 @@ source("R/functions.R")
 # load data from malaria threat map discrimintating concentraation bioassays and
 # subset to Africa
 ir_dis_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20240610.xlsx",
+  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
   sheet = "Data") %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
@@ -73,7 +73,7 @@ ir_dis_mtm_africa <- read_xlsx(
 # load data from malaria threat map intensity concentration bioassays and
 # subset to Africa
 ir_int_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20240612.xlsx",
+  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20251031.xlsx",
   sheet = "Data") %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
@@ -619,7 +619,7 @@ ir_va_africa <- read_csv("data/raw/VA Bioassay Data 240612.csv",col_select = 1:9
 
 
 # read in updated VA data
-ir_va_africa_new <- read_csv("data/raw/VA_FULL_DATA_20250716.csv") %>% 
+ir_va_africa_new <- read_csv("data/raw/VA_FULL_DATA_20250721.csv") %>% 
   # these were read in as characters and readxl is a pain to set column types
   # keep only bioassays
   filter(insecticide_resistance_data == "phenotypic") %>% 
@@ -728,9 +728,8 @@ ir_va_africa_new <- read_csv("data/raw/VA_FULL_DATA_20250716.csv") %>%
 
 # bind together data note the order matters here: species goes before complex so that when removing
 # duplicates we retain the highest taxonomic resolution possible
-ir_everything <- ir_va_africa %>% 
-  bind_rows(ir_va_africa_new,
-            ir_dis_mtm_africa,
+ir_everything <- ir_va_africa_new %>% 
+  bind_rows(ir_dis_mtm_africa,
             ir_int_mtm_africa,
             ir_mapper_dis_species_africa,
             ir_mapper_int_complex,
