@@ -945,26 +945,78 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
   # write transformed plotting data to disk
   write_csv(result_for_plot,"outputs/CV_result_for_plot.csv")
   
-  result_for_plot %>% 
-    filter(metric == "deviance") %>% 
+  
+  # summarise results across all levels of each experiment
+  summary_result_for_plot <- result_for_plot %>%
+    group_by(experiment, model, metric) %>%
+    summarise(
+      value = mean(value),
+      .groups = "drop"
+    ) %>%
+    group_by(experiment, metric) %>%
+    mutate(
+      is_best = abs(value) == min(abs(value)),
+      facet = "average"
+    ) %>%
+    ungroup()
+  
+  deviance_limits <- c(5, 15)
+  
+  cv_deviance_main <- result_for_plot %>% 
+    filter(
+      metric == "deviance",
+      facet != "overall"
+    ) %>% 
     ggplot(aes(x = facet, y = model, fill = value)) + 
-    facet_wrap(~ experiment,scales = "free",
+    facet_wrap(~experiment,
+               scales = "free",
                nrow = 3,
                ncol = 1) + 
     geom_tile() + 
     theme_minimal() + 
     scale_x_discrete(name = "") + 
     geom_text(aes(label = round(value,1), 
-                  fontface = ifelse(is_best, "bold", "plain"), 
-                  family = ifelse(is_best,"sans","arial"),
-                  col = is_best,
-                  size = 1/value),
+                  fontface = ifelse(is_best, "bold", "plain"),
+                  col = is_best),
               show.legend = FALSE) + 
-    scale_color_manual(values = c("#FFEBEB","#E6F3FF")) + 
-    scale_size_continuous(range = c(3.5, 4.5)) +
-    scale_fill_gradient(low = "light grey", high = "red") + 
-    ggtitle("Predictive deviance in cross validation experiments",
-            subtitle = "values in bold indicate best performing model")
+    scale_color_manual(values = c(grey(0.2), "black")) + 
+    scale_fill_distiller(type = "seq",
+                         palette = "PuRd",
+                         direction = 1,
+                         values = seq(0, 1.4, length.out = 9),
+                         limits = deviance_limits,
+                         name = "predictive\ndeviance")
+
+  cv_deviance_summary <- summary_result_for_plot %>% 
+    filter(metric == "deviance") %>% 
+    ggplot(aes(x = facet, y = model, fill = value)) + 
+    facet_wrap(~experiment,
+               scales = "free",
+               nrow = 3,
+               ncol = 1) + 
+    geom_tile() + 
+    theme_minimal() + 
+    scale_x_discrete(name = "") + 
+    geom_text(aes(label = round(value,1), 
+                  fontface = ifelse(is_best, "bold", "plain"),
+                  col = is_best),
+              show.legend = FALSE) + 
+    scale_color_manual(values = c(grey(0.2), "black")) + 
+    scale_fill_distiller(type = "seq",
+                         palette = "PuRd",
+                         values = seq(0, 1.4, length.out = 9),
+                         direction = 1,
+                         limits = deviance_limits,
+                         name = "predictive\ndeviance")
+
+  
+  cv_deviance_summary + cv_deviance_main +
+    plot_layout(guides = "collect",
+                axes = "collect",
+                widths = c(0.2, 0.8)) +
+    plot_annotation(
+      title = "Predictive deviance in cross validation experiments",
+      subtitle = "values in bold indicate best performing model")
   
   ggsave("figures/CV_deviance.png",
          bg = "white",
@@ -972,8 +1024,13 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
          width = 10,
          height = 10)
   
-  result_for_plot %>% 
-    filter(metric == "bias") %>% 
+  bias_limits <- c(-0.4, 0.4)
+  
+  cv_bias_main <- result_for_plot %>% 
+    filter(
+      metric == "bias",
+      facet != "overall"
+    ) %>% 
     ggplot(aes(x = facet, y = model, fill = value)) + 
     facet_wrap(~ experiment,scales = "free",
                nrow = 3,
@@ -982,15 +1039,50 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
     theme_minimal() + 
     scale_x_discrete(name = "") + 
     geom_text(aes(label = round(value,2), 
-                  fontface = ifelse(is_best, "bold", "plain"), 
-                  family = ifelse(is_best,"sans","arial"),
+                  fontface = ifelse(is_best, "bold", "plain"),
+                  # family = ifelse(is_best,"sans","arial"),
                   col = is_best),
               show.legend = FALSE) + 
-    scale_color_manual(values = c("#FFEBEB","#E6F3FF")) + 
-    scale_size_continuous(range = c(3.5, 4.5)) +
-    scale_fill_gradient(low = "light grey", high = "purple") + 
-    ggtitle("Predictive bias in cross validation experiments",
-            subtitle = "values in bold indicate best performing model")
+    scale_color_manual(values = c(grey(0.2), "black")) + 
+    scale_fill_distiller(type = "div",
+                         palette = "PiYG",
+                         values = seq(-0.2, 1.2, length.out = 11),
+                         limits = bias_limits,
+                         name = "bias")
+  
+  cv_bias_summary <- summary_result_for_plot %>% 
+    filter(metric == "bias") %>% 
+    ggplot(aes(x = facet, y = model, fill = value)) + 
+    facet_wrap(~experiment,
+               scales = "free",
+               nrow = 3,
+               ncol = 1) +
+    geom_tile() + 
+    theme_minimal() + 
+    scale_x_discrete(name = "") + 
+    geom_text(aes(label = round(value, 3), 
+                  fontface = ifelse(is_best, "bold", "plain"), 
+                  col = is_best),
+              show.legend = FALSE) + 
+    scale_color_manual(values = c(grey(0.2), "black")) + 
+    scale_fill_distiller(type = "div",
+                         palette = "PiYG",
+                         values = seq(-0.2, 1.2, length.out = 11),
+                         limits = bias_limits,
+                         name = "bias")
+  
+  
+  
+  cv_bias_summary + cv_bias_main +
+    plot_layout(
+      guides = "collect",
+      axes = "collect",
+      widths = c(0.2, 0.8)
+    ) +
+    plot_annotation(
+      title = "Predictive bias in cross validation experiments",
+      subtitle = "values in bold indicate best performing model"
+    )
   
   ggsave("figures/CV_bias.png",
          bg = "white",
