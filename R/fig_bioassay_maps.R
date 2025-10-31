@@ -23,6 +23,13 @@ pyrethroids <- tibble(
   filter(class == "Pyrethroids") %>%
   pull(insecticide)
 
+# list the pyrethroids used in LLINs (ie. not Lambda-cyhalothrin), these are the
+# products in all nets recorded in surveys
+llin_pyrethroids <- c("Alpha-cypermethrin",
+                      "Deltamethrin",
+                      "Permethrin")
+
+
 # make labels for plotting insecticides
 insecticides_plot <- tibble(
   insecticide = types,
@@ -34,7 +41,7 @@ insecticides_plot <- tibble(
 insecticide_type_labels <- sprintf("%s) %s%s",
                                    LETTERS[1 + seq_along(insecticides_plot)],
                                    insecticides_plot,
-                                   ifelse(insecticides_plot %in% pyrethroids,
+                                   ifelse(insecticides_plot %in% llin_pyrethroids,
                                           "*",
                                           ""))
 
@@ -53,7 +60,8 @@ df_sub <- df %>%
 # subset to pyrethroids, and add on UN geoscheme regions for Africa
 df_pyrethroids <- df_sub %>%
   filter(
-    insecticide_class == "Pyrethroids",
+    insecticide %in% llin_pyrethroids
+    # insecticide_class == "Pyrethroids",
   )
 
 points_pyrethroids <- df_pyrethroids %>%
@@ -108,13 +116,13 @@ pyrethroid_spatial_plot <- ggplot() +
   scale_size_area(
     max_size = 4
   ) +
-  facet_wrap(~"A) All pyrethroids*",
+  facet_wrap(~"A) LLIN pyrethroids*",
              ncol = 1) +
   guides(
     size = guide_legend(title = "No. tested")
   ) +
   # ggtitle(
-  #   label = "A) All pyrethroids*"
+  #   label = "A) LLIN pyrethroids*"
   # ) +
   theme_ir_maps() +
   theme(
