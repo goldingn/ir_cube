@@ -489,53 +489,92 @@ distribution(df$died) <- betabinomial_p_rho(N = df$mosquito_number,
                                             rho = rho_classes[df$class_id])
 
 m <- model(
+  # initial fractions susceptible
+  init_region_sd,
+  init_country_sd,
+  init_region_raw,
+  init_country_raw,
+  # hierarchical regression coefficients
   beta_overall,
-  sigma_overall,
+  beta_class_raw,
   beta_type_raw,
+  sigma_overall,
+  sigma_class,
+  # dispersion parameters
   rho_classes
 )
 
-# set the inits for obs_var_multiplier to be large (more params will fit OK to
-# data to start with, then chains can move towards better parts of parameter
-# space)
-n_chains <- 4
+
+
+# # do optimisation to find good inits
+# 
+# o <- opt(
+#   m,
+#   optimiser = adam(learning_rate = 0.1),
+#   max_iterations = 1e3
+# )
+# 
+# 
+# inits <- replicate(n_chains,
+#                    do.call(greta::initials, o$par))
+
+n_chains <- 2
+
+# used cached posterior means as inits
+inits_one <- readRDS("temporary/inits.RDS")
+inits <- replicate(n_chains,
+                   inits_one,
+                   simplify = FALSE)
 
 system.time(
   draws <- mcmc(m,
-                chains = n_chains)
+                chains = n_chains,
+                initial_values = inits,
+                warmup = 1000,
+                n_samples = 1000)
 )
 
-# new data, from 1995, with hierarchical initial state
 # user    system   elapsed 
-# 23331.754  9113.193  5618.095 
-
-save.image(file = "temporary/fitted_model.RData")
+# 32345.469 12085.762  7058.057 
 
 # check convergence
 coda::gelman.diag(draws,
                   autoburnin = FALSE,
                   multivariate = FALSE)
 
-# run prediction code across scenario net cubes (bash batching to prevent
-# restarts and memory leaks?)
+# save fitted model to use for plotting and predictions
+save.image(file = "temporary/fitted_model.RData")
 
-# things to do next:
-# - mask plotted outputs by DVS extent mask
-# - implement dose-response model and add in intensity bioassay data
-# - consider possibility (identifiability) of complete but imperfect resistance
-# (trait fixation, not leading to 100% survival in the test)
-# - output validation stratified by species
-# - visualise and code up functions for validation method
-# - run predictions across multiple scenario cubes
-# - maybe extend nets to pre-2000 to find a start point with flat resistance
-# - maybe use diploid model (hierarchical logit-het.-dominance parameter) to
-#    capture temporal variability in development of resistance phenotype
-# - compute Africa-average LLIN-effective susceptibility to show along with
-#    bioassay data plot. Also plot weighted LLIN usage at these locations, for
-#    context.
-# - maybe use a very sparse hierarchical GP to model initial susceptibility
-# - maybe add a resistance cost parameter
-#    (positive, as fitness = 1 + selection - cost)
-# - set up code for posterior predictive checking
-# - set up code for out of sample (future timesteps, spatial blocks) evaluation
-#    of model fit.
+
+
+
+# save posterior means as initial values for a future model run
+
+# these have to match the arguments to model(), above, and neet to be greta
+# variable nodes (not operation nodes)
+posts <- calculate(
+  # initial fractions susceptible
+  init_region_sd,
+  init_country_sd,
+  init_region_raw,
+  init_country_raw,
+  # hierarchical regression coefficients
+  beta_overall,
+  beta_class_raw,
+  beta_type_raw,
+  sigma_overall,
+  sigma_class,
+  # dispersion parameters
+  rho_classes,
+  values = draws,
+  nsim = 100
+)
+
+post_means <- lapply(posts,
+                     function(x) {
+                       apply(x, 2:3, mean)
+                     })
+inits <- do.call(greta::initials, post_means)
+saveRDS(inits, "temporary/inits.RDS")
+
+
