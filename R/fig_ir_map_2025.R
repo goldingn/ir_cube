@@ -74,8 +74,8 @@ xdiff <- diffs[2] / new_ratio
 # rebuild the limits
 xlim <- xmid + xdiff * c(-0.5, 0.5)
 
-llin_rast_mask <- mask(llin_rast, pf_water_mask)
-ir_rasts_mask <- mask(ir_rasts, pf_water_mask)
+llin_rast_mask <- terra::mask(llin_rast, pf_water_mask)
+ir_rasts_mask <- terra::mask(ir_rasts, pf_water_mask)
 
 # grey background for Africa
 africa_bg <- geom_sf(data = borders,

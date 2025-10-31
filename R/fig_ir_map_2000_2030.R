@@ -72,7 +72,7 @@ country_borders <- geom_sf(data = borders,
                            linewidth = 0.1,
                            fill = "transparent")
 
-ir_loss_mask <- mask(ir_loss, pf_water_mask)
+ir_loss_mask <- terra::mask(ir_loss, pf_water_mask)
 ir_change_fig <- ggplot() +
   africa_bg +
   geom_spatraster(data = -ir_loss_mask) +

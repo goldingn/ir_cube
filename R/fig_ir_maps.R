@@ -55,7 +55,7 @@ for (this_insecticide in insecticides_plot) {
   names(this_raster) <- plot_years
   
   # mask by transmission limits
-  this_raster <- mask(this_raster, pf_water_mask)
+  this_raster <- terra::mask(this_raster, pf_water_mask)
   
   insecticide_name <- switch(this_insecticide,
                              llin_effective = "LLIN pyrethroids",

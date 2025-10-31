@@ -505,20 +505,7 @@ m <- model(
 )
 
 
-
-# # do optimisation to find good inits
-# 
-# o <- opt(
-#   m,
-#   optimiser = adam(learning_rate = 0.1),
-#   max_iterations = 1e3
-# )
-# 
-# 
-# inits <- replicate(n_chains,
-#                    do.call(greta::initials, o$par))
-
-n_chains <- 2
+n_chains <- 4
 
 # used cached posterior means as inits
 inits_one <- readRDS("temporary/inits.RDS")
@@ -530,12 +517,12 @@ system.time(
   draws <- mcmc(m,
                 chains = n_chains,
                 initial_values = inits,
-                warmup = 1000,
+                warmup = 2000,
                 n_samples = 1000)
 )
 
 # user    system   elapsed 
-# 32345.469 12085.762  7058.057 
+# 15596.230  6544.659  4148.049 
 
 # check convergence
 coda::gelman.diag(draws,

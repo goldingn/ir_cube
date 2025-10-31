@@ -81,8 +81,8 @@ gadm_raster_country[missing_cell_index] <- nearest_country_id
 gadm_raster_region[missing_cell_index] <- nearest_region_id
 
 # remask, for whatever reason
-gadm_raster_country <- mask(gadm_raster_country, mask)
-gadm_raster_region <- mask(gadm_raster_region, mask)
+gadm_raster_country <- terra::mask(gadm_raster_country, mask)
+gadm_raster_region <- terra::mask(gadm_raster_region, mask)
 
 # check they are all filled in now
 nrow(extract(mask, cells(mask)))

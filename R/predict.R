@@ -409,13 +409,14 @@ predict_batch <- function(
 }
 
 # How many parallel workers to use? n_workers = 1 is sequential mode, note that
-# prediction is memory intensive, so pick the number fo workers to fit within
+# prediction is memory intensive, so pick the number of workers to fit within
 # memory when all running simultaneously
 n_workers <- 4
 
 # future workers are re-used within a single plan, which leads to a memory leak
 # if workers are used more than once. So define some 'super batches', so that
 # each worker only gets one job before it is reset.
+
 # for picking up broken runs
 # batches <- 93:n_batches
 batches <- seq_len(n_batches)
