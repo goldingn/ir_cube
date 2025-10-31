@@ -8,6 +8,8 @@ source("R/functions.R")
 # ITN cubes
 
 # nets per capita
+# from:
+# GBD2024/Processing/Stages/13_ITN_Coverage_Africa/Checkpoint_Outputs/20240626/nets_per_capita
 itn_pc_files <- list.files("data/raw/itn/nets_per_capita/",
                         pattern = ".tif",
                         full.names = TRUE)
@@ -31,7 +33,17 @@ terra::writeRaster(nets_per_capita_scaled,
                    "data/clean/nets_per_capita_scaled_cube.tif",
                    overwrite = TRUE)
 
+# make a mask for later use
+mask <- nets_per_capita[[1]] * 0
+names(mask) <- "mask" 
+terra::writeRaster(mask,
+                   "data/clean/raster_mask.tif",
+                   overwrite = TRUE)
+
+
 # net use
+# from:
+# GBD2024/Processing/Stages/13_ITN_Coverage_Africa/Checkpoint_Outputs/20240626/
 itn_use_files <- list.files("data/raw/itn/net_use/",
                         pattern = ".tif",
                         full.names = TRUE)
@@ -41,6 +53,9 @@ itn_use_years <- itn_use_files %>%
   str_remove("_use_mean.tif")
 net_use <- rast(itn_use_files)
 names(net_use) <- paste0("nets_", itn_use_years)
+
+# crop these as the extent is wrong
+net_use <- terra::crop(net_use, mask)
 
 terra::writeRaster(net_use,
                    "data/clean/net_use_cube.tif",
@@ -55,16 +70,10 @@ terra::writeRaster(net_use_scaled,
                    "data/clean/net_use_scaled_cube.tif",
                    overwrite = TRUE)
 
-# make a mask for later use
-mask <- nets_per_capita[[1]] * 0
-names(mask) <- "mask" 
-terra::writeRaster(mask,
-                   "data/clean/raster_mask.tif",
-                   overwrite = TRUE)
 
 # IRS cube
 # these are admin-level IRS coverage copied from
-# GBD2023/Processing/Stages/14_IRS_Coverage_Africa/Intermediary_Outputs/admin_cov/20231107
+# GBD2024/Processing/Stages/14_IRS_Coverage_Africa/Intermediary_Outputs/20240620
 irs_files <- list.files("data/raw/irs/admin_coverage",
                         pattern = ".tif",
                         full.names = TRUE)
@@ -82,7 +91,7 @@ irs_coverage[irs_coverage < 0] <- 0
 irs_coverage[is.na(irs_coverage)] <- 0
 
 # mask them
-irs_coverage <- mask(irs_coverage, mask)
+irs_coverage <- terra::mask(irs_coverage, mask)
 
 # set their names
 names(irs_coverage) <- paste0("irs_", irs_years)
@@ -101,7 +110,7 @@ terra::writeRaster(irs_coverage_scaled,
                    overwrite = TRUE)
 
 # Human population, combining MAP's WorldPop observed and projected global
-# rasters to get 2000-2022
+# rasters to get 2000-2024
 
 # past population, 2000-2020
 pop_past_files <- list.files("data/raw/pop/",
@@ -128,7 +137,7 @@ names(pop_future) <- paste0("pop_", pop_future_years)
 # combine, crop, and mask to mastergrids
 pop_all <- c(pop_past, pop_future)
 pop_all <- crop(pop_all, mask)
-pop_all <- mask(pop_all, mask)
+pop_all <- terra::mask(pop_all, mask)
 
 # fill in zeros on land with an epsilon, fill in NAs (outside mastergrids) with
 # 0, and relevel total populations, just in case I end up using these for population
@@ -149,12 +158,13 @@ round(100 * epsilon_quantile)
 # fill in the missing populations (and remask the true NA areas)
 pop_all[is.na(pop_all)] <- 0
 pop_all[pop_all == 0] <- epsilon
-pop_all <- mask(pop_all, mask)
+pop_all <- terra::mask(pop_all, mask)
 
 # relevel the total continent populations
 new_africa_pops <- global(pop_all, "sum", na.rm = TRUE)
 ratios <- target_africa_pops / new_africa_pops
 for (i in seq_len(terra::nlyr(pop_all))) {
+  print(i)
   pop_all[[i]] <- pop_all[[i]] * ratios[[1]][i]
 }
 
@@ -175,8 +185,8 @@ trans_pop_all_max <- max(global(trans_pop_all,
 trans_pop_all <- trans_pop_all / trans_pop_all_max
 
 # clip to modelling years, and save
-pop <- pop_all[[paste0("pop_", 2000:2022)]]
-trans_pop <- trans_pop_all[[paste0("pop_", 2000:2022)]]
+pop <- pop_all[[paste0("pop_", 2000:2024)]]
+trans_pop <- trans_pop_all[[paste0("pop_", 2000:2024)]]
 
 terra::writeRaster(pop,
                    "data/clean/pop_cube.tif",
@@ -187,8 +197,8 @@ terra::writeRaster(trans_pop,
                    overwrite = TRUE)
 
 # save future projection years, too
-pop_future <- pop_all[[paste0("pop_", 2023:2030)]]
-trans_pop_future <- trans_pop_all[[paste0("pop_", 2023:2030)]]
+pop_future <- pop_all[[paste0("pop_", 2025:2030)]]
+trans_pop_future <- trans_pop_all[[paste0("pop_", 2025:2030)]]
 
 terra::writeRaster(pop_future,
                    "data/clean/pop_cube_future.tif",
@@ -292,7 +302,7 @@ if (!file.exists(pr2000_file)) {
   mask <- rast("data/clean/raster_mask.tif")
   pr2000 <- crop(pr2000_all[[1]], mask)
   pr2000[is.na(pr2000)] <- 0
-  pr2000 <- mask(pr2000, mask)
+  pr2000 <- terra::mask(pr2000, mask)
   names(pr2000) <- "PfPR_2000"
   writeRaster(pr2000, pr2000_file, overwrite = TRUE)
 }
@@ -303,7 +313,7 @@ if (!file.exists(pf_limits_file)) {
   pf_limits <- malariaAtlas::getRaster("Explorer__2010_Pf_Limits_Decompressed")
   pf_limits <- crop(pf_limits, llin_rast)
   pf_limits <- terra::aggregate(pf_limits, 5, fun = "modal")
-  pf_limits <- mask(pf_limits, llin_rast)
+  pf_limits <- terra::mask(pf_limits, llin_rast)
   writeRaster(pf_limits, pf_limits_file, overwrite = TRUE)
 }
 
@@ -319,7 +329,7 @@ water <- aggregate(water, 5, fun = "modal")
 water_mask <- water
 water_mask[is.na(water_mask)] <- 0
 water_mask[water_mask == 1] <- NA
-water_mask <- mask(water_mask, mask)
+water_mask <- terra::mask(water_mask, mask)
 water_mask <- water_mask * 0
 
 # combine with the pf limits to amke a mask of limits and water
@@ -327,7 +337,7 @@ pf_limits <- rast(pf_limits_file)
 pf_limits_mask <- pf_limits
 pf_limits_mask[pf_limits_mask != 2] <- NA
 pf_limits_mask <- pf_limits_mask * 0
-pf_limits_water_mask <- mask(pf_limits_mask, water_mask)
+pf_limits_water_mask <- terra::mask(pf_limits_mask, water_mask)
 
 writeRaster(pf_limits_water_mask,
             "data/clean/pfpr_water_mask.tif",

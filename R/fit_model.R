@@ -28,6 +28,11 @@ nets_cube <- pre_pad_cube(nets_cube, baseline_year)
 irs_cube <- pre_pad_cube(irs_cube, baseline_year)
 pop_cube <- pre_pad_cube(pop_cube, baseline_year)
 
+# if necessary, pad forward to the final data year, repeating the last
+nets_cube <- post_pad_cube(nets_cube, final_data_year)
+irs_cube <- post_pad_cube(irs_cube, final_data_year)
+pop_cube <- post_pad_cube(pop_cube, final_data_year)
+
 # load the non-temporal crop covariate layers
 
 # collated total yields of crop types

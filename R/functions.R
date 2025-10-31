@@ -290,8 +290,9 @@ pre_pad_cube <- function(cube, baseline_year = 1995) {
   
   # check the baseline year
   if (!(n_years_pad > 0)) {
-    stop("baseline_year must be earlier than the first year in the raster",
-         call. = FALSE)
+    warning("baseline_year must be earlier than the first year in the raster",
+            call. = FALSE)
+    return(cube)
   }
   
   # make some padding
@@ -324,8 +325,9 @@ post_pad_cube <- function(cube, end_year = 2030) {
   
   # check the end year
   if (!(n_years_pad > 0)) {
-    stop("end_year must be later than the last year in the raster",
-         call. = FALSE)
+    warning("end_year must be later than the last year in the raster",
+            call. = FALSE)
+    return(cube)
   }
   
   # make some padding
