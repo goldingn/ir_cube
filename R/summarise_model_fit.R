@@ -99,34 +99,39 @@ insecticides_plot <- tibble(
 
 # look up the net coverage for different cells, find those with low, medium, and
 # high net coverage
-set.seed(1)
+set.seed(2)
+year_ids_keep <- which(years >= 2010 & years <= 2024)
 exemplar_cells <- all_extract %>%
+  filter(
+    year_id %in% year_ids_keep,
+    irs == 0,
+    pop < 0.01,
+    `all crops` < 0.01,
+    `cereal crops` < 0.01,
+    `root crops` < 0.01,
+  ) %>%
   group_by(cell_id) %>%
   summarise(
-    net_coverage = mean(nets),
+    net_use = mean(nets),
     .groups = "drop"
   ) %>%
   # then pull the quartile threshold values
   mutate(
     which = case_when(
-      near(net_coverage, quantile(net_coverage, 0.1), tol = 1e-4) ~ "low",
-      near(net_coverage, quantile(net_coverage, 0.5), tol = 1e-4) ~ "medium",
-      near(net_coverage, quantile(net_coverage, 0.9), tol = 1e-4) ~ "high",
+      net_use > 0 & net_use < 0.1 ~ "low",
+      net_use >= 0.2 & net_use < 0.4 ~ "medium",
+      net_use >= 0.5 ~ "high",
       .default = NA
     )
   ) %>%
   filter(
     !is.na(which)
   ) %>%
-  # randomly pick a cell from each group
-  arrange(runif(n())) %>%
-  filter(!is.na(which)) %>%
-  # get the first cell in each level of net coverage
-  group_by(which) %>%
-  summarise(
-    cell_id = cell_id[1],
-    .groups = "drop"
+  group_by(
+    which
   ) %>%
+  slice_sample(n = 1) %>%
+  ungroup() %>%
   mutate(
     which = factor(which, levels = c("low", "medium", "high"))
   ) %>%
@@ -151,11 +156,15 @@ place_lookup <- exemplar_cells %>%
     country = case_when(
       str_detect(country, "Djibouti") ~ "Djibouti",
       str_detect(country, "Sénégal") ~ "Senegal",
+      str_detect(country, "Moçambique") ~ "Mozambique",
+      str_detect(country, "Cameroun") ~ "Cameroon",
+      str_detect(country, "Madagascar") ~ "Madagascar",
       .default = country
     ),
     precise_place = case_when(
       str_detect(address, "Dano") ~ "Dano",
       str_detect(address, "Tadjoura") ~ "Tadjoura",
+      str_detect(address, "Ali Sabieh") ~ "Ali Sabieh",
       .default = str_split_i(address, ",", 1),
     ),
     place = paste(precise_place, country, sep = ", ")
@@ -164,6 +173,30 @@ place_lookup <- exemplar_cells %>%
     cell_id,
     which,
     place)
+
+place_order <- place_lookup %>%
+  arrange(which) %>%
+  pull(place)
+
+data_plot <- all_extract %>%
+  filter(
+    cell_id %in% place_lookup$cell_id
+  ) %>%
+  left_join(place_lookup,
+            by = "cell_id") %>%
+  mutate(
+    year = baseline_year + year_id - 1,
+    place = factor(place,
+                   levels = place_order)
+  )
+
+pred_lookup <- data_plot %>%
+  select(
+    cell_id, which, place
+  ) %>%
+  group_by(which) %>%
+  slice(1) %>%
+  ungroup()
 
 # pull the IR and ITN timeseries for these, and plot
 
@@ -175,15 +208,15 @@ ingredient_ids <- match(names(ingredient_weights), types)
 # deltamethrin_id <- match("Deltamethrin", types)
 
 # compute a matrix of effective susceptibilities over these cells and years
-effective_susc <- zeros(nrow(place_lookup), 1, n_times)
+effective_susc <- zeros(nrow(pred_lookup), 1, n_times)
 for (i in seq_along(ingredient_weights)) {
-  ingredient_susc <- dynamic_cells$all_states[place_lookup$cell_id,
+  ingredient_susc <- dynamic_cells$all_states[pred_lookup$cell_id,
                                               ingredient_ids[i], ]
   effective_susc <- effective_susc + ingredient_susc * ingredient_weights[[i]]
 }
 
 pred_index <- expand_grid(
-  cell_id = seq_len(nrow(place_lookup)),
+  cell_id = seq_len(nrow(pred_lookup)),
   type_id = 1,
   year_id = seq_len(n_times)
 ) %>%
@@ -193,17 +226,20 @@ pred_index <- expand_grid(
 pred_vec <- effective_susc[pred_index]
 pred_vec_sims <- calculate(pred_vec, values = draws, nsim = 1e3)
 
-ir_plot <- all_extract %>%
-  filter(
-    cell_id %in% place_lookup$cell_id
-  ) %>%
-  left_join(place_lookup,
-            by = "cell_id") %>%
+preds <- bind_cols(
+  pred_index,
+  post_mean = colMeans(pred_vec_sims$pred_vec[, , 1]),
+  post_lower = apply(pred_vec_sims$pred_vec[, , 1], 2, quantile, 0.025),
+  post_upper = apply(pred_vec_sims$pred_vec[, , 1], 2, quantile, 0.975),
+) %>%
   mutate(
-    year = baseline_year + year_id - 1,
-    post_mean = colMeans(pred_vec_sims$pred_vec[, , 1]),
-    post_lower = apply(pred_vec_sims$pred_vec[, , 1], 2, quantile, 0.025),
-    post_upper = apply(pred_vec_sims$pred_vec[, , 1], 2, quantile, 0.975),
+    cell_id = pred_lookup$cell_id[cell_id]
+  )
+
+ir_plot <- data_plot %>%
+  left_join(
+    preds,
+    by = c("cell_id", "year_id")
   ) %>%
   ggplot(
     aes(
@@ -222,15 +258,7 @@ ir_plot <- all_extract %>%
   geom_ribbon(fill = "#56B1F7") +
   theme_minimal()
 
-itns_plot <- all_extract %>%
-  filter(
-    cell_id %in% place_lookup$cell_id
-  ) %>%
-  left_join(place_lookup,
-            by = "cell_id") %>%
-  mutate(
-    year = baseline_year + year_id - 1,
-  ) %>%
+itns_plot <- data_plot %>%
   ggplot(
     aes(
       x = year,

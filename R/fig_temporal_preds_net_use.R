@@ -8,8 +8,8 @@ source("R/functions.R")
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
 
-# load time-varying net coverage data and flatten it
-nets_cube <- rast("data/clean/nets_per_capita_cube.tif")
+# load time-varying net use data and flatten it
+nets_cube <- rast("data/clean/net_use_cube.tif")
 years_sub <- 2010:2024
 nets_cube_sub <- nets_cube[[paste0("nets_", years_sub)]]
 nets_flat <- app(nets_cube_sub, "mean")
@@ -38,7 +38,7 @@ df_sub <- df %>%
 # add the low, medium, high LLINs underneath
 # find how much data by different coverages
 
-net_coverage_cell_lookup <- df %>%
+net_use_cell_lookup <- df %>%
   group_by(
     cell_id, cell
   ) %>%
@@ -46,26 +46,26 @@ net_coverage_cell_lookup <- df %>%
   slice(1) %>%
   ungroup() %>%
   mutate(
-    net_coverage = terra::extract(nets_flat, pull(., cell)),
-    net_coverage_class = case_when(
-      net_coverage < 0.3 ~ "A) Low use",
+    net_use = terra::extract(nets_flat, pull(., cell)),
+    net_use_class = case_when(
+      net_use < 0.3 ~ "A) Low use",
       .default = "B) High use")
   ) %>%
   select(
     cell,
     cell_id,
-    net_coverage_class
+    net_use_class
   )
 
 # extract net use over time at all observation locations
 df_net_use <- all_extract %>%
   left_join(
-    net_coverage_cell_lookup,
+    net_use_cell_lookup,
     by = "cell_id"
   ) %>%
   group_by(
     year_id,
-    net_coverage_class
+    net_use_class
   ) %>%
   summarise(
     lower = quantile(nets, 0.25),
@@ -92,7 +92,7 @@ df_net_class_points <- df_sub %>%
   
   # add net coverage classes for these cells
   left_join(
-    net_coverage_cell_lookup,
+    net_use_cell_lookup,
     by = "cell_id"
   ) %>%
   
@@ -100,28 +100,28 @@ df_net_class_points <- df_sub %>%
   # coverage classes, to reduce inter-year variability in representativeness
   
   # for this insecticide and coverage class, how many mosquitoes were collected in total
-  group_by(insecticide, net_coverage_class) %>%
+  group_by(insecticide, net_use_class) %>%
   mutate(
     total_overall_mosquito_number = sum(mosquito_number)
   ) %>%
   
   # for this insecticide and coverage class, how many mosquitoes were collected in total in
   # this cell
-  group_by(insecticide, net_coverage_class, cell_id) %>%
+  group_by(insecticide, net_use_class, cell_id) %>%
   mutate(
     cell_overall_mosquito_number = sum(mosquito_number)
   ) %>%
   
   # for this insecticide and coverage class and this year, how many mosquitoes
   # were collected in total
-  group_by(insecticide, net_coverage_class, year) %>%
+  group_by(insecticide, net_use_class, year) %>%
   mutate(
     total_year_mosquito_number = sum(mosquito_number)
   ) %>%
   
   # for this insecticide and coverage class and year, how many mosquitoes were
   # collected in this cell
-  group_by(insecticide, net_coverage_class, year, cell_id) %>%
+  group_by(insecticide, net_use_class, year, cell_id) %>%
   mutate(
     cell_year_mosquito_number = sum(mosquito_number)
   ) %>%
@@ -140,7 +140,7 @@ df_net_class_points <- df_sub %>%
   group_by(
     year,
     insecticide,
-    net_coverage_class
+    net_use_class
   ) %>%
   mutate(
     relvar_component = (weight - mean(weight)) ^ 2 / (mean(weight) ^ 2)
@@ -180,19 +180,19 @@ pyrethroid_net_class_points <- df_net_class_points %>%
   ) %>%
   
   # compute target weights for different pyrethroids over the whole dataset for each coverage class
-  group_by(net_coverage_class) %>%
+  group_by(net_use_class) %>%
   mutate(
     total_overall_samples = sum(effective_samples)
   ) %>%
-  group_by(insecticide, net_coverage_class) %>%
+  group_by(insecticide, net_use_class) %>%
   mutate(
     insecticide_overall_samples = sum(effective_samples)
   ) %>%
-  group_by(year, net_coverage_class) %>%
+  group_by(year, net_use_class) %>%
   mutate(
     total_year_samples = sum(effective_samples)
   ) %>%
-  group_by(insecticide, year, net_coverage_class) %>%
+  group_by(insecticide, year, net_use_class) %>%
   mutate(
     insecticide_year_samples = sum(effective_samples)
   ) %>%
@@ -205,7 +205,7 @@ pyrethroid_net_class_points <- df_net_class_points %>%
   ) %>%
   
   # collapse down to year and coverage class
-  group_by(year, net_coverage_class) %>%
+  group_by(year, net_use_class) %>%
   mutate(
     relvar_component = (weight - mean(weight)) ^ 2 / (mean(weight) ^ 2)
   ) %>%
@@ -234,19 +234,19 @@ pyrethroid_net_class_points <- df_net_class_points %>%
 # of mosquitoes tested for each pyrethroid, over the whole timeseries)
 pyrethroid_net_class_weights <- df_sub %>%
   left_join(
-    net_coverage_cell_lookup,
+    net_use_cell_lookup,
     by = "cell_id"
   ) %>%
   group_by(
     type_id,
     insecticide,
-    net_coverage_class
+    net_use_class
   ) %>%
   summarise(
     mosquito_number = sum(mosquito_number),
     .groups = "drop"
   ) %>%
-  group_by(net_coverage_class) %>%
+  group_by(net_use_class) %>%
   mutate(
     is_a_pyrethroid = insecticide %in% pyrethroids,
     mosquito_number = mosquito_number * as.numeric(is_a_pyrethroid),
@@ -256,10 +256,10 @@ pyrethroid_net_class_weights <- df_sub %>%
   select(
     type_id,
     weight,
-    net_coverage_class
+    net_use_class
   ) %>%
   pivot_wider(
-    names_from = net_coverage_class,
+    names_from = net_use_class,
     values_from = "weight"
   ) %>%
   arrange(type_id) %>%
@@ -297,9 +297,9 @@ weights_mat <- df_sub %>%
 
 # just subset the data and repeat what happens in the overall plot
 
-low_idx <- net_coverage_cell_lookup %>%
+low_idx <- net_use_cell_lookup %>%
   filter(
-    net_coverage_class == "A) Low use"
+    net_use_class == "A) Low use"
   ) %>%
   pull(cell_id)
 
@@ -324,9 +324,9 @@ overall_susc_low <- apply(weighted_susc_array_low, 2:3, "sum")
 pyrethroid_net_class_susc_low <- as_data(t(pyrethroid_net_class_weights[, "A) Low use"])) %*% overall_susc_low
 
 # and repeat for high
-high_idx <- net_coverage_cell_lookup %>%
+high_idx <- net_use_cell_lookup %>%
   filter(
-    net_coverage_class == "B) High use"
+    net_use_class == "B) High use"
   ) %>%
   pull(cell_id)
 
@@ -466,13 +466,13 @@ pop_mort_sry_high <- sims_net_class$pyrethroid_net_class_susc_high[, 1, ] %>%
 pop_mort_sry_net_class <- bind_rows(
   `A) Low use` = pop_mort_sry_low,
   `B) High use` = pop_mort_sry_high,
-  .id = "net_coverage_class"
+  .id = "net_use_class"
 )
 
 overall_mort_sry_net_class <- bind_rows(
   `A) Low use` = overall_mort_sry_low,
   `B) High use` = overall_mort_sry_high,
-  .id = "net_coverage_class"
+  .id = "net_use_class"
 )
 
 pyrethroid_mort_sry_net_class <- overall_mort_sry_net_class %>%
@@ -489,7 +489,7 @@ net_class_fig <- pyrethroid_net_class_points %>%
       x = year,
       ymax = upper,
       ymin = lower,
-      group = net_coverage_class
+      group = net_use_class
     ),
     data = df_net_use,
     fill = grey(0.9),
@@ -530,7 +530,7 @@ net_class_fig <- pyrethroid_net_class_points %>%
     shape = 21,
     fill = pyrethroid_blue
   ) +
-  facet_wrap(~net_coverage_class) +
+  facet_wrap(~net_use_class) +
   guides(
     size = "none"
   ) +

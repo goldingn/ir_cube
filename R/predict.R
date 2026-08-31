@@ -143,7 +143,7 @@ cell_country_predict <- extract(country_raster, cells_predict)$country_name
 
 # NOTE due to a weird-as-hell greta bug, this object must not be called
 # batch_size: https://github.com/greta-dev/greta/issues/634
-batch_bigness <- 1e4
+batch_bigness <- 1e3
 batch_idx <- seq_along(cells_predict) %/% batch_bigness
 # index to raster, for setting cell values
 cell_batches <- split(cells_predict, batch_idx)
@@ -153,16 +153,16 @@ n_batches <- length(cell_batches)
 
 # which to predict - just effective LLIN susceptibility for now
 types_save <- c(
-  "Permethrin",
-  "Alpha-cypermethrin",
-  "Deltamethrin",
-  "llin_effective",
-  "DDT",
-  "Pirimiphos-methyl", 
-  "Fenitrothion",
-  "Bendiocarb",
-  "Malathion", 
-  "Lambda-cyhalothrin"
+  "llin_effective"
+  # "Permethrin",
+  # "Alpha-cypermethrin",
+  # "Deltamethrin",
+  # "DDT",
+  # "Pirimiphos-methyl", 
+  # "Fenitrothion",
+  # "Bendiocarb",
+  # "Malathion", 
+  # "Lambda-cyhalothrin"
 )
 
 # loop through these batches of cells/years and insecticide outputs, and save a
@@ -411,7 +411,7 @@ predict_batch <- function(
 # How many parallel workers to use? n_workers = 1 is sequential mode, note that
 # prediction is memory intensive, so pick the number of workers to fit within
 # memory when all running simultaneously
-n_workers <- 4
+n_workers <- 2
 
 # future workers are re-used within a single plan, which leads to a memory leak
 # if workers are used more than once. So define some 'super batches', so that
@@ -422,6 +422,7 @@ n_workers <- 4
 batches <- seq_len(n_batches)
 super_batches <- split(batches, batches %/% n_workers)
 
+# super_batches <- super_batches[189:length(super_batches)]
 # loop through insecticides
 for (this_insecticide in types_save) {
   

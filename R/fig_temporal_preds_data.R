@@ -527,10 +527,10 @@ all_insecticides_fig <- pop_mort_sry %>%
   ) +
   scale_fill_discrete(
     direction = -1,
-    guide = FALSE) +
+    guide = "none") +
   scale_colour_discrete(
     direction = -1,
-    guide = FALSE) +
+    guide = "none") +
   xlab("") +
   # suppress ylab, as it is on the other panel
   ylab("") +

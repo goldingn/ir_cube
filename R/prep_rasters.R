@@ -57,6 +57,14 @@ names(net_use) <- paste0("nets_", itn_use_years)
 # crop these as the extent is wrong
 net_use <- terra::crop(net_use, mask)
 
+# the coast seems to be misaligned, so impute cells for prediction
+net_use_filled <- terra::focal(net_use,
+                               w = 9,
+                               fun = "mean",
+                               na.policy = "only",
+                               na.rm = TRUE)
+net_use <- terra::mask(net_use_filled, mask)
+
 terra::writeRaster(net_use,
                    "data/clean/net_use_cube.tif",
                    overwrite = TRUE)

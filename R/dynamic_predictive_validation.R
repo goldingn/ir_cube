@@ -18,6 +18,9 @@ nets_cube <- pre_pad_cube(nets_cube, baseline_year)
 irs_cube <- pre_pad_cube(irs_cube, baseline_year)
 pop_cube <- pre_pad_cube(pop_cube, baseline_year)
 
+nets_cube <- post_pad_cube(nets_cube, final_data_year)
+irs_cube <- post_pad_cube(irs_cube, final_data_year)
+pop_cube <- post_pad_cube(pop_cube, final_data_year)
 
 crops_group <- rast("data/clean/crop_group_scaled.tif")
 crops_all <- rast("data/clean/crop_scaled.tif")
@@ -186,7 +189,7 @@ dynamic_extrap_result <- extrap_result %>%
     pred_error_nn = pred_error,
     bias_nn = bias
   ) %>% 
-  mutate(pred_error_dynamic = NA,,
+  mutate(pred_error_dynamic = NA,
          bias_dynamic = NA,
          experiment = "dynmaic_spatial_extrapolation") %>% 
  left_join(spatial_extrapolation_intercept_error,by = join_by(country_name)) 
@@ -324,21 +327,40 @@ distribution(fold_train_df$died) <- betabinomial_p_rho(
   rho = rho_classes[fold_train_df$class_id])
 
 m <- model(
+  # initial fractions susceptible
+  init_region_sd,
+  init_country_sd,
+  init_region_raw,
+  init_country_raw,
+  # hierarchical regression coefficients
   beta_overall,
-  sigma_overall,
+  beta_class_raw,
   beta_type_raw,
+  sigma_overall,
+  sigma_class,
+  # dispersion parameters
   rho_classes
 )
 
-n_chains <- 4
+n_chains <- 8
+
+# used cached posterior means as inits
+inits_one <- readRDS("temporary/inits.RDS")
+inits <- replicate(n_chains,
+                   inits_one,
+                   simplify = FALSE)
+
+Lmax <- 30
+Lmin <- round(Lmax / 2)
 
 system.time(
   draws <- mcmc(m,
                 chains = n_chains,
-                n_samples = 1e3,
-                warmup = 1e3)
+                initial_values = inits,
+                warmup = 2000,
+                sampler = hmc(Lmin = Lmin, Lmax = Lmax),
+                n_samples = 1000)
 )
-
 
 fold_test_df <- spatial_extrapolation$test[[country_idx]]
 
@@ -557,21 +579,40 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
     rho = rho_classes[fold_train_df$class_id])
   
   m <- model(
+    # initial fractions susceptible
+    init_region_sd,
+    init_country_sd,
+    init_region_raw,
+    init_country_raw,
+    # hierarchical regression coefficients
     beta_overall,
-    sigma_overall,
+    beta_class_raw,
     beta_type_raw,
+    sigma_overall,
+    sigma_class,
+    # dispersion parameters
     rho_classes
   )
   
-  n_chains <- 4
+  n_chains <- 8
+  
+  # used cached posterior means as inits
+  inits_one <- readRDS("temporary/inits.RDS")
+  inits <- replicate(n_chains,
+                     inits_one,
+                     simplify = FALSE)
+  
+  Lmax <- 30
+  Lmin <- round(Lmax / 2)
   
   system.time(
     draws <- mcmc(m,
                   chains = n_chains,
-                  n_samples = 1e3,
-                  warmup = 1e3)
+                  initial_values = inits,
+                  warmup = 2000,
+                  sampler = hmc(Lmin = Lmin, Lmax = Lmax),
+                  n_samples = 1000)
   )
-  
   
   fold_test_df <- spatial_interpolation$test
   
@@ -835,21 +876,40 @@ saveRDS(spatial_extrapolation$test,"outputs/dynamic_spatial_extrapolatoin_CV_pre
     rho = rho_classes[fold_train_df$class_id])
   
   m <- model(
+    # initial fractions susceptible
+    init_region_sd,
+    init_country_sd,
+    init_region_raw,
+    init_country_raw,
+    # hierarchical regression coefficients
     beta_overall,
-    sigma_overall,
+    beta_class_raw,
     beta_type_raw,
+    sigma_overall,
+    sigma_class,
+    # dispersion parameters
     rho_classes
   )
   
-  n_chains <- 4
+  n_chains <- 8
+  
+  # used cached posterior means as inits
+  inits_one <- readRDS("temporary/inits.RDS")
+  inits <- replicate(n_chains,
+                     inits_one,
+                     simplify = FALSE)
+  
+  Lmax <- 30
+  Lmin <- round(Lmax / 2)
   
   system.time(
     draws <- mcmc(m,
                   chains = n_chains,
-                  n_samples = 1e3,
-                  warmup = 1e3)
+                  initial_values = inits,
+                  warmup = 2000,
+                  sampler = hmc(Lmin = Lmin, Lmax = Lmax),
+                  n_samples = 1000)
   )
-  
   
   fold_test_df <- temporal_forecasting$test
   

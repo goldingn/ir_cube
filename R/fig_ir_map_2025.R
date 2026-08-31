@@ -4,6 +4,9 @@
 source("R/packages.R")
 source("R/functions.R")
 
+# load bioassay data
+ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
+
 ir_yr <- 2025
 
 # load admin borders for plotting
@@ -143,7 +146,11 @@ for (i in seq_len(n_insecticides)) {
       guide = guide_colorbar(frame.colour = border_col,
                              frame.linewidth = 0.05)
     ) +
-    coord_sf(xlim = xlim) +
+    coord_sf(
+      xlim = xlim,
+      ylim = c(min(ir_africa$latitude),
+               max(ir_africa$latitude))
+    ) +
     theme_ir_maps() +
     theme(
       strip.text.x = element_text(hjust = 0),
