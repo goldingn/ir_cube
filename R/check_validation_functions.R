@@ -51,12 +51,14 @@ report("rbetabinom variance",
        abs(var(draws) / variance_expected - 1) < 0.05,
        sprintf("(%.1f vs %.1f)", var(draws), variance_expected))
 
-# CRPS against a brute force evaluation of the double sum
-sims_test <- rnorm(300)
-brute <- mean(abs(sims_test - 0.4)) -
-  0.5 * mean(abs(outer(sims_test, sims_test, "-")))
-report("crps_sample matches brute force double sum",
-       isTRUE(all.equal(crps_sample(0.4, sims_test), brute)))
+# ppd_crps against a brute force evaluation of the CRPS double sum
+sims_test <- matrix(rbinom(300, 100, 0.4), ncol = 1)
+observed_test <- 45
+brute <- mean(abs(sims_test / 100 - observed_test / 100)) -
+  0.5 * mean(abs(outer(sims_test / 100, sims_test / 100, "-")))
+report("ppd_crps matches brute force double sum",
+       isTRUE(all.equal(as.numeric(ppd_crps(observed_test, 100, sims_test)),
+                        brute, tolerance = 1e-6)))
 
 
 # behaviour of the calibration metrics ------------------------------------
@@ -180,49 +182,3 @@ report("pooling reduces scatter",
        scatter_pooled < scatter_single,
        sprintf("(%.4f vs %.4f, ratio %.2f)",
                scatter_pooled, scatter_single, scatter_pooled / scatter_single))
-
-
-# agreement with the reference implementations ------------------------------
-
-# The primitives above are written in base R so that the validation code
-# carries no extra dependency. Where the reference packages are available,
-# check that they agree.
-
-if (requireNamespace("extraDistr", quietly = TRUE)) {
-
-  agreement <- vapply(
-    seq_along(c(0.2, 0.5, 0.9, 0.97)),
-    function(i) {
-      p <- c(0.2, 0.5, 0.9, 0.97)[i]
-      rho <- c(0.05, 0.155, 0.3, 0.12)[i]
-      a <- p * (1 / rho - 1)
-      b <- a * (1 - p) / p
-      density_matches <- all.equal(dbetabinom(0:100, 100, p, rho),
-                                   extraDistr::dbbinom(0:100, 100, a, b))
-      cdf_matches <- all.equal(pbetabinom(0:100, 100, p, rho),
-                               extraDistr::pbbinom(0:100, 100, a, b),
-                               tolerance = 1e-7)
-      isTRUE(density_matches) && isTRUE(cdf_matches)
-    },
-    logical(1)
-  )
-
-  report("beta-binomial primitives agree with extraDistr", all(agreement))
-
-}
-
-if (requireNamespace("scoringRules", quietly = TRUE)) {
-
-  crps_sims <- matrix(rnorm(2000), nrow = 500)
-  crps_y <- c(0.3, -0.2, 1.1, 0.0)
-  report(
-    "crps_sample agrees with scoringRules",
-    isTRUE(all.equal(
-      vapply(seq_along(crps_y),
-             function(i) crps_sample(crps_y[i], crps_sims[, i]),
-             numeric(1)),
-      scoringRules::crps_sample(y = crps_y, dat = t(crps_sims))
-    ))
-  )
-
-}

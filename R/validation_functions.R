@@ -11,10 +11,11 @@
 # population susceptible fraction under draw s, and rho_i^(s) the corresponding
 # draw of the observation overdispersion for that insecticide class.
 #
-# The beta-binomial primitives are written in base R (rather than using
-# extraDistr) so that the validation code carries no extra dependency and can be
-# checked without a model fit; see R/check_validation_functions.R. They use the
-# same p / rho parameterisation as betabinomial_p_rho() in R/functions.R.
+# The beta-binomial functions here are thin wrappers around extraDistr, which
+# the rest of the validation code already uses. What they add is the p / rho
+# parameterisation used by betabinomial_p_rho() in R/functions.R, rather than
+# the shape parameters extraDistr takes; see R/check_validation_functions.R for
+# checks that the reparameterisation is right.
 
 
 # beta-binomial primitives ------------------------------------------------
@@ -30,40 +31,22 @@ bb_shape <- function(p, rho, epsilon = 1e-10) {
        b = (1 - p) * total)
 }
 
-# beta-binomial probability mass function, vectorised over all arguments
+# beta-binomial probability mass function, in the p / rho parameterisation
 dbetabinom <- function(y, size, p, rho, log = FALSE) {
   shape <- bb_shape(p, rho)
-  out <- lchoose(size, y) +
-    lbeta(y + shape$a, size - y + shape$b) -
-    lbeta(shape$a, shape$b)
-  # zero probability outside the support
-  out[y < 0 | y > size] <- -Inf
-  if (log) out else exp(out)
+  extraDistr::dbbinom(y, size, alpha = shape$a, beta = shape$b, log = log)
 }
 
-# beta-binomial cumulative distribution function. Not vectorised over q as
-# efficiently as dbetabinom; the mixture code below avoids calling it in bulk
+# beta-binomial cumulative distribution function
 pbetabinom <- function(q, size, p, rho) {
-  n <- max(length(q), length(size), length(p), length(rho))
-  q <- rep_len(q, n)
-  size <- rep_len(size, n)
-  p <- rep_len(p, n)
-  rho <- rep_len(rho, n)
-  vapply(
-    seq_len(n),
-    function(i) {
-      if (q[i] < 0) return(0)
-      if (q[i] >= size[i]) return(1)
-      sum(dbetabinom(0:q[i], size[i], p[i], rho[i]))
-    },
-    numeric(1)
-  )
+  shape <- bb_shape(p, rho)
+  extraDistr::pbbinom(q, size, alpha = shape$a, beta = shape$b)
 }
 
-# draw beta-binomial variates, vectorised over all arguments
+# draw beta-binomial variates
 rbetabinom <- function(n, size, p, rho) {
   shape <- bb_shape(p, rho)
-  rbinom(n, size, rbeta(n, shape$a, shape$b))
+  extraDistr::rbbinom(n, size, alpha = shape$a, beta = shape$b)
 }
 
 # probability mass of a beta-binomial over the values in `y`, for each of the
@@ -72,13 +55,13 @@ rbetabinom <- function(n, size, p, rho) {
 bb_pmf_matrix <- function(y, size, a, b) {
   n_draws <- length(a)
   n_y <- length(y)
-  y_rep <- rep(y, each = n_draws)
-  a_rep <- rep(a, times = n_y)
-  b_rep <- rep(b, times = n_y)
-  logp <- lchoose(size, y_rep) +
-    lbeta(y_rep + a_rep, size - y_rep + b_rep) -
-    lbeta(a_rep, b_rep)
-  matrix(exp(logp), nrow = n_draws, ncol = n_y)
+  density <- extraDistr::dbbinom(
+    x = rep(y, each = n_draws),
+    size = size,
+    alpha = rep(a, times = n_y),
+    beta = rep(b, times = n_y)
+  )
+  matrix(density, nrow = n_draws, ncol = n_y)
 }
 
 
@@ -245,28 +228,13 @@ pit_null_band <- function(n_obs,
 
 # scores -------------------------------------------------------------------
 
-# continuous ranked probability score of a sample-based predictive distribution
-# against an observation, using the identity
-#   CRPS = mean|x - y| - (1 / (2 S^2)) sum_ij |x_i - x_j|
-# with the second term evaluated from the sorted sample in O(S log S)
-crps_sample <- function(y, sims) {
-  s <- length(sims)
-  term_1 <- mean(abs(sims - y))
-  sorted <- sort(sims)
-  term_2 <- 2 * sum((2 * seq_len(s) - s - 1) * sorted) / (s ^ 2)
-  term_1 - term_2 / 2
-}
-
 # CRPS of the posterior predictive distribution at each observation, on the
-# mortality proportion scale
+# mortality proportion scale. scoringRules takes one row per observation, so
+# the draws are transposed
 ppd_crps <- function(died, mosquito_number, sims) {
   proportion_sims <- sweep(sims, 2, mosquito_number, FUN = "/")
-  observed <- died / mosquito_number
-  vapply(
-    seq_along(observed),
-    function(i) crps_sample(observed[i], proportion_sims[, i]),
-    numeric(1)
-  )
+  scoringRules::crps_sample(y = died / mosquito_number,
+                            dat = t(proportion_sims))
 }
 
 
