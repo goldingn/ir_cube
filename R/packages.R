@@ -9,8 +9,13 @@
 #                          version = "0.4.0",
 #                          dependencies = FALSE,
 #                          repos = "http://cran.us.r-project.org")
-# # install specific version of greta.dynamics:
-# remotes::install_github("greta-dev/greta.dynamics@greta_2")
+# # greta and greta.dynamics versions. The greta_2 branch this used to pin no
+# # longer exists upstream; it was merged into main. Sampling a model whose
+# # likelihood depends on iterate_dynamic_function() fails under greta 0.6.0
+# # with a tf.while_loop shape error, so pin the last working pair:
+# remotes::install_version("tensorflow", version = "2.16.0")
+# remotes::install_github("greta-dev/greta@v0.5.0")
+# remotes::install_github("greta-dev/greta.dynamics@v0.2.2")
 
 library(tidyverse)
 library(readxl)

@@ -12,6 +12,12 @@
 # The null models are cheap and are run here too, so that every candidate is
 # stored in the same format and scored by the same code.
 
+# Initialise greta's python session before terra and sf are attached. Those
+# load the system XML libraries, which the conda environment's pyexpat is then
+# linked against, and tensorflow_probability fails to import as a result.
+suppressMessages(library(greta))
+invisible(calculate(normal(0, 1), nsim = 1))
+
 source("R/validation_functions.R")
 source("R/validation_folds.R")
 source("R/null_models.R")
