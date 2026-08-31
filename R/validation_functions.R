@@ -382,7 +382,7 @@ ppd_aggregate <- function(died, mosquito_number, group, sims,
       # pooled mortality under each posterior predictive draw
       pooled_sims <- rowSums(sims[, keep, drop = FALSE]) / total_tested
       pooled_observed <- sum(died[keep]) / total_tested
-      quantiles <- quantile(pooled_sims, probs)
+      quantiles <- unname(quantile(pooled_sims, probs))
       data.frame(group = g,
                  n_assays = sum(keep),
                  n_tested = total_tested,
