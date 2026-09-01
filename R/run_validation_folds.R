@@ -18,6 +18,9 @@
 suppressMessages(library(greta))
 invisible(calculate(normal(0, 1), nsim = 1))
 
+library(future)
+library(future.apply)
+
 source("R/validation_functions.R")
 source("R/validation_folds.R")
 source("R/null_models.R")
@@ -106,50 +109,99 @@ for (fold in folds) {
 
 # dynamical model ----------------------------------------------------------
 
-# Each fold is a full HMC run, so this is the expensive step: one fit per
-# validation country plus one each for interpolation and forecasting. Folds are
-# independent, so the loop can be interrupted and resumed; a fold whose draws
-# are already on disk is skipped.
-for (fold in folds) {
+# Each fold is a full HMC run, and this is the expensive step: one fit per
+# validation country plus one each for interpolation and forecasting.
+#
+# How the work is divided follows from how greta uses the machine. Chains are
+# vectorised into a single TensorFlow op rather than run one per core, and that
+# op scales poorly beyond about four threads, so the efficient arrangement is
+# few chains and several folds at once rather than many chains on one fold.
+# Measured on one fold of this model: 8 chains cost 70.6 s per iteration
+# against 6.96 s for 2 chains, while effective samples per draw are unchanged,
+# and confining a fold to 2 threads costs it only about a fifth of its speed.
+#
+# Folds are independent and each is skipped if its draws are already on disk,
+# so the run can be interrupted and resumed.
+n_workers <- 4
+threads_per_worker <- 2
 
-  file <- file.path(draws_dir,
-                    sprintf("dynamical__%s__%s.rds", fold$experiment, fold$fold))
+pending <- Filter(
+  function(fold) {
+    !file.exists(file.path(
+      draws_dir,
+      sprintf("dynamical__%s__%s.rds", fold$experiment, fold$fold)))
+  },
+  folds
+)
 
-  if (file.exists(file)) {
-    cat(sprintf("skipping %s (already fitted)\n", file))
-    next
-  }
+cat(sprintf("\n%i folds to fit, %i at a time, %i chains and %i threads each\n",
+            length(pending), n_workers, 2, threads_per_worker))
 
-  cat(sprintf("\nfitting %s / %s: %i training, %i held-out assays\n",
-              fold$experiment, fold$fold,
-              nrow(fold$training), nrow(fold$test)))
+if (length(pending) > 0) {
 
-  fit <- fit_fold(
-    train_df = fold$training,
-    test_df = fold$test,
-    x_cell_years = x_cell_years,
-    df = df,
-    classes_index = classes_index,
-    types = types,
-    n_covs = n_covs,
-    n_times = n_times,
-    n_classes = n_classes,
-    n_types = n_types,
-    n_regions = n_regions,
-    n_countries = n_countries,
-    n_sim = n_draws
+  plan(future.callr::callr, workers = n_workers)
+
+  fold_diagnostics <- future_lapply(
+    pending,
+    function(fold) {
+
+      # each worker is a fresh R process, so greta and the model definition are
+      # loaded here rather than inherited
+      suppressMessages(library(greta))
+      source("R/validation_functions.R")
+      source("R/fit_validation_fold.R")
+
+      fit <- fit_fold(
+        train_df = fold$training,
+        test_df = fold$test,
+        x_cell_years = x_cell_years,
+        df = df,
+        classes_index = classes_index,
+        types = types,
+        n_covs = n_covs,
+        n_times = n_times,
+        n_classes = n_classes,
+        n_types = n_types,
+        n_regions = n_regions,
+        n_countries = n_countries,
+        n_sim = n_draws,
+        threads = threads_per_worker
+      )
+
+      object <- list(
+        model = "dynamical",
+        experiment = fold$experiment,
+        fold = fold$fold,
+        p_draws = fit$p_draws,
+        rho_draws = fit$rho_draws,
+        test_df = fit$test_df,
+        convergence = fit$convergence,
+        ess = fit$ess,
+        n_sampled = fit$n_sampled
+      )
+      saveRDS(object,
+              file.path(draws_dir,
+                        sprintf("dynamical__%s__%s.rds",
+                                fold$experiment, fold$fold)))
+
+      # diagnostics worth seeing before the draws are used for anything
+      data.frame(experiment = fold$experiment,
+                 fold = fold$fold,
+                 n_sampled = fit$n_sampled,
+                 min_ess = min(fit$ess, na.rm = TRUE),
+                 median_ess = median(fit$ess, na.rm = TRUE),
+                 draws_per_ess = fit$draws_per_ess,
+                 worst_rhat = max(fit$convergence[, 1], na.rm = TRUE))
+
+    },
+    future.seed = TRUE,
+    future.globals = c("x_cell_years", "df", "classes_index", "types",
+                       "n_covs", "n_times", "n_classes", "n_types",
+                       "n_regions", "n_countries", "n_draws", "draws_dir",
+                       "threads_per_worker")
   )
 
-  # record the worst convergence diagnostic, to be checked before the draws are
-  # used for anything
-  cat(sprintf("  worst potential scale reduction factor: %.3f\n",
-              max(fit$convergence[, 1], na.rm = TRUE)))
-
-  save_fold(fit,
-            model = "dynamical",
-            experiment = fold$experiment,
-            fold = fold$fold)
-
-  gc()
+  cat("\nper-fold diagnostics:\n")
+  print(do.call(rbind, fold_diagnostics))
 
 }

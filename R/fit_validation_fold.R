@@ -33,12 +33,27 @@ fit_fold <- function(train_df,
                      n_types,
                      n_regions,
                      n_countries,
-                     n_chains = 8,
+                     n_chains = 2,
                      warmup = 2000,
-                     n_samples = 1000,
+                     n_samples = 500,
                      n_sim = 1000,
                      Lmax = 30,
+                     target_ess = 1000,
+                     max_samples = 5000,
+                     batch_samples = 500,
+                     threads = 0,
                      inits_file = "temporary/inits.RDS") {
+
+  # TensorFlow parallelises one op across cores rather than running a chain per
+  # core, and scales poorly beyond about four threads, so confining each fold to
+  # a couple of threads costs it little and leaves room to run several folds at
+  # once. greta exposes no interface for this; it has to be set through
+  # reticulate, before any ops are created
+  if (threads > 0) {
+    tensorflow_module <- reticulate::import("tensorflow")
+    tensorflow_module$config$threading$set_intra_op_parallelism_threads(threads)
+    tensorflow_module$config$threading$set_inter_op_parallelism_threads(threads)
+  }
 
 
   # doubly hierarchical version
@@ -190,6 +205,20 @@ fit_fold <- function(train_df,
                 sampler = hmc(Lmin = Lmin, Lmax = Lmax),
                 n_samples = n_samples)
 
+  # Extend sampling until the effective sample size is adequate, rather than
+  # guessing a sample count up front. How many draws are needed per effective
+  # sample cannot be known before the sampler has adapted, so take an initial
+  # batch, measure, and top up.
+  sampled <- n_samples
+  ess <- coda::effectiveSize(draws)
+  while (min(ess, na.rm = TRUE) < target_ess && sampled < max_samples) {
+    draws <- extra_samples(draws,
+                           n_samples = batch_samples,
+                           verbose = FALSE)
+    sampled <- sampled + batch_samples
+    ess <- coda::effectiveSize(draws)
+  }
+
   # the same quantities at the held-out data
   index_test <- cbind(test_df$cell_id, test_df$type_id, test_df$year_id)
   population_mortality_vec_test <- dynamic_cells$all_states[index_test]
@@ -212,7 +241,16 @@ fit_fold <- function(train_df,
        n_train = nrow(train_df),
        convergence = coda::gelman.diag(draws,
                                        multivariate = FALSE,
-                                       autoburnin = FALSE)$psrf)
+                                       autoburnin = FALSE)$psrf,
+       # effective sample size of the sampler itself. Note this must come from
+       # the MCMC draws: p_draws is produced by calculate(nsim = ), which
+       # resamples the posterior independently, so its ESS is uninformative
+       # about mixing
+       ess = ess,
+       n_sampled = sampled,
+       # draws per effective sample, which is what makes the cost of the
+       # remaining folds predictable
+       draws_per_ess = (sampled * n_chains) / median(ess, na.rm = TRUE))
 
 }
 
