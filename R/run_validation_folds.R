@@ -213,7 +213,8 @@ if (length(pending) > 0) {
     },
     future.seed = TRUE,
     future.globals = c("x_cell_years", "df", "classes_index", "types",
-                       "n_covs", "n_times", "n_classes", "n_types",
+                       "n_covs", "n_times", "n_unique_cells",
+                       "n_classes", "n_types",
                        "n_regions", "n_countries", "n_draws", "draws_dir",
                        "threads_per_worker")
   )
