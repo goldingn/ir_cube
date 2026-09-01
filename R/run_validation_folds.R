@@ -86,12 +86,21 @@ folds <- c(
 
 for (fold in folds) {
 
-  save_fold(
-    intercept_null_draws(fold$training, fold$test, n_draws = n_draws),
-    model = "intercept",
-    experiment = fold$experiment,
-    fold = fold$fold
-  )
+  null_file <- function(model) {
+    file.path(draws_dir,
+              sprintf("%s__%s__%s.rds", model, fold$experiment, fold$fold))
+  }
+
+  if (!file.exists(null_file("intercept"))) {
+    save_fold(
+      intercept_null_draws(fold$training, fold$test, n_draws = n_draws),
+      model = "intercept",
+      experiment = fold$experiment,
+      fold = fold$fold
+    )
+  }
+
+  if (file.exists(null_file("nearest_neighbour"))) next
 
   save_fold(
     nn_null_draws(fold$training,
@@ -145,9 +154,16 @@ if (length(pending) > 0) {
     pending,
     function(fold) {
 
-      # each worker is a fresh R process, so greta and the model definition are
-      # loaded here rather than inherited
-      suppressMessages(library(greta))
+      # each worker is a fresh R process, so everything the model definition
+      # needs is loaded here rather than inherited: greta.dynamics for the
+      # iteration, dplyr for the index lookups, and functions.R for
+      # betabinomial_p_rho()
+      suppressMessages({
+        library(greta)
+        library(greta.dynamics)
+        library(dplyr)
+      })
+      source("R/functions.R")
       source("R/validation_functions.R")
       source("R/fit_validation_fold.R")
 
@@ -160,6 +176,7 @@ if (length(pending) > 0) {
         types = types,
         n_covs = n_covs,
         n_times = n_times,
+        n_unique_cells = n_unique_cells,
         n_classes = n_classes,
         n_types = n_types,
         n_regions = n_regions,

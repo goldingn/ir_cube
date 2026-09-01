@@ -29,6 +29,7 @@ fit_fold <- function(train_df,
                      types,
                      n_covs,
                      n_times,
+                     n_unique_cells,
                      n_classes,
                      n_types,
                      n_regions,
@@ -51,8 +52,10 @@ fit_fold <- function(train_df,
   # reticulate, before any ops are created
   if (threads > 0) {
     tensorflow_module <- reticulate::import("tensorflow")
-    tensorflow_module$config$threading$set_intra_op_parallelism_threads(threads)
-    tensorflow_module$config$threading$set_inter_op_parallelism_threads(threads)
+    tensorflow_module$config$threading$set_intra_op_parallelism_threads(
+      as.integer(threads))
+    tensorflow_module$config$threading$set_inter_op_parallelism_threads(
+      as.integer(threads))
   }
 
 
