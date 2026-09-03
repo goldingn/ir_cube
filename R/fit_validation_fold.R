@@ -34,7 +34,7 @@ fit_fold <- function(train_df,
                      n_types,
                      n_regions,
                      n_countries,
-                     n_chains = 2,
+                     n_chains = 4,
                      warmup = 2000,
                      n_samples = 500,
                      n_sim = 1000,
@@ -211,48 +211,86 @@ fit_fold <- function(train_df,
   # Extend sampling until the effective sample size is adequate, rather than
   # guessing a sample count up front. How many draws are needed per effective
   # sample cannot be known before the sampler has adapted, so take an initial
-  # batch, measure, and top up.
+  # batch, measure, and top up. Each batch reports its effective sample size, so
+  # progress is visible in the fold's log rather than only on completion.
+  report <- function(...) {
+    cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sprintf(...), "\n")
+    flush(stdout())
+  }
+
   sampled <- n_samples
   ess <- coda::effectiveSize(draws)
+  report("sampled %d per chain | ESS min %.0f median %.0f | target %d",
+         sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE), target_ess)
+
   while (min(ess, na.rm = TRUE) < target_ess && sampled < max_samples) {
     draws <- extra_samples(draws,
                            n_samples = batch_samples,
-                           verbose = FALSE)
+                           verbose = TRUE)
     sampled <- sampled + batch_samples
     ess <- coda::effectiveSize(draws)
+    report("sampled %d per chain | ESS min %.0f median %.0f | target %d",
+           sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE), target_ess)
   }
 
-  # the same quantities at the held-out data
+  # Predictions at the held-out data.
+  #
+  # These come from greta's calculate() applied to the draws object, which is
+  # the supported way to predict from a fitted greta model. Note there is no
+  # nsim argument: with nsim, calculate() returns an independent resample of the
+  # posterior, which is a valid posterior sample but destroys the MCMC ordering,
+  # so effective sample size cannot be recovered from it. Without nsim it
+  # returns the draws in order, as an mcmc.list, and the predicted fractions can
+  # be diagnosed like any other monitored quantity.
   index_test <- cbind(test_df$cell_id, test_df$type_id, test_df$year_id)
   population_mortality_vec_test <- dynamic_cells$all_states[index_test]
 
-  # draw both in one call, so that each predicted fraction is paired with the
-  # overdispersion from the same posterior sample
-  sims <- calculate(population_mortality_vec_test,
-                    rho_classes,
-                    values = draws,
-                    nsim = n_sim)
+  report("computing predictions at %d held-out assays", nrow(test_df))
+  prediction_draws <- calculate(population_mortality_vec_test,
+                                rho_classes,
+                                values = draws)
 
-  p_draws <- sims$population_mortality_vec_test[, , 1]
-  rho_class_draws <- sims$rho_classes[, , 1]
+  # effective sample size of the quantities the validation metrics actually
+  # consume, rather than of the raw model parameters
+  ess_prediction <- coda::effectiveSize(prediction_draws)
+  ess_p <- ess_prediction[grep("population_mortality_vec_test",
+                               names(ess_prediction))]
+  ess_rho <- ess_prediction[grep("rho_classes", names(ess_prediction))]
+
+  report("prediction ESS: p median %.0f min %.0f | rho median %.0f min %.0f",
+         median(ess_p, na.rm = TRUE), min(ess_p, na.rm = TRUE),
+         median(ess_rho, na.rm = TRUE), min(ess_rho, na.rm = TRUE))
+
+  # flatten the mcmc.list to a draws x quantity matrix, preserving order
+  prediction_matrix <- as.matrix(prediction_draws)
+  p_columns <- grep("population_mortality_vec_test", colnames(prediction_matrix))
+  rho_columns <- grep("rho_classes", colnames(prediction_matrix))
+  p_draws <- prediction_matrix[, p_columns, drop = FALSE]
+  rho_class_draws <- prediction_matrix[, rho_columns, drop = FALSE]
   # expand the class-level overdispersion out to one column per held-out assay
   rho_draws <- rho_class_draws[, test_df$class_id, drop = FALSE]
 
-  list(p_draws = p_draws,
+  convergence <- coda::gelman.diag(draws,
+                                   multivariate = FALSE,
+                                   autoburnin = FALSE)$psrf
+  report("Rhat worst %.3f, %d of %d parameters above 1.01",
+         max(convergence[, 1], na.rm = TRUE),
+         sum(convergence[, 1] > 1.01, na.rm = TRUE),
+         nrow(convergence))
+
+  list(# the draws object itself: greta's calculate() needs this to predict, so
+       # it is what must be kept
+       draws = draws,
+       p_draws = p_draws,
        rho_draws = rho_draws,
        test_df = test_df,
        n_train = nrow(train_df),
-       convergence = coda::gelman.diag(draws,
-                                       multivariate = FALSE,
-                                       autoburnin = FALSE)$psrf,
-       # effective sample size of the sampler itself. Note this must come from
-       # the MCMC draws: p_draws is produced by calculate(nsim = ), which
-       # resamples the posterior independently, so its ESS is uninformative
-       # about mixing
+       convergence = convergence,
        ess = ess,
+       ess_p = ess_p,
+       ess_rho = ess_rho,
        n_sampled = sampled,
-       # draws per effective sample, which is what makes the cost of the
-       # remaining folds predictable
+       n_chains = n_chains,
        draws_per_ess = (sampled * n_chains) / median(ess, na.rm = TRUE))
 
 }

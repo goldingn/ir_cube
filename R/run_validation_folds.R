@@ -118,21 +118,23 @@ for (fold in folds) {
 
 # dynamical model ----------------------------------------------------------
 
-# Each fold is a full HMC run, and this is the expensive step: one fit per
-# validation country plus one each for interpolation and forecasting.
+# Each fold is fitted by its own process, via run_one_fold.R, so that greta's
+# warmup and sampling progress goes to that fold's log and can be watched while
+# it runs. Two folds at a time, four chains each.
 #
-# How the work is divided follows from how greta uses the machine. Chains are
-# vectorised into a single TensorFlow op rather than run one per core, and that
-# op scales poorly beyond about four threads, so the efficient arrangement is
-# few chains and several folds at once rather than many chains on one fold.
-# Measured on one fold of this model: 8 chains cost 70.6 s per iteration
-# against 6.96 s for 2 chains, while effective samples per draw are unchanged,
-# and confining a fold to 2 threads costs it only about a fifth of its speed.
+# Why this split: TensorFlow vectorises chains into a single op rather than
+# running one per core, and that op scales poorly beyond about four threads, so
+# a fold confined to four threads loses little. Four chains rather than two
+# because greta pools information across chains when adapting during warmup, and
+# two chains adapt poorly — the Kenya fold reached Rhat 7.6 that way.
 #
-# Folds are independent and each is skipped if its draws are already on disk,
-# so the run can be interrupted and resumed.
-n_workers <- 4
-threads_per_worker <- 2
+# Folds whose draws are already on disk are skipped, so the run resumes.
+n_concurrent <- 2
+chains_per_fold <- 4
+threads_per_fold <- 4
+
+log_dir <- "outputs/cv_logs"
+dir.create(log_dir, showWarnings = FALSE, recursive = TRUE)
 
 pending <- Filter(
   function(fold) {
@@ -144,82 +146,56 @@ pending <- Filter(
 )
 
 cat(sprintf("\n%i folds to fit, %i at a time, %i chains and %i threads each\n",
-            length(pending), n_workers, 2, threads_per_worker))
+            length(pending), n_concurrent, chains_per_fold, threads_per_fold))
+cat(sprintf("progress logs: %s/\n\n", log_dir))
 
-if (length(pending) > 0) {
+running <- list()
 
-  plan(future.callr::callr, workers = n_workers)
-
-  fold_diagnostics <- future_lapply(
-    pending,
-    function(fold) {
-
-      # each worker is a fresh R process, so everything the model definition
-      # needs is loaded here rather than inherited: greta.dynamics for the
-      # iteration, dplyr for the index lookups, and functions.R for
-      # betabinomial_p_rho()
-      suppressMessages({
-        library(greta)
-        library(greta.dynamics)
-        library(dplyr)
-      })
-      source("R/functions.R")
-      source("R/validation_functions.R")
-      source("R/fit_validation_fold.R")
-
-      fit <- fit_fold(
-        train_df = fold$training,
-        test_df = fold$test,
-        x_cell_years = x_cell_years,
-        df = df,
-        classes_index = classes_index,
-        types = types,
-        n_covs = n_covs,
-        n_times = n_times,
-        n_unique_cells = n_unique_cells,
-        n_classes = n_classes,
-        n_types = n_types,
-        n_regions = n_regions,
-        n_countries = n_countries,
-        n_sim = n_draws,
-        threads = threads_per_worker
-      )
-
-      object <- list(
-        model = "dynamical",
-        experiment = fold$experiment,
-        fold = fold$fold,
-        p_draws = fit$p_draws,
-        rho_draws = fit$rho_draws,
-        test_df = fit$test_df,
-        convergence = fit$convergence,
-        ess = fit$ess,
-        n_sampled = fit$n_sampled
-      )
-      saveRDS(object,
-              file.path(draws_dir,
-                        sprintf("dynamical__%s__%s.rds",
-                                fold$experiment, fold$fold)))
-
-      # diagnostics worth seeing before the draws are used for anything
-      data.frame(experiment = fold$experiment,
-                 fold = fold$fold,
-                 n_sampled = fit$n_sampled,
-                 min_ess = min(fit$ess, na.rm = TRUE),
-                 median_ess = median(fit$ess, na.rm = TRUE),
-                 draws_per_ess = fit$draws_per_ess,
-                 worst_rhat = max(fit$convergence[, 1], na.rm = TRUE))
-
-    },
-    future.seed = TRUE,
-    future.globals = c("x_cell_years", "df", "classes_index", "types",
-                       "n_covs", "n_times", "n_unique_cells",
-                       "n_classes", "n_types",
-                       "n_regions", "n_countries", "n_draws", "draws_dir",
-                       "threads_per_worker")
+launch <- function(fold) {
+  log_file <- file.path(log_dir,
+                        sprintf("%s__%s.log", fold$experiment, fold$fold))
+  cat(sprintf("%s | launching %s / %s -> %s\n",
+              format(Sys.time(), "%H:%M:%S"),
+              fold$experiment, fold$fold, log_file))
+  process <- processx::process$new(
+    "Rscript",
+    c("R/run_one_fold.R", fold$experiment, fold$fold,
+      as.character(chains_per_fold), as.character(threads_per_fold)),
+    stdout = log_file,
+    stderr = "2>&1"
   )
+  list(fold = fold, process = process, log = log_file)
+}
 
-  cat("\nper-fold diagnostics:\n")
-  print(do.call(rbind, fold_diagnostics))
+queue <- pending
+
+while (length(queue) > 0 || length(running) > 0) {
+
+  # start jobs while there is room
+  while (length(running) < n_concurrent && length(queue) > 0) {
+    running <- c(running, list(launch(queue[[1]])))
+    queue <- queue[-1]
+  }
+
+  Sys.sleep(60)
+
+  # reap anything that has finished
+  still_running <- list()
+  for (job in running) {
+    if (job$process$is_alive()) {
+      still_running <- c(still_running, list(job))
+    } else {
+      status <- job$process$get_exit_status()
+      cat(sprintf("%s | finished %s / %s (exit %s)\n",
+                  format(Sys.time(), "%H:%M:%S"),
+                  job$fold$experiment, job$fold$fold, status))
+      if (!identical(status, 0L)) {
+        cat(sprintf("  NON-ZERO EXIT: see %s\n", job$log))
+      }
+    }
+  }
+  running <- still_running
 
 }
+
+cat("\nall folds finished\n")
