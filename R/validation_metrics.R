@@ -33,6 +33,20 @@ draws_dir <- "outputs/cv_draws"
 n_pit_reps <- 100
 coverage_levels <- seq(0.1, 0.95, by = 0.05)
 
+# Folds fitted by MCMC hold up to 20,000 draws (4 chains x 5,000). The scoring
+# functions build an n_draws x (died + 1) matrix per observation, so that is
+# twenty times the work of the 1,000 draws the null models carry, for no gain:
+# at roughly 50 draws per effective sample, every tenth draw retains almost all
+# the information. Thinning is applied to the model folds only; the null models
+# are analytic and already independent.
+max_draws <- 2000
+
+thin_draws <- function(x, maximum = max_draws) {
+  if (nrow(x) <= maximum) return(x)
+  keep <- round(seq(1, nrow(x), length.out = maximum))
+  x[keep, , drop = FALSE]
+}
+
 set.seed(2026 - 8 - 31)
 
 # externally estimated overdispersion, from replicate bioassays in the same
@@ -61,13 +75,19 @@ score_fold <- function(file) {
   fold <- readRDS(file)
   test <- fold$test_df
 
+  # predictions come from the saved object. For model folds these were produced
+  # by greta's calculate(values = draws) in MCMC order; for the null models they
+  # are analytic. Either way they are not recomputed here
+  p_draws <- thin_draws(fold$p_draws)
+  rho_draws <- thin_draws(fold$rho_draws)
+
   summary <- ppd_summary(test$died,
                          test$mosquito_number,
-                         fold$p_draws,
-                         fold$rho_draws)
+                         p_draws,
+                         rho_draws)
 
   pit <- ppd_pit(summary, n_rep = n_pit_reps)
-  sims <- ppd_simulate(test$mosquito_number, fold$p_draws, fold$rho_draws)
+  sims <- ppd_simulate(test$mosquito_number, p_draws, rho_draws)
 
   scores <- summary %>%
     mutate(
@@ -267,6 +287,35 @@ write.csv(aggregate_summary, "outputs/cv_aggregate_summary.csv",
 # a fitted overdispersion larger than the replicate-based estimate would mean
 # the model is absorbing process misfit into the observation process, which
 # would also show as over-coverage
+# sampling diagnostics per fold, so that the convergence caveat travels with
+# the results. Null model folds are analytic and have none
+sampling_diagnostics <- bind_rows(lapply(scored, function(entry) {
+  fold <- entry$fold
+  if (is.null(fold$ess_p)) return(NULL)
+  data.frame(
+    model = fold$model,
+    experiment = fold$experiment,
+    fold = fold$fold,
+    n_chains = fold$n_chains,
+    n_sampled = fold$n_sampled,
+    ess_p_median = median(fold$ess_p, na.rm = TRUE),
+    ess_p_min = min(fold$ess_p, na.rm = TRUE),
+    ess_rho_median = median(fold$ess_rho, na.rm = TRUE),
+    rhat_worst = max(fold$convergence[, 1], na.rm = TRUE),
+    rhat_above_1.01 = sum(fold$convergence[, 1] > 1.01, na.rm = TRUE)
+  )
+}))
+
+if (nrow(sampling_diagnostics) > 0) {
+  write.csv(sampling_diagnostics, "outputs/cv_sampling_diagnostics.csv",
+            row.names = FALSE)
+  cat("\nsampling diagnostics:\n")
+  print(sampling_diagnostics %>%
+          mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+          as.data.frame())
+}
+
+
 rho_comparison <- bind_rows(lapply(scored, function(entry) {
   test <- entry$fold$test_df
   data.frame(

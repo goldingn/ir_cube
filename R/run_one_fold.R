@@ -95,8 +95,10 @@ saveRDS(
   list(model = "dynamical",
        experiment = experiment_name,
        fold = fold_name,
-       # the draws object, which greta's calculate() needs in order to predict
+       # the draws object, which greta's calculate() needs in order to predict,
+       # and the greta arrays it predicts from
        draws = fit$draws,
+       prediction_arrays = fit$prediction_arrays,
        p_draws = fit$p_draws,
        rho_draws = fit$rho_draws,
        test_df = fit$test_df,

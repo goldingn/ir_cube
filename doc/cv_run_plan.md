@@ -76,7 +76,15 @@ models being scored.
 
 ## 4. The run now in progress
 
-Launched 2026-09-04 07:09 by `Rscript R/run_validation_folds.R`.
+Launched 2026-09-04 07:09 by `Rscript R/run_validation_folds.R`. Six of eight
+folds complete as of 2026-09-12; interpolation and forecasting in warmup, due
+14-15 September. Observed cost ~62h per fold, two at a time, so ~250h in total
+rather than the 150-200h estimated.
+
+**Next step, agreed with Nick:** leave these eight folds as they are. From
+18 September, while he compiles results and drafts the paper figures, refit
+**all** folds with longer warmup — not a subset, since folds compared with each
+other must share their sampling settings.
 
 - 8 folds: 6 leave-one-country-out, plus spatial interpolation and temporal
   forecasting.
@@ -144,8 +152,9 @@ adapting. Specifically:
 
 1. **It must not re-predict.** Use the `p_draws` and `rho_draws` in the saved
    object, which came from `calculate(values = draws)`. Do not write bespoke
-   prediction code; if predictions at new points are ever needed, rebuild the
-   model and use `calculate()` with the saved `draws`.
+   prediction code. If predictions at new points are ever needed,
+   `calculate(target, values = draws)` does work on a reloaded draws object —
+   see §10 for what does and does not survive a session.
 2. **Draw count has changed** from 1,000 to `n_chains * n_sampled`, up to
    20,000. `ppd_summary()` loops over observations building an
    `n_draws x (died + 1)` matrix each time, so this is ~20x slower than before
@@ -180,10 +189,15 @@ draws.
   holds, this is the diagnostic the plan anticipated: the model absorbing
   process misfit into the observation process, which should also show as
   over-coverage. Worth a supplementary panel.
-- **ESS target.** 1,000 was set arbitrarily and is unreachable: the model needs
-  ~50 draws per effective sample, so it would take ~50,000 draws per fold. The
-  cap of 5,000 samples binds instead. Decide whether the achieved ESS on `p` and
-  `rho` (the quantities that matter) is sufficient once the first fold reports.
+- **ESS target.** 1,000 was set arbitrarily and the cap of 5,000 samples binds
+  instead. This turned out not to matter: with 4 chains, the quantities the
+  metrics consume are well sampled, with `p` at held-out assays reaching median
+  ESS 540–861 (minimum across assays 273–698) and `rho` 428–847. It is the raw
+  hierarchical parameters that mix badly (min ESS 76–96); `p` and `rho` are
+  smooth aggregates of them and mix 5–8x better.
+- **Rhat.** Still the weak point, and uneven between folds: 1.12–1.25 for five
+  country folds but 2.33 for Côte d'Ivoire, with all 689 parameters above 1.01.
+  More samples will not fix this; longer warmup is the lever worth trying.
 
 ## 8. Pitfalls already hit, worth not repeating
 
@@ -207,7 +221,34 @@ draws.
   minutes and exercises everything. Delete the resulting `.rds` afterwards, or
   the real fold will be skipped.
 
-## 9. Superseded artefacts
+## 10. What survives a session, and what does not
+
+Established by experiment, not assumption:
+
+| operation on a reloaded `draws` object | result |
+|---|---|
+| `calculate(target, values = draws)` | **works** — targets are recoverable from `attr(draws, "model_info")` and the graph is re-traced |
+| `extra_samples(draws, n_samples = ...)` | **fails** — `"object is from previous session and is now invalid"` |
+
+The sampler state is bound to the session that created it, and redefining the
+model produces new nodes the draws cannot attach to. In principle the node
+objects could be reached through the nested environments held in the model and
+coerced back to greta arrays in a fresh session, but reattaching them under the
+names the original model gave them is the hard part, and not worth attempting.
+
+The consequences for planning:
+
+- **A longer run must be requested up front**, through `warmup` and
+  `max_samples`. Sampling cannot be topped up afterwards.
+- **Folds to be compared must share their sampling settings.** Refitting one
+  fold with longer warmup means refitting all of them, since the validation
+  compares folds with each other.
+- Saved folds therefore also carry `prediction_arrays`, the greta arrays the
+  predictions came from, so that prediction does not depend on greta's internal
+  attribute layout. Note the eight folds from the September run predate this
+  and do not have it; the draws object is sufficient for them.
+
+## 11. Superseded artefacts
 
 `outputs/cv_draws_defunct/` holds four folds from the earlier 2-chain run. They
 have no `draws` object, so they cannot be used with greta's prediction

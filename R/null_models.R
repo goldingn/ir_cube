@@ -273,7 +273,8 @@ intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
 
   list(p_draws = p_draws,
        rho_draws = matrix(rho, nrow = n_draws, ncol = nrow(test_data)),
-       rho = rho)
+       rho = rho,
+       test_df = test_data)
 
 }
 
@@ -323,6 +324,7 @@ nn_null_draws <- function(training_data, test_data, n_neighbours,
 
   list(p_draws = p_draws,
        rho_draws = matrix(rho, nrow = n_draws, ncol = nrow(test_data)),
-       rho = rho)
+       rho = rho,
+       test_df = test_data)
 
 }

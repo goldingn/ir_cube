@@ -278,9 +278,24 @@ fit_fold <- function(train_df,
          sum(convergence[, 1] > 1.01, na.rm = TRUE),
          nrow(convergence))
 
-  list(# the draws object itself: greta's calculate() needs this to predict, so
-       # it is what must be kept
+  list(# The draws object, and the greta arrays the predictions were computed
+       # from. calculate(values = draws) works on a reloaded draws object,
+       # recovering its targets from attr(draws, "model_info"), so prediction
+       # survives a session; keeping the arrays explicitly makes that
+       # independent of greta's internal layout.
+       #
+       # Sampling, by contrast, cannot be continued after a session ends:
+       # extra_samples() on a reloaded draws object fails with "object is from
+       # previous session and is now invalid", because the sampler state is
+       # bound to the session that created it, and redefining the model gives
+       # new nodes the draws cannot attach to. So a longer run has to be asked
+       # for up front through `warmup` and `max_samples` — it cannot be added
+       # to a fold afterwards. Note also that folds to be compared with each
+       # other must share their sampling settings, so extending one fold means
+       # refitting all of them.
        draws = draws,
+       prediction_arrays = list(p = population_mortality_vec_test,
+                                rho = rho_classes),
        p_draws = p_draws,
        rho_draws = rho_draws,
        test_df = test_df,
