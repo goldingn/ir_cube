@@ -5,7 +5,7 @@ Working document for the posterior predictive validation work on branch
 Written so that someone picking this up cold can continue without re-deriving
 what has already been established or repeating what has already failed.
 
-Last updated: 2026-09-04, at the launch of the corrected fold run.
+Last updated: 2026-09-12.
 
 ---
 
@@ -65,7 +65,8 @@ Two ordering constraints, both load-bearing, both encoded in `run_one_fold.R`:
 | Model fit per fold | `R/fit_validation_fold.R` | done |
 | Single fold runner | `R/run_one_fold.R` | done, smoke tested |
 | Dispatcher | `R/run_validation_folds.R` | done, running |
-| Metrics | `R/validation_metrics.R` | **needs adapting, see §6** |
+| Null models test data | `R/null_models.R` | fixed; nulls regenerated |
+| Metrics | `R/validation_metrics.R` | adapted for MCMC folds, being tested |
 | Figures | `R/fig_predictive_validation.R` | written, tested on synthetic draws |
 
 External overdispersion estimates, from all 3,713 replicated
@@ -96,9 +97,6 @@ other must share their sampling settings.
 - Draws saved to `outputs/cv_draws/dynamical__<experiment>__<fold>.rds`.
   Folds already on disk are skipped, so the run resumes after interruption.
 
-Expected: roughly 40–50h per pair, so **150–200h in total**. The first fold
-should land within ~50h.
-
 Why this configuration, from measurements on one fold of this model:
 
 - Chains are vectorised into one TensorFlow op, not run one per core, and that
@@ -124,8 +122,8 @@ Each fold logs, with timestamps: warmup and sampling progress bars, effective
 sample size after every batch of extra samples, prediction ESS for `p` and
 `rho`, and the worst Rhat.
 
-**The first fold is the checkpoint that matters.** Within ~50h there should be
-one `.rds` in `outputs/cv_draws/`. Check it before trusting the remaining 150h:
+**Check the first fold before trusting the rest of the run.** For the September
+run this was done and passed; repeat it on any refit:
 
 ```r
 d <- readRDS("outputs/cv_draws/dynamical__spatial_extrapolation__Côte d’Ivoire.rds")
@@ -138,8 +136,19 @@ max(d$convergence[, 1])        # worst Rhat
 ```
 
 What counts as acceptable: `ess_p` median in the hundreds is fine for the
-metrics, which pool over ~1,000–1,900 held-out assays per fold. Rhat is the
-harder question — see §7.
+metrics, which pool over ~900–1,960 held-out assays per fold. The September run
+achieved 540–861. Rhat is the harder question — see §7.
+
+Achieved, September run (six country folds):
+
+| fold | ESS p median / min | ESS rho | Rhat worst | above 1.01 |
+|---|---|---|---|---|
+| Côte d'Ivoire | 586 / 434 | 627 | 2.33 | 689 |
+| Nigeria | 540 / 273 | 428 | 1.25 | 553 |
+| Ethiopia | 861 / 698 | 847 | 1.17 | 288 |
+| Senegal | 758 / 435 | 665 | 1.17 | 342 |
+| Kenya | 827 / 363 | 621 | 1.15 | 370 |
+| Tanzania | 572 / 447 | 693 | 1.12 | 395 |
 
 If the object lacks `draws`, or `p_draws` has the wrong number of rows, stop the
 run; something in `fit_fold()` has regressed and the remaining folds will be
@@ -147,8 +156,8 @@ unusable too.
 
 ## 6. Work to do while the run proceeds
 
-`R/validation_metrics.R` was written against the old saved format and needs
-adapting. Specifically:
+`R/validation_metrics.R` has been adapted for the MCMC fold format. What was
+done, and why, in case it needs revisiting:
 
 1. **It must not re-predict.** Use the `p_draws` and `rho_draws` in the saved
    object, which came from `calculate(values = draws)`. Do not write bespoke
