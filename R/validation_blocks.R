@@ -50,9 +50,16 @@ suppressMessages({
   library(tidyr)
   library(sf)
   library(ggplot2)
+  library(patchwork)
 })
 
-n_blocks <- 3
+# Number of blocks per country. Two gives a harder extrapolation test — halves
+# rather than thirds, so held-out cells sit further from training data — and one
+# fewer model to fit; three keeps more training data in each fold and allows a
+# three-way consistency check. Set before sourcing to override.
+if (!exists("n_blocks")) {
+  n_blocks <- 2
+}
 # the countries to split: the same six the national folds hold out, chosen in
 # validation_folds.R as those with more than ten bioassays of every insecticide
 # type since 2010
@@ -66,9 +73,9 @@ min_records_per_country <- 40
 min_records_per_block <- 150
 min_record_share <- 0.12
 min_cells_per_block <- 10
-# area of one cell of the mask at the equator, in square km; the mask is a
-# 0.0416667 degree grid, so roughly 4.6 km on a side
-cell_area_km2 <- (0.04166665 * 111.32) ^ 2
+# the mask is a 0.0416667 degree grid, so a cell is about 4.6 km across in
+# longitude and 4.6 * cos(latitude) km in latitude
+cell_side_km <- 0.04166665 * 111.32
 # candidate cut directions, in degrees
 angles <- seq(0, 175, by = 5)
 # equal area projection for Africa, so block areas are comparable
@@ -138,16 +145,17 @@ sector_ordering <- function(east, north, angle, centre_east, centre_north) {
 }
 
 # Both families reduce to the same problem: a one-dimensional ordering of the
-# country's land cells and of its data-bearing cells, and two cut points on it.
-# That makes the search cheap. Sort both orderings once; the three areas are
-# then just the three index ranges of the sorted land values, and the three
-# record counts come from two binary searches into the sorted data values
-# against a cumulative sum, so no candidate has to touch a cell.
+# country's land cells and of its data-bearing cells, and `n_blocks - 1` cut
+# points on it. That makes the search cheap. Sort both orderings once; the areas
+# are then cumulative sums of the sorted cell areas at the cut indices, and the
+# record counts come from binary searches into the sorted data values against a
+# cumulative sum, so no candidate has to touch a cell.
 #
-# Maximising the smallest area over the two cut points puts them at exactly the
-# area thirds, so the search over cut positions only does any work when the
-# record floor binds and the split has to be pulled away from even.
-cut_fractions <- sort(unique(c(seq(0.10, 0.90, by = 0.01), 1 / 3, 2 / 3)))
+# Maximising the smallest area puts the cuts at the area quantiles, so the
+# search only does any work when the record floor binds and the split has to be
+# pulled away from even.
+cut_fractions <- sort(unique(c(seq(0.06, 0.94, by = 0.01),
+                               seq_len(n_blocks - 1) / n_blocks)))
 
 assign_blocks <- function(country_cells, country_land) {
 
@@ -178,7 +186,13 @@ assign_blocks <- function(country_cells, country_land) {
   best <- NULL
   for (ordering in orderings) {
 
-    land_sorted <- sort(ordering$land)
+    land_order <- order(ordering$land)
+    land_sorted <- ordering$land[land_order]
+    # cell areas shrink with latitude on a longitude-latitude grid, so the
+    # cumulative area is not simply the cell index
+    area_cumulative <- c(0, cumsum(country_land$area_km2[land_order]))
+    total_area <- area_cumulative[n_land + 1]
+
     data_order <- order(ordering$data)
     data_sorted <- ordering$data[data_order]
     record_cumulative <- c(0, cumsum(country_cells$records[data_order]))
@@ -186,35 +200,32 @@ assign_blocks <- function(country_cells, country_land) {
 
     indices <- unique(pmax(1L, pmin(n_land - 1L,
                                     round(cut_fractions * n_land))))
+    if (length(indices) < n_blocks - 1) next
+    cut_sets <- utils::combn(length(indices), n_blocks - 1, simplify = FALSE)
 
-    for (a in seq_along(indices)) {
-      for (b in seq_along(indices)) {
-        if (b <= a) next
-        k1 <- indices[a]
-        k2 <- indices[b]
-        areas <- c(k1, k2 - k1, n_land - k2)
-        if (min(areas) <= 0) next
-        # nothing to gain unless this beats the incumbent on the smallest block
-        if (!is.null(best) && min(areas) <= best$min_area) next
+    for (cut_set in cut_sets) {
 
-        thresholds <- land_sorted[c(k1, k2)]
-        if (thresholds[1] >= thresholds[2]) next
+      k <- indices[cut_set]
+      areas <- diff(c(0, area_cumulative[k + 1], total_area))
+      if (min(areas) <= 0) next
+      # nothing to gain unless this beats the incumbent on the smallest block
+      if (!is.null(best) && min(areas) <= best$min_area) next
 
-        # where the two thresholds fall among the sorted data cells
-        d1 <- findInterval(thresholds[1], data_sorted)
-        d2 <- findInterval(thresholds[2], data_sorted)
-        if (min(c(d1, d2 - d1, n_data - d2)) < min_cells_per_block) next
-        records <- c(record_cumulative[d1 + 1],
-                     record_cumulative[d2 + 1] - record_cumulative[d1 + 1],
-                     record_cumulative[n_data + 1] - record_cumulative[d2 + 1])
-        if (min(records) < minimum_records) next
+      thresholds <- land_sorted[k]
+      if (any(diff(thresholds) <= 0)) next
 
-        best <- list(min_area = min(areas),
-                     thresholds = thresholds,
-                     ordering = ordering,
-                     areas = areas,
-                     records = records)
-      }
+      # where the thresholds fall among the sorted data cells
+      d <- findInterval(thresholds, data_sorted)
+      if (min(diff(c(0, d, n_data))) < min_cells_per_block) next
+      records <- diff(c(0, record_cumulative[d + 1],
+                        record_cumulative[n_data + 1]))
+      if (min(records) < minimum_records) next
+
+      best <- list(min_area = min(areas),
+                   thresholds = thresholds,
+                   ordering = ordering,
+                   areas = areas,
+                   records = records)
     }
   }
 
@@ -226,7 +237,7 @@ assign_blocks <- function(country_cells, country_land) {
   list(block = findInterval(best$ordering$data, best$thresholds) + 1L,
        family = best$ordering$family,
        angle = best$ordering$parameter,
-       smallest_area_km2 = min(best$areas) * cell_area_km2,
+       smallest_area_km2 = min(best$areas),
        area_evenness = min(best$areas) / max(best$areas),
        smallest_records = min(best$records))
 
@@ -266,6 +277,8 @@ land_xy <- st_as_sf(
   st_coordinates()
 land$east <- land_xy[, 1]
 land$north <- land_xy[, 2]
+land$area_km2 <- cell_side_km ^ 2 *
+  cos(terra::xyFromCell(mask, land$cell)[, 2] * pi / 180)
 
 assignments <- lapply(
   splittable$country_name[splittable$split],
@@ -423,67 +436,82 @@ if (identical(environment(), globalenv())) {
               worst_record_share = round(worst_share, 3))),
     max = 400)
 
-  # maps
-  block_colours <- c("1" = "#1B7837", "2" = "#762A83", "3" = "#E08214")
+  # Maps. One panel per country, each drawn with geom_sf and its own coord_sf
+  # and then combined, rather than faceted: facet_wrap cannot give panels free
+  # scales while coord_sf is in use, and hand-building the outlines from
+  # st_coordinates to get around that produced spurious polygon rings that
+  # looked like countries annexing their neighbours' coastlines.
+  block_colours <- c("#1B7837", "#762A83", "#E08214", "#4393C3")[seq_len(n_blocks)]
+  names(block_colours) <- as.character(seq_len(n_blocks))
 
   map_data <- cell_blocks %>%
     filter(!is.na(block)) %>%
     mutate(fold = factor(block))
-  untested <- cell_blocks %>% filter(is.na(block))
+
+  country_panel <- function(this_country) {
+    outline <- gadm_polys %>%
+      filter(country_name == this_country) %>%
+      st_union()
+    points <- map_data %>% filter(country_name == this_country)
+    ggplot() +
+      geom_sf(data = outline, fill = grey(0.96), colour = grey(0.65),
+              linewidth = 0.25) +
+      geom_point(data = points,
+                 aes(x = longitude, y = latitude, colour = fold,
+                     size = records),
+                 alpha = 0.85) +
+      scale_colour_manual(values = block_colours, name = "held out in fold",
+                          drop = FALSE) +
+      scale_size_area(max_size = 3.2, guide = "none") +
+      coord_sf(expand = TRUE) +
+      labs(x = NULL, y = NULL, title = this_country) +
+      theme_minimal(base_size = 11) +
+      theme(panel.grid = element_blank(), axis.text = element_blank(),
+            plot.title = element_text(size = 11, hjust = 0.5))
+  }
+
+  panels <- lapply(sort(unique(map_data$country_name)), country_panel)
+  country_map <- patchwork::wrap_plots(panels, nrow = 2) +
+    patchwork::plot_layout(guides = "collect") +
+    patchwork::plot_annotation(
+      title = sprintf("Spatial block folds: each country cut into %i regions of equal area",
+                      n_blocks),
+      subtitle = paste("point size is the number of bioassays at that pixel;",
+                       "every pixel is held out in exactly one fold")
+    ) &
+    theme(legend.position = "bottom")
+
+  ggsave(sprintf("figures/CV_spatial_blocks_%i.png", n_blocks), country_map,
+         bg = "white", width = 11, height = 7.5)
+
+  # and the continental view, showing what stays in training throughout
+  untested <- cells %>% filter(is.na(block_of_cell[as.character(cell)]))
 
   africa_map <- ggplot() +
     geom_sf(data = africa, fill = grey(0.97), colour = grey(0.8),
             linewidth = 0.2) +
-    geom_sf(data = st_geometry(gadm_polys), fill = NA, colour = grey(0.85),
+    geom_sf(data = st_geometry(gadm_polys), fill = NA, colour = grey(0.88),
             linewidth = 0.15) +
-    geom_point(data = untested,
-               aes(x = longitude, y = latitude),
-               colour = grey(0.6), size = 0.7, shape = 4) +
+    geom_point(data = untested, aes(x = longitude, y = latitude),
+               colour = grey(0.6), size = 0.5, shape = 4) +
     geom_point(data = map_data,
-               aes(x = longitude, y = latitude, colour = fold,
-                   size = records),
+               aes(x = longitude, y = latitude, colour = fold, size = records),
                alpha = 0.8) +
     scale_colour_manual(values = block_colours, name = "held out in fold") +
     scale_size_area(max_size = 3, name = "bioassays") +
     coord_sf(expand = FALSE) +
-    labs(
-      x = "", y = "",
-      title = "Sub-national spatial block folds",
-      subtitle = paste("each country's data-bearing pixels cut into three",
-                       "contiguous regions of about a third of its records;",
-                       "\ncrosses are countries with too few pixels to split,",
-                       "kept in training throughout")
-    ) +
+    labs(x = NULL, y = NULL,
+         title = "Spatial block folds in the six validation countries",
+         subtitle = paste("crosses are bioassays in the other 40 countries,",
+                          "which stay in training throughout")) +
     theme_minimal() +
-    theme(legend.position = "right",
-          panel.grid = element_blank())
+    theme(legend.position = "right", panel.grid = element_blank())
 
-  ggsave("figures/CV_spatial_blocks.png", africa_map, bg = "white",
-         width = 9, height = 9)
+  ggsave(sprintf("figures/CV_spatial_blocks_%i_africa.png", n_blocks),
+         africa_map, bg = "white", width = 9, height = 9)
 
-  facet_map <- ggplot() +
-    geom_sf(data = africa, fill = grey(0.97), colour = grey(0.8),
-            linewidth = 0.2) +
-    geom_point(data = map_data %>%
-                 tidyr::crossing(panel = factor(seq_len(n_blocks))) %>%
-                 mutate(role = ifelse(block == as.integer(panel),
-                                      "held out", "training")),
-               aes(x = longitude, y = latitude, colour = role),
-               size = 0.7) +
-    facet_wrap(~ panel, nrow = 1,
-               labeller = labeller(panel = function(x) paste("fold", x))) +
-    scale_colour_manual(values = c("held out" = "#B2182B",
-                                   training = grey(0.7)), name = "") +
-    coord_sf(expand = FALSE) +
-    labs(x = "", y = "", title = "What each block fold holds out") +
-    theme_minimal() +
-    theme(legend.position = "bottom", panel.grid = element_blank(),
-          axis.text = element_blank())
-
-  ggsave("figures/CV_spatial_blocks_by_fold.png", facet_map, bg = "white",
-         width = 12, height = 5)
-
-  cat("\nmaps written to figures/CV_spatial_blocks.png and",
-      "figures/CV_spatial_blocks_by_fold.png\n")
+  cat(sprintf("\nmaps written to figures/CV_spatial_blocks_%i.png and %s\n",
+              n_blocks,
+              sprintf("figures/CV_spatial_blocks_%i_africa.png", n_blocks)))
 
 }
