@@ -39,6 +39,7 @@ source("R/validation_covariates.R")
 source("R/fit_validation_fold.R")
 
 # find the requested fold
+before <- NULL
 if (experiment_name == "spatial_extrapolation") {
   index <- match(fold_name, countries_to_validate)
   stopifnot(!is.na(index))
@@ -47,14 +48,26 @@ if (experiment_name == "spatial_extrapolation") {
 } else if (experiment_name == "spatial_interpolation") {
   training <- spatial_interpolation$training
   test <- spatial_interpolation$test
+} else if (experiment_name == "spatial_blocks") {
+  source("R/validation_blocks.R")
+  index <- as.integer(fold_name)
+  stopifnot(!is.na(index), index >= 1, index <= length(spatial_blocks))
+  training <- spatial_blocks[[index]]$training
+  test <- spatial_blocks[[index]]$test
 } else if (experiment_name == "temporal_forecasting") {
   training <- temporal_forecasting$training
   test <- temporal_forecasting$test
+  # predictions in the before window are needed for the change-based score, and
+  # can only be requested at fitting time
+  before <- temporal_forecasting$before
 } else {
   stop("unknown experiment: ", experiment_name)
 }
 
-destination <- file.path("outputs/cv_draws",
+# CV_DRAWS_DIR lets a smoke test write somewhere harmless, so a five-sample
+# wiring check cannot be mistaken for a fold and skipped later
+draws_dir <- Sys.getenv("CV_DRAWS_DIR", "outputs/cv_draws")
+destination <- file.path(draws_dir,
                          sprintf("dynamical__%s__%s.rds",
                                  experiment_name, fold_name))
 
@@ -78,6 +91,7 @@ elapsed <- system.time(
   fit <- fit_fold(
     train_df = training,
     test_df = test,
+    before_df = before,
     x_cell_years = x_cell_years,
     df = df,
     classes_index = classes_index,
@@ -99,7 +113,7 @@ cat(sprintf("%s | fit complete in %.1f hours\n",
             format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
             elapsed[["elapsed"]] / 3600))
 
-dir.create("outputs/cv_draws", showWarnings = FALSE, recursive = TRUE)
+dir.create(draws_dir, showWarnings = FALSE, recursive = TRUE)
 
 saveRDS(
   list(model = "dynamical",
@@ -117,6 +131,8 @@ saveRDS(
        rho_class_draws = fit$rho_class_draws,
        class_id = fit$class_id,
        test_df = fit$test_df,
+       p_draws_before = fit$p_draws_before,
+       before_df = fit$before_df,
        convergence = fit$convergence,
        ess = fit$ess,
        ess_p = fit$ess_p,

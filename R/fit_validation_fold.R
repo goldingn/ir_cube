@@ -23,6 +23,7 @@
 
 fit_fold <- function(train_df,
                      test_df,
+                     before_df = NULL,
                      x_cell_years,
                      df,
                      classes_index,
@@ -220,15 +221,31 @@ fit_fold <- function(train_df,
   index_test <- cbind(test_df$cell_id, test_df$type_id, test_df$year_id)
   population_mortality_vec_test <- dynamic_cells$all_states[index_test]
 
-  report("computing predictions at %d held-out assays", nrow(test_df))
-  prediction_draws <- calculate(population_mortality_vec_test,
-                                rho_classes,
-                                values = draws)
+  # Optionally, predictions at a second set of cell-years. The forecasting
+  # experiment is scored on the change in mortality between a window before the
+  # cut and the holdout window, which differences the site level out and leaves
+  # the local slope; that needs the model's prediction in the before window as
+  # well as the holdout one. It has to be asked for here, because sampling
+  # cannot be resumed in a later session, so a quantity not requested at fitting
+  # time cannot be added to a finished fold without refitting (#12 review 5.1).
+  targets <- list(population_mortality_vec_test, rho_classes)
+  names(targets) <- c("population_mortality_vec_test", "rho_classes")
+  if (!is.null(before_df) && nrow(before_df) > 0) {
+    index_before <- cbind(before_df$cell_id, before_df$type_id,
+                          before_df$year_id)
+    targets$population_mortality_vec_before <-
+      dynamic_cells$all_states[index_before]
+  }
+
+  report("computing predictions at %d held-out assays%s", nrow(test_df),
+         if (is.null(before_df)) "" else
+           sprintf(" and %d before-window records", nrow(before_df)))
+  prediction_draws <- do.call(calculate, c(targets, list(values = draws)))
 
   # effective sample size of the quantities the validation metrics actually
   # consume, rather than of the raw model parameters
   ess_prediction <- coda::effectiveSize(prediction_draws)
-  ess_p <- ess_prediction[grep("population_mortality_vec_test",
+  ess_p <- ess_prediction[grep("population_mortality_vec_test\\[",
                                names(ess_prediction))]
   ess_rho <- ess_prediction[grep("rho_classes", names(ess_prediction))]
 
@@ -238,10 +255,18 @@ fit_fold <- function(train_df,
 
   # flatten the mcmc.list to a draws x quantity matrix, preserving order
   prediction_matrix <- as.matrix(prediction_draws)
-  p_columns <- grep("population_mortality_vec_test", colnames(prediction_matrix))
+  p_columns <- grep("population_mortality_vec_test\\[",
+                    colnames(prediction_matrix))
   rho_columns <- grep("rho_classes", colnames(prediction_matrix))
   p_draws <- prediction_matrix[, p_columns, drop = FALSE]
   rho_class_draws <- prediction_matrix[, rho_columns, drop = FALSE]
+  before_columns <- grep("population_mortality_vec_before",
+                         colnames(prediction_matrix))
+  p_draws_before <- if (length(before_columns) > 0) {
+    prediction_matrix[, before_columns, drop = FALSE]
+  } else {
+    NULL
+  }
 
   convergence <- coda::gelman.diag(draws,
                                    multivariate = FALSE,
@@ -276,6 +301,8 @@ fit_fold <- function(train_df,
        rho_class_draws = rho_class_draws,
        class_id = test_df$class_id,
        test_df = test_df,
+       p_draws_before = p_draws_before,
+       before_df = before_df,
        convergence = convergence,
        ess = ess,
        ess_p = ess_p,

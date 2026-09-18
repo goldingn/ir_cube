@@ -414,9 +414,21 @@ temporal_forecasting <- list(
     filter(year_start %in% validation_years)
 )
 
+# The three years before the cut. The forecasting experiment is scored on the
+# change in mortality between this window and the holdout window, which
+# differences the site level out and leaves the local slope — otherwise the test
+# is largely spatial, since most held-out site-years have training data one to
+# three years earlier (#12 review 5.1). These records are part of the training
+# set; they are named here so the model's predictions at them can be requested
+# at fitting time, which is the only time they can be.
+before_years <- min(validation_years) - 3:1
+temporal_forecasting$before <- temporal_forecasting$training %>%
+  filter(year_start %in% before_years)
+
 stopifnot(
   max(temporal_forecasting$training$year_start) < min(validation_years),
-  all(temporal_forecasting$test$year_start %in% validation_years)
+  all(temporal_forecasting$test$year_start %in% validation_years),
+  all(temporal_forecasting$before$year_start %in% before_years)
 )
 
 # these are the train and test sets

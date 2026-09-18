@@ -53,7 +53,15 @@ neighbours_for <- function(experiment) {
   optimal_nn$n_neighbours[optimal_nn$experiment == experiment]
 }
 
-# the three experiments, as a list of training and test folds
+# The folds still to fit. The six leave-one-country-out folds and the
+# interpolation fold from the September run are kept as they are: the review of
+# #12 found them informative, and refitting them would change nothing. What is
+# new is the sub-national block folds, which replace leave-one-country-out as
+# the test of spatial skill, and the forecasting fold, whose split was leaking
+# post-horizon data. Nulls are rebuilt for every fold either way, since they
+# cost minutes.
+source("R/validation_blocks.R")
+
 folds <- c(
   lapply(
     seq_along(countries_to_validate),
@@ -61,6 +69,14 @@ folds <- c(
                      fold = countries_to_validate[i],
                      training = spatial_extrapolation$training[[i]],
                      test = spatial_extrapolation$test[[i]],
+                     n_years_prior = 1)
+  ),
+  lapply(
+    seq_along(spatial_blocks),
+    function(i) list(experiment = "spatial_blocks",
+                     fold = as.character(i),
+                     training = spatial_blocks[[i]]$training,
+                     test = spatial_blocks[[i]]$test,
                      n_years_prior = 1)
   ),
   list(
@@ -125,9 +141,17 @@ for (fold in folds) {
 # two chains adapt poorly — the Kenya fold reached Rhat 7.6 that way.
 #
 # Folds whose draws are already on disk are skipped, so the run resumes.
-n_concurrent <- 2
+#
+# Three folds at a time rather than two. There are three left to fit, so running
+# them concurrently makes the run one batch of about 70-80 h rather than two of
+# about 124 h. Three threads each keeps the machine's 16 cores from being
+# oversubscribed once TensorFlow's own overhead is counted, and costs little,
+# since the op scales poorly past four threads anyway. Memory is the real
+# constraint, because each process holds the full dynamics graph; smoke test one
+# fold and check its resident size before committing.
+n_concurrent <- 3
 chains_per_fold <- 4
-threads_per_fold <- 4
+threads_per_fold <- 3
 
 log_dir <- "outputs/cv_logs"
 dir.create(log_dir, showWarnings = FALSE, recursive = TRUE)
