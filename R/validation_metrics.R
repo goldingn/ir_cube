@@ -153,14 +153,36 @@ score_fold <- function(file) {
       .before = everything()
     )
 
+  # Keep only what the summaries need. The saved folds carry the greta draws
+  # object and the greta arrays the predictions came from, which are together
+  # most of a 1.8 GB file; retaining the whole fold for all 23 of them held
+  # 26 GB of memory and had the machine in swap
   list(scores = scores,
        pit = pit,
        sims = sims,
-       fold = fold)
+       p_draws = p_draws,
+       rho_scoring = rho_scoring,
+       fold = list(model = fold$model,
+                   experiment = fold$experiment,
+                   fold = fold$fold,
+                   test_df = test,
+                   convergence = fold$convergence,
+                   ess_p = fold$ess_p,
+                   ess_rho = fold$ess_rho,
+                   n_sampled = fold$n_sampled,
+                   n_chains = fold$n_chains))
 
 }
 
-scored <- lapply(files, score_fold)
+# scored one at a time, with an explicit collection between folds: reading a
+# model fold means holding its 1.8 GB saved object briefly
+scored <- lapply(files, function(file) {
+  cat(sprintf("%s | scoring %s\n", format(Sys.time(), "%H:%M:%S"),
+              basename(file)))
+  flush(stdout())
+  on.exit(gc(verbose = FALSE))
+  score_fold(file)
+})
 names(scored) <- basename(files)
 
 all_scores <- bind_rows(lapply(scored, `[[`, "scores"))
@@ -263,12 +285,21 @@ write.csv(coverage_curves, "outputs/cv_coverage.csv", row.names = FALSE)
 
 # reliability --------------------------------------------------------------
 
+# Binned on the prediction, never on the observation. Binning on the observed
+# mortality induces regression to the mean and makes a calibrated model look
+# badly biased at both extremes; conditioning on the prediction is the question
+# actually of interest — when the model says 60%, is the average outcome 60%.
+#
+# The envelope comes from the model's own posterior predictive distribution, so
+# a gap outside it is the model's error rather than the diagnostic's. That
+# requires the posterior draws, so it is computed per fold and then pooled by
+# experiment, weighting each fold by its held-out records.
 reliability <- all_scores %>%
   group_by(model, experiment) %>%
   group_modify(~ {
     bins <- reliability_bins(.x$predicted, .x$observed, n_bins = 10)
-    # the scatter a perfect model would still show in each bin, from the
-    # external overdispersion, the assay sizes and the number of assays pooled
+    # kept for reference: the analytic envelope, which assumes the assays in a
+    # bin are independent and conditions on the prediction being the truth
     bins$envelope <- reliability_envelope(
       p = bins$predicted,
       mosquito_number = median(.x$mosquito_number),
@@ -279,7 +310,38 @@ reliability <- all_scores %>%
   }) %>%
   ungroup()
 
+reliability_checks <- bind_rows(lapply(scored, function(entry) {
+  bins <- reliability_bins(colMeans(entry$p_draws),
+                           entry$scores$observed,
+                           n_bins = 10)
+  bind_cols(
+    data.frame(model = entry$fold$model,
+               experiment = entry$fold$experiment,
+               fold = entry$fold$fold),
+    bins,
+    reliability_ppc(predicted = colMeans(entry$p_draws),
+                    mosquito_number = entry$scores$mosquito_number,
+                    p_draws = entry$p_draws,
+                    rho = entry$rho_scoring,
+                    n_bins = 10,
+                    n_rep = 200)
+  )
+})) %>%
+  mutate(gap = observed - predicted,
+         beyond_ppc = gap < ppc_lower | gap > ppc_upper)
+
 write.csv(reliability, "outputs/cv_reliability.csv", row.names = FALSE)
+write.csv(reliability_checks, "outputs/cv_reliability_ppc.csv",
+          row.names = FALSE)
+
+cat("\nreliability against the model's own posterior predictive envelope",
+    "(lowest and highest predicted decile):\n")
+print(reliability_checks %>%
+        filter(bin %in% c(1, 10)) %>%
+        select(experiment, fold, model, bin, n, predicted, observed, gap,
+               ppc_lower, ppc_upper, beyond_ppc) %>%
+        mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+        as.data.frame())
 
 
 # aggregated scores --------------------------------------------------------
@@ -437,3 +499,100 @@ if (nrow(by_year) > 0) {
           mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
           as.data.frame())
 }
+
+
+# uncertainty --------------------------------------------------------------
+
+# Bioassays cluster hard by pixel — the interpolation fold is 1,045 assays in 94
+# pixels — so the number of assays badly overstates the information in a fold,
+# and the differences between models were previously reported as point estimates
+# with nothing to say whether they were distinguishable at all.
+#
+# Resample pixels within each fold, with all three models' scores for a pixel
+# moving together, and take the paired difference in excess mean squared error.
+# Paired because the models are scored on exactly the same held-out records, so
+# the shared difficulty of those records cancels; that is what makes the
+# difference far better determined than either model's excess on its own.
+n_bootstrap <- 2000
+
+bootstrap_excess <- function(scores) {
+
+  wide <- scores %>%
+    select(cell, model, observed, predicted, died, mosquito_number,
+           rho_external) %>%
+    pivot_wider(names_from = model, values_from = predicted,
+                id_cols = c(cell, observed, died, mosquito_number,
+                            rho_external),
+                names_prefix = "p_", values_fn = list) %>%
+    unnest(cols = starts_with("p_"))
+
+  model_names <- sort(unique(scores$model))
+  columns <- paste0("p_", model_names)
+
+  excess_for <- function(data) {
+    floor_mse <- noise_floor_mse(data$died, data$mosquito_number,
+                                 data$rho_external)
+    vapply(columns, function(column) {
+      mean((data$observed - data[[column]]) ^ 2) - floor_mse
+    }, numeric(1))
+  }
+
+  cells <- unique(wide$cell)
+  rows_by_cell <- split(seq_len(nrow(wide)), wide$cell)
+
+  replicates <- t(replicate(n_bootstrap, {
+    picked <- sample(cells, length(cells), replace = TRUE)
+    excess_for(wide[unlist(rows_by_cell[as.character(picked)]), ])
+  }))
+  colnames(replicates) <- model_names
+
+  point <- excess_for(wide)
+  names(point) <- model_names
+  reference <- "intercept"
+
+  data.frame(
+    model = model_names,
+    n_assays = nrow(wide),
+    n_pixels = length(cells),
+    excess = point,
+    excess_se = apply(replicates, 2, sd),
+    excess_lower = apply(replicates, 2, quantile, 0.025),
+    excess_upper = apply(replicates, 2, quantile, 0.975),
+    explained = 1 - point / point[reference],
+    explained_lower = apply(1 - replicates / replicates[, reference], 2,
+                            quantile, 0.025),
+    explained_upper = apply(1 - replicates / replicates[, reference], 2,
+                            quantile, 0.975),
+    difference = point - point[reference],
+    difference_se = apply(replicates - replicates[, reference], 2, sd),
+    probability_worse = colMeans(replicates - replicates[, reference] > 0),
+    row.names = NULL
+  )
+
+}
+
+uncertainty <- bind_rows(
+  all_scores %>%
+    group_by(experiment) %>%
+    group_modify(~ bootstrap_excess(.x)) %>%
+    ungroup() %>%
+    mutate(fold = "pooled", .after = experiment),
+  all_scores %>%
+    group_by(experiment, fold) %>%
+    group_modify(~ bootstrap_excess(.x)) %>%
+    ungroup()
+)
+
+write.csv(uncertainty, "outputs/cv_uncertainty.csv", row.names = FALSE)
+
+cat("\nexcess MSE with a pixel-cluster bootstrap, against the intercept null:\n")
+print(uncertainty %>%
+        filter(fold == "pooled" | experiment == "spatial_extrapolation") %>%
+        transmute(experiment, fold, model, n_pixels,
+                  excess = round(excess, 4),
+                  explained = sprintf("%.2f [%.2f, %.2f]", explained,
+                                      explained_lower, explained_upper),
+                  difference = round(difference, 4),
+                  difference_se = round(difference_se, 4),
+                  probability_worse = round(probability_worse, 2)) %>%
+        as.data.frame())

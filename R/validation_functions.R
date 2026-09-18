@@ -345,6 +345,47 @@ reliability_envelope <- function(p, mosquito_number, k, rho) {
   sqrt(variance / k)
 }
 
+# The same envelope obtained by simulation instead, which is both correct and
+# more useful. `reliability_envelope()` above assumes the assays in a bin are
+# independent and uses a single assay size for all of them; more importantly it
+# conditions on the model's predicted fraction being the truth, so it cannot say
+# how much of a reliability gap posterior uncertainty in that fraction would
+# produce on its own.
+#
+# This instead generates replicate held-out datasets from the model's own
+# posterior predictive distribution and re-runs the identical binning on each.
+# Under those replicates the model is the truth by construction, so the spread
+# of the gaps is exactly the gap a correct model would show, with assay noise,
+# overdispersion, posterior uncertainty and the finite bin size all included.
+# Anything outside it is the model's own error.
+#
+# This matters for a reason found the hard way: binning instead on the observed
+# mortality induces regression to the mean, and a perfectly calibrated model
+# then shows an apparent bias of +0.15 in the lowest decile and -0.07 in the
+# highest, with none of it real. Reliability must be conditioned on the
+# prediction, and even then needs this envelope to be read.
+reliability_ppc <- function(predicted, mosquito_number, p_draws, rho,
+                            n_bins = 10, n_rep = 200,
+                            probs = c(0.025, 0.5, 0.975)) {
+
+  gaps <- function(observed) {
+    bins <- reliability_bins(predicted, observed, n_bins = n_bins)
+    bins$observed - bins$predicted
+  }
+
+  replicates <- t(replicate(n_rep, {
+    draw <- sample(nrow(p_draws), 1)
+    simulated <- rbetabinom(length(mosquito_number), mosquito_number,
+                            p_draws[draw, ], rho)
+    gaps(simulated / mosquito_number)
+  }))
+
+  quantiles <- t(apply(replicates, 2, quantile, probs = probs))
+  colnames(quantiles) <- paste0("ppc_", c("lower", "median", "upper"))
+  as.data.frame(quantiles)
+
+}
+
 
 # aggregation --------------------------------------------------------------
 
