@@ -182,7 +182,30 @@ with the initial condition. See §5.
 
 ## 5. The sub-national spatial block design
 
-**Construction** (`R/validation_blocks.R`). Within each country, its
+**Which countries are split.** Only the six the national folds hold out: Côte
+d'Ivoire, Ethiopia, Kenya, Nigeria, Senegal and Tanzania. `validation_folds.R`
+selected those as the countries with more than ten bioassays of every one of the
+nine insecticide types since 2010, and that criterion matters here for the same
+reason. Keeping to them buys three things:
+
+- the block experiment becomes directly comparable with the national one,
+  differing in exactly the intended respect and no other — same countries, same
+  insecticide coverage, and only whether each country's initial condition is
+  identified, which is the whole mechanism under test;
+- the held-out set keeps a controlled mix of insecticides, rather than becoming
+  a weighted average over whatever the thinner countries happen to hold;
+- each fold trains on 88% of the data rather than 67%, much closer to the
+  production fit, so the result transfers to the deployed model more directly.
+
+Splitting all 34 data-bearing countries would cost the same three fits and buy
+precision that is not the binding constraint: the model differences are already
+determined to a standard error of 0.003 to 0.006 in excess mean squared error.
+The other 40 countries (17,588 records) stay wholly in training in every fold,
+as do the other two blocks of each split country, so every country intercept is
+identified throughout. That is the entire purpose of blocking rather than
+holding out countries.
+
+**Construction** (`R/validation_blocks.R`). Within each split country, its
 data-bearing cells are partitioned into three contiguous blocks carrying about a
 third of that country's records each. Two families of cut are tried:
 
@@ -193,58 +216,68 @@ third of that country's records each. Two families of cut are tried:
   cut on that, giving three wedges meeting at the centre.
 
 Both are contiguous and both are balanced in records by construction. Thirty-six
-orientations of each are scored, and the winner is the cut that maximises the
-**distance from held-out cells to the nearest cell in another block** — the
-record-weighted 25th percentile of it, so that one unlucky pair either side of a
-boundary cannot decide the cut.
+orientations of each are scored, and the winner maximises the **distance from
+held-out cells to the nearest training cell** — the record-weighted 25th
+percentile of it, so one unlucky pair either side of a boundary cannot decide the
+cut. Cells in the 40 always-training countries count towards that distance, so a
+block on a national border is scored at the separation it really achieves.
+Sectors win in Kenya, Côte d'Ivoire and Tanzania; slabs in Ethiopia, Nigeria and
+Senegal.
 
 Scoring on separation rather than on block area matters, and was learned by
 getting it wrong first. Maximising the smallest block's area does not work:
 rotating a cut barely changes the areas, since they are three thirds of the same
 country however it is sliced, so the objective is nearly flat across
 orientations and ends up choosing on density noise. What it cannot see is block
-*shape*, and the cuts it picked were thin slices that put a fifth of the
-held-out records within 15 km of the next block. Scoring separation directly
-also picks the axis sensibly without being told to: cutting a long country
-across its length gives three roughly square blocks, while cutting along its
-length gives three ribbons, and the ribbons score far worse.
-
-Sectors win in 14 countries and slabs in 20, so trying both was worth it.
+*shape*, and the cuts it picked were thin slices that put a fifth of held-out
+records within 15 km of training data. Scoring separation directly also picks
+the axis sensibly without being told to: cutting a long country across its
+length gives three roughly square blocks, while cutting along its length gives
+three ribbons, and the ribbons score far worse.
 
 No buffer is applied. The blocks are large enough that a few cells near a
 boundary cannot carry the result, and a buffer would remove training records
 from exactly the countries whose intercepts this design exists to keep
 identified.
 
-Countries with fewer than 12 data-bearing cells or 40 records stay wholly in the
-training set for every fold: CAR, Comoros, Djibouti, Equatorial Guinea, Eritrea,
-Eswatini, Gabon, Guinea-Bissau, Mauritania, Mayotte, Sao Tome & Principe and
-South Sudan, 406 records in total. Thirty-four countries are split.
+**What the folds look like.** 2,848 / 3,005 / 2,841 held-out assays — 8,694 in
+total, the same count as the national experiment, since both use the same six
+countries and the same "2010 and later" test window. All nine insecticide types
+appear in every fold, in similar numbers. Every blocked record from 2010 on is
+held out exactly once; records at a held-out cell from before 2010 are dropped
+from the experiment rather than returned to training, which is what the national
+folds also do with pre-2010 records of a held-out country. No pixel is in both
+sets of any fold. Worst record-share imbalance is 0.01 from a third.
 
-**What the folds look like.** 9,094 / 8,907 / 8,954 held-out assays, every
-blocked record held out exactly once, no pixel in both sets of any fold. Worst
-record-share imbalance 0.09 from a third (South Africa and Togo); 28 of 34
-countries under 0.03. Bioassay-weighted distance from a held-out pixel to the
-nearest training pixel, pooled over the folds:
+Bioassay-weighted distance from a held-out pixel to the nearest training pixel,
+pooled over the folds:
 
 | | min | 10% | 25% | median | 75% | 90% | max |
 |---|---|---|---|---|---|---|---|
-| block folds | 4 | 18 | 35 | **76** | 131 | 216 | 766 |
+| block folds | 5 | 17 | 35 | **77** | 138 | 194 | 335 |
 | interpolation fold, for comparison | 14 | 21 | 25 | 36 | 48 | 66 | 466 |
 
-So this reaches roughly seven times further than the interpolation experiment
-could, and spans a range wide enough for the distance-stratified reporting of
-§4.4 to say something.
+So the typical separation is roughly doubled. It is capped at a few hundred km
+rather than the ~800 km the national folds reach, because a held-out block is
+surrounded by training data in neighbouring countries — that is the price of
+keeping the country intercepts identified, and it is the right price.
 
-**The residual limitation, which cannot be designed away.** 9% of held-out
-assays still sit within 15 km of a training pixel, concentrated where a country
-holds most of its records in one tight cluster: South Africa (within-country
-separation 6 km at the 25th percentile), Togo (10 km), Kenya (15 km — the Lake
-Victoria cluster), Cameroon (19 km), Benin (25 km). No contiguous partition
-carrying a third of the records each can separate a cluster that is itself more
-than a third of the records. The distance-stratified reporting is what handles
-it: those records are not discarded, they are read at the distance they actually
-represent.
+**The one country where the design cannot deliver: Kenya.** Per country, the
+bioassay-weighted median separation is Tanzania 121 km, Nigeria 116, Ethiopia
+108, Côte d'Ivoire 95, Senegal 53, **Kenya 26**, and 28% of Kenya's held-out
+assays are within 15 km of training data against 0.7-4.7% elsewhere. Kenya holds
+the majority of its records in one tight cluster west of Lake Victoria, and no
+contiguous partition carrying a third of the records each can separate a cluster
+that is itself more than a third of the records. The alternatives are to let
+that cluster sit whole in one block, which makes the other two blocks negligible
+in record terms, or to drop Kenya from the experiment, which loses one of the
+six informative countries. Neither is clearly better than reporting Kenya's
+records at the distance they actually represent, which the distance-stratified
+reporting of §4.4 does.
+
+One cosmetic note: a border cell is assigned to whichever country holds most of
+its records, so fold 3's held-out set touches a seventh country through one such
+cell.
 
 **Sampling settings.** Unchanged from §3. Pinning each country's initial
 condition in every fold removes the parameter that was previously unidentified,

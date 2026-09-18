@@ -12,32 +12,27 @@
 # country's records in training, so every country intercept stays identified and
 # the test isolates spatial prediction.
 #
+# Only the six countries already selected for the national folds are split.
+# Those were chosen by a criterion that matters here too — more than ten
+# bioassays of every one of the nine insecticide types since 2010 — and keeping
+# to them buys three things. The block experiment becomes directly comparable
+# with the national one, differing in exactly the intended respect and no other:
+# same countries, same insecticide coverage, and only whether the country's
+# initial condition is identified. The held-out set keeps a controlled mix of
+# insecticides, rather than becoming a weighted average over whatever the thin
+# countries happen to hold. And each fold trains on 88% of the data rather than
+# 67%, which is much closer to the production fit, so the result transfers to
+# the deployed model more directly. Splitting all 34 data-bearing countries
+# would cost the same three fits and buy precision that is not the binding
+# constraint: the differences are already determined to a standard error of
+# 0.003 to 0.006 in excess mean squared error.
+#
+# Every other country stays wholly in the training set of every fold, as do the
+# other two blocks of each split country, so every country intercept is
+# identified in every fold. That is the whole purpose of blocking rather than
+# holding out countries.
+#
 # Three requirements on the blocks, in this order:
-#
-#   contiguous            a block must be one connected region, not a scatter
-#   about a third each    of that country's records, so the three folds are
-#                         comparable and every record is held out exactly once
-#   large spatial extent  a block must not collapse onto a small dense cluster,
-#                         because the point of the experiment is to test
-#                         prediction over distance
-#
-# Construction: within each country, project its data-bearing cell centroids
-# onto a direction, sort along it, and cut at the record-count terciles. That
-# gives three contiguous slabs, each spanning the country's full width in the
-# perpendicular direction, and balanced in records by construction. A second
-# family of cuts is tried alongside: three wedges, cut on the bearing from the
-# country's record-weighted centroid.
-#
-# The cut is chosen by maximising the distance from held-out cells to the
-# nearest cell in another block, which is the quantity the experiment exists to
-# probe. Choosing on block area instead does not work: rotating a cut barely
-# changes the areas, so that objective is nearly flat and blind to block shape,
-# and it picked thin slices.
-#
-# No buffer is applied. The blocks are large enough that a few cells near a
-# boundary cannot carry the result, and a buffer would remove training records
-# from the countries whose intercepts the design exists to keep identified.
-#
 # Sourcing this file defines `spatial_blocks`, a list of three training and test
 # pairs. Running it as a script also writes the diagnostics table and the maps.
 
@@ -51,8 +46,12 @@ suppressMessages({
 })
 
 n_blocks <- 3
-# a country needs enough cells to make three regions that are meaningfully
-# regions; below this it stays wholly in the training set for every fold
+# the countries to split: the same six the national folds hold out, chosen in
+# validation_folds.R as those with more than ten bioassays of every insecticide
+# type since 2010
+countries_to_block <- countries_to_validate
+# a country still needs enough cells to make three regions that are meaningfully
+# regions, checked rather than assumed
 min_cells_per_country <- 12
 min_records_per_country <- 40
 # candidate cut directions, in degrees
@@ -109,11 +108,11 @@ hull_area <- function(east, north) {
 # The 25th percentile rather than the minimum, because one unlucky pair of cells
 # either side of a boundary should not decide the cut, and weighted by records
 # because that is what the scoring will see.
-separation_score <- function(distance, records, block) {
+separation_score <- function(distance, outside_distance, records, block) {
   separation <- vapply(seq_along(block), function(i) {
     other <- block != block[i]
     if (!any(other)) return(NA_real_)
-    min(distance[i, other])
+    min(distance[i, other], outside_distance[i])
   }, numeric(1))
   if (anyNA(separation)) return(-Inf)
   as.numeric(quantile(rep(separation, records), 0.25))
@@ -174,11 +173,16 @@ max_imbalance <- 0.12
 
 assign_blocks <- function(country_cells) {
 
-  distance <- fields::rdist.earth(
-    as.matrix(country_cells[, c("longitude", "latitude")]),
-    as.matrix(country_cells[, c("longitude", "latitude")]),
-    miles = FALSE
-  )
+  coordinates <- as.matrix(country_cells[, c("longitude", "latitude")])
+  distance <- fields::rdist.earth(coordinates, coordinates, miles = FALSE)
+  # distance to the nearest cell that is in training whatever the cut, which
+  # caps how much separation any cut near a border can achieve
+  outside_distance <- apply(
+    fields::rdist.earth(coordinates,
+                        as.matrix(always_training[, c("longitude",
+                                                      "latitude")]),
+                        miles = FALSE),
+    1, min)
 
   candidates <- c(slab_cuts(country_cells), sector_cuts(country_cells))
   imbalance <- vapply(candidates,
@@ -194,6 +198,7 @@ assign_blocks <- function(country_cells) {
 
   score <- vapply(allowed,
                   function(i) separation_score(distance,
+                                               outside_distance,
                                                country_cells$records,
                                                candidates[[i]]$block),
                   numeric(1))
@@ -209,13 +214,24 @@ assign_blocks <- function(country_cells) {
 splittable <- cells %>%
   group_by(country_name) %>%
   summarise(cells = n(), records = sum(records), .groups = "drop") %>%
-  mutate(split = cells >= min_cells_per_country &
+  mutate(split = country_name %in% countries_to_block &
+           cells >= min_cells_per_country &
            records >= min_records_per_country)
 
-cat(sprintf("\n%i countries with data: %i split into blocks, %i kept wholly in training\n",
-            nrow(splittable), sum(splittable$split), sum(!splittable$split)))
-cat("kept wholly in training (too few data-bearing cells):\n")
-print(as.data.frame(splittable %>% filter(!split) %>% select(-split)))
+stopifnot(all(countries_to_block %in% splittable$country_name[splittable$split]))
+
+cat(sprintf("\n%i countries with data, of which %i are split into blocks:\n",
+            nrow(splittable), sum(splittable$split)))
+print(as.data.frame(splittable %>% filter(split) %>% select(-split)))
+cat(sprintf("the other %i countries (%i records) stay wholly in training\n",
+            sum(!splittable$split),
+            sum(splittable$records[!splittable$split])))
+
+# cells that are in the training set of every fold, whatever the cuts: they
+# belong to the separation objective, because a block on a national border is
+# genuinely close to training data on the other side of it
+always_training <- cells %>%
+  filter(!country_name %in% splittable$country_name[splittable$split])
 
 assignments <- lapply(
   splittable$country_name[splittable$split],
@@ -250,13 +266,17 @@ block_of_cell <- setNames(cell_blocks$block, cell_blocks$cell)
 df_blocked <- df %>%
   mutate(block = block_of_cell[as.character(cell)])
 
+# Test sets are restricted to `test_min_year` and later, as the national folds
+# are, so the two experiments are scored on the same era of data. Records at a
+# held-out cell from before that year are dropped from the experiment rather
+# than returned to training, which is also what the national folds do with
+# pre-2010 records of a held-out country: putting them back would place the same
+# pixel in both sets.
 spatial_blocks <- lapply(seq_len(n_blocks), function(this_block) {
+  held_out <- !is.na(df_blocked$block) & df_blocked$block == this_block
   list(
-    training = df_blocked %>%
-      filter(is.na(block) | block != this_block) %>%
-      select(-block),
-    test = df_blocked %>%
-      filter(!is.na(block), block == this_block) %>%
+    training = df_blocked[!held_out, ] %>% select(-block),
+    test = df_blocked[held_out & df_blocked$year_start >= test_min_year, ] %>%
       select(-block)
   )
 })
@@ -270,13 +290,25 @@ print(data.frame(
                       numeric(1)),
   test_countries = vapply(spatial_blocks,
                           function(x) n_distinct(x$test$country_name),
-                          numeric(1))
+                          numeric(1)),
+  test_insecticides = vapply(spatial_blocks,
+                             function(x) n_distinct(x$test$insecticide_type),
+                             numeric(1))
 ))
+
+cat("\nheld-out bioassays per insecticide type, by fold:\n")
+print(bind_rows(lapply(seq_len(n_blocks), function(i) {
+  spatial_blocks[[i]]$test %>%
+    count(insecticide_type) %>%
+    mutate(fold = i)
+})) %>%
+  tidyr::pivot_wider(names_from = fold, values_from = n, names_prefix = "fold ") %>%
+  as.data.frame())
 
 # every blocked record is held out exactly once
 stopifnot(
   sum(vapply(spatial_blocks, function(x) nrow(x$test), numeric(1))) ==
-    sum(!is.na(df_blocked$block)),
+    sum(!is.na(df_blocked$block) & df_blocked$year_start >= test_min_year),
   all(vapply(spatial_blocks, function(x) {
     length(intersect(x$training$cell, x$test$cell)) == 0
   }, logical(1)))
