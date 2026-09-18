@@ -257,8 +257,13 @@ ppd_crps <- function(died, mosquito_number, sims) {
 noise_floor_mse <- function(died, mosquito_number, rho) {
   yhat <- died / mosquito_number
   inflation <- (1 + (mosquito_number - 1) * rho) / mosquito_number
-  pq <- pmax(yhat * (1 - yhat) / (1 - inflation), 0)
-  mean(pq * inflation)
+  # An assay of a single mosquito has inflation exactly 1, so the estimator
+  # below divides by zero: a single observation carries no information about
+  # p(1 - p). Such assays are dropped from the floor rather than allowed to
+  # make it undefined; there are a handful in the held-out data.
+  usable <- mosquito_number > 1 & is.finite(inflation) & inflation < 1
+  pq <- pmax(yhat[usable] * (1 - yhat[usable]) / (1 - inflation[usable]), 0)
+  mean(pq * inflation[usable])
 }
 
 # expected CRPS of an oracle that knows the true population fraction, which is
