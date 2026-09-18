@@ -66,12 +66,19 @@ fold_geometry <- function(training, test, experiment, fold) {
   # training set leak showed itself
   last_year <- tapply(training$year_start, training$cell, max)
 
+  # computed outside the mutate: a column created earlier in a mutate() call
+  # shadows a variable of the same name later in it, which silently turned the
+  # distance matrix into the vector of minima
+  nearest_any <- apply(distance, 1, min)
+  nearest_same <- apply(distance_same, 1, min)
+  within_radius <- rowSums(distance_same <= radius_km)
+
   keys %>%
     mutate(experiment = experiment,
            fold = fold,
-           distance_any = apply(distance, 1, min),
-           distance_same = apply(distance_same, 1, min),
-           n_within_radius = rowSums(distance_same <= radius_km),
+           distance_any = nearest_any,
+           distance_same = nearest_same,
+           n_within_radius = within_radius,
            years_since_cell = year_start -
              as.numeric(last_year[as.character(cell)]),
            .before = everything())

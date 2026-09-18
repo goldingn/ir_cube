@@ -182,23 +182,69 @@ with the initial condition. See §5.
 
 ## 5. The sub-national spatial block design
 
-**Construction.** Within each country, k-means on the coordinates of its
-data-bearing cells, K = 3. Fold *j* holds out block *j* of every country, so
-training always retains roughly two thirds of each country's records and every
-country intercept stays identified. Training records within 13 km of any
-held-out cell are dropped, which reproduces the separation the interpolation
-fold already guarantees by the triangle inequality, and is two to three cells on
-the ~5 km grid. Countries with fewer than 15 data-bearing cells are kept wholly
-in training rather than given degenerate one-cell blocks; which countries those
-are is recorded in the fold definition output.
+**Construction** (`R/validation_blocks.R`). Within each country, its
+data-bearing cells are partitioned into three contiguous blocks carrying about a
+third of that country's records each. Two families of cut are tried:
 
-**Why K = 3 and not 5.** Block radius scales as K^(−1/2), so thirds put held-out
-cells about 29% further from the nearest training record than fifths would,
-moving the test closer to the national folds while still leaving two thirds of
-each country to pin its initial condition. Nothing is lost on precision: every
-cell is held out exactly once whatever K, so the pooled estimate has the same
-standard error either way. K sets how much training data each fit sees and how
-far the extrapolation reaches, not how well the result is measured.
+- **slabs** — project the cell centroids onto a direction and cut across it at
+  the record-count terciles, giving three bands each spanning the country's full
+  width in the perpendicular direction;
+- **sectors** — take the bearing from the country's record-weighted centroid and
+  cut on that, giving three wedges meeting at the centre.
+
+Both are contiguous and both are balanced in records by construction. Thirty-six
+orientations of each are scored, and the winner is the cut that maximises the
+**distance from held-out cells to the nearest cell in another block** — the
+record-weighted 25th percentile of it, so that one unlucky pair either side of a
+boundary cannot decide the cut.
+
+Scoring on separation rather than on block area matters, and was learned by
+getting it wrong first. Maximising the smallest block's area does not work:
+rotating a cut barely changes the areas, since they are three thirds of the same
+country however it is sliced, so the objective is nearly flat across
+orientations and ends up choosing on density noise. What it cannot see is block
+*shape*, and the cuts it picked were thin slices that put a fifth of the
+held-out records within 15 km of the next block. Scoring separation directly
+also picks the axis sensibly without being told to: cutting a long country
+across its length gives three roughly square blocks, while cutting along its
+length gives three ribbons, and the ribbons score far worse.
+
+Sectors win in 14 countries and slabs in 20, so trying both was worth it.
+
+No buffer is applied. The blocks are large enough that a few cells near a
+boundary cannot carry the result, and a buffer would remove training records
+from exactly the countries whose intercepts this design exists to keep
+identified.
+
+Countries with fewer than 12 data-bearing cells or 40 records stay wholly in the
+training set for every fold: CAR, Comoros, Djibouti, Equatorial Guinea, Eritrea,
+Eswatini, Gabon, Guinea-Bissau, Mauritania, Mayotte, Sao Tome & Principe and
+South Sudan, 406 records in total. Thirty-four countries are split.
+
+**What the folds look like.** 9,094 / 8,907 / 8,954 held-out assays, every
+blocked record held out exactly once, no pixel in both sets of any fold. Worst
+record-share imbalance 0.09 from a third (South Africa and Togo); 28 of 34
+countries under 0.03. Bioassay-weighted distance from a held-out pixel to the
+nearest training pixel, pooled over the folds:
+
+| | min | 10% | 25% | median | 75% | 90% | max |
+|---|---|---|---|---|---|---|---|
+| block folds | 4 | 18 | 35 | **76** | 131 | 216 | 766 |
+| interpolation fold, for comparison | 14 | 21 | 25 | 36 | 48 | 66 | 466 |
+
+So this reaches roughly seven times further than the interpolation experiment
+could, and spans a range wide enough for the distance-stratified reporting of
+§4.4 to say something.
+
+**The residual limitation, which cannot be designed away.** 9% of held-out
+assays still sit within 15 km of a training pixel, concentrated where a country
+holds most of its records in one tight cluster: South Africa (within-country
+separation 6 km at the 25th percentile), Togo (10 km), Kenya (15 km — the Lake
+Victoria cluster), Cameroon (19 km), Benin (25 km). No contiguous partition
+carrying a third of the records each can separate a cluster that is itself more
+than a third of the records. The distance-stratified reporting is what handles
+it: those records are not discarded, they are read at the distance they actually
+represent.
 
 **Sampling settings.** Unchanged from §3. Pinning each country's initial
 condition in every fold removes the parameter that was previously unidentified,

@@ -24,10 +24,15 @@
 # Construction: within each country, project its data-bearing cell centroids
 # onto a direction, sort along it, and cut at the record-count terciles. That
 # gives three contiguous slabs, each spanning the country's full width in the
-# perpendicular direction, and balanced in records by construction. The
-# direction is chosen by searching over angles and taking the one that maximises
-# the smallest block's area, which is what stops a slab collapsing onto a dense
-# cluster.
+# perpendicular direction, and balanced in records by construction. A second
+# family of cuts is tried alongside: three wedges, cut on the bearing from the
+# country's record-weighted centroid.
+#
+# The cut is chosen by maximising the distance from held-out cells to the
+# nearest cell in another block, which is the quantity the experiment exists to
+# probe. Choosing on block area instead does not work: rotating a cut barely
+# changes the areas, so that objective is nearly flat and blind to block shape,
+# and it picked thin slices.
 #
 # No buffer is applied. The blocks are large enough that a few cells near a
 # boundary cannot carry the result, and a buffer would remove training records
@@ -74,9 +79,8 @@ projected <- cells %>%
 cells$east <- st_coordinates(projected)[, 1]
 cells$north <- st_coordinates(projected)[, 2]
 
-# area of the convex hull of a set of projected points, in square km. A
-# degenerate set (one or two cells, or collinear cells) has zero area, so fall
-# back on the extent along the longer axis times the cell size
+# area of the convex hull of a set of projected points, in square km. Reported
+# as a diagnostic; it is not what the cut is chosen on, for the reason below
 hull_area <- function(east, north) {
   if (length(east) < 3) {
     return(max(diff(range(east)), diff(range(north))) * 5)
@@ -86,56 +90,120 @@ hull_area <- function(east, north) {
   max(area, max(diff(range(east)), diff(range(north))) * 5)
 }
 
-# cut one country's cells into `n_blocks` contiguous slabs of roughly equal
-# record count, along `angle`
-slab_cut <- function(country_cells, angle) {
-  radians <- angle * pi / 180
-  projection <- country_cells$east * cos(radians) +
-    country_cells$north * sin(radians)
-  order_index <- order(projection)
-  cumulative <- cumsum(country_cells$records[order_index])
-  total <- sum(country_cells$records)
-  # assign each cell to the tercile of the record count it falls in
-  block <- findInterval(cumulative - country_cells$records[order_index] / 2,
+# The quantity a cut is chosen on: how far each cell sits from the nearest cell
+# in a different block.
+#
+# Maximising the smallest block's area does not work. Rotating a cut barely
+# changes the areas — they are three thirds of the same country however it is
+# sliced — so that objective is nearly flat across angles and ends up choosing
+# on density noise. What it does not see is block *shape*, and the cuts it
+# picked were thin slices, which put a large share of cells within a few km of
+# the next block.
+#
+# Scoring the separation directly fixes that, because it is what the experiment
+# is for. It also chooses the axis sensibly without being told to: cutting a
+# long country across its length gives three roughly square blocks, while
+# cutting along its length gives three thin ribbons, and the ribbons score far
+# worse.
+#
+# The 25th percentile rather than the minimum, because one unlucky pair of cells
+# either side of a boundary should not decide the cut, and weighted by records
+# because that is what the scoring will see.
+separation_score <- function(distance, records, block) {
+  separation <- vapply(seq_along(block), function(i) {
+    other <- block != block[i]
+    if (!any(other)) return(NA_real_)
+    min(distance[i, other])
+  }, numeric(1))
+  if (anyNA(separation)) return(-Inf)
+  as.numeric(quantile(rep(separation, records), 0.25))
+}
+
+# Two families of contiguous partition, both cut at record-count terciles so
+# the blocks are balanced by construction.
+#
+# Slabs: project onto a direction and cut across it. Three bands, each spanning
+# the country's full width in the perpendicular direction.
+#
+# Sectors: take the bearing from the record-weighted centroid and cut on that.
+# Three wedges meeting at the centre. For a compact country these are fatter
+# than any slab, at the cost of cells near the centre being close to two other
+# blocks, so which family wins is a real question and is left to the score.
+tercile_cut <- function(ordering, records) {
+  cumulative <- cumsum(records[ordering])
+  total <- sum(records)
+  block <- findInterval(cumulative - records[ordering] / 2,
                         total * seq_len(n_blocks - 1) / n_blocks) + 1
-  out <- integer(nrow(country_cells))
-  out[order_index] <- block
+  out <- integer(length(ordering))
+  out[ordering] <- block
   out
 }
 
-# score a candidate cut: the area of its smallest block, penalised if any block
-# takes too far from its share of the records
-cut_score <- function(country_cells, block) {
-  shares <- tapply(country_cells$records, block, sum) / sum(country_cells$records)
-  if (length(shares) < n_blocks) return(-Inf)
-  areas <- tapply(seq_along(block), block, function(index) {
-    hull_area(country_cells$east[index], country_cells$north[index])
+slab_cuts <- function(country_cells) {
+  lapply(angles, function(angle) {
+    radians <- angle * pi / 180
+    projection <- country_cells$east * cos(radians) +
+      country_cells$north * sin(radians)
+    list(block = tercile_cut(order(projection), country_cells$records),
+         family = "slab",
+         parameter = angle)
   })
-  imbalance <- max(abs(shares - 1 / n_blocks))
-  if (imbalance > 0.12) return(-Inf)
-  min(unlist(areas))
 }
 
+sector_cuts <- function(country_cells) {
+  centre_east <- weighted.mean(country_cells$east, country_cells$records)
+  centre_north <- weighted.mean(country_cells$north, country_cells$records)
+  bearing <- atan2(country_cells$north - centre_north,
+                   country_cells$east - centre_east)
+  lapply(angles, function(angle) {
+    rotated <- (bearing - angle * pi / 180) %% (2 * pi)
+    list(block = tercile_cut(order(rotated), country_cells$records),
+         family = "sector",
+         parameter = angle)
+  })
+}
+
+# how far each block is from taking its share of the records
+imbalance_of <- function(records, block) {
+  shares <- tapply(records, block, sum) / sum(records)
+  if (length(shares) < n_blocks) return(Inf)
+  max(abs(shares - 1 / n_blocks))
+}
+
+max_imbalance <- 0.12
+
 assign_blocks <- function(country_cells) {
-  scores <- vapply(angles,
-                   function(angle) cut_score(country_cells,
-                                             slab_cut(country_cells, angle)),
-                   numeric(1))
-  if (all(!is.finite(scores))) {
-    # no angle balances the records; take the best balanced cut regardless of
-    # area, and let the diagnostics table show it
-    imbalance <- vapply(angles, function(angle) {
-      shares <- tapply(country_cells$records,
-                       slab_cut(country_cells, angle),
-                       sum) / sum(country_cells$records)
-      if (length(shares) < n_blocks) return(Inf)
-      max(abs(shares - 1 / n_blocks))
-    }, numeric(1))
-    best <- angles[which.min(imbalance)]
-  } else {
-    best <- angles[which.max(scores)]
+
+  distance <- fields::rdist.earth(
+    as.matrix(country_cells[, c("longitude", "latitude")]),
+    as.matrix(country_cells[, c("longitude", "latitude")]),
+    miles = FALSE
+  )
+
+  candidates <- c(slab_cuts(country_cells), sector_cuts(country_cells))
+  imbalance <- vapply(candidates,
+                      function(x) imbalance_of(country_cells$records, x$block),
+                      numeric(1))
+
+  allowed <- which(imbalance <= max_imbalance)
+  if (length(allowed) == 0) {
+    # no cut balances the records this well; take the best balanced one and let
+    # the diagnostics table show it
+    allowed <- which.min(imbalance)
   }
-  list(block = slab_cut(country_cells, best), angle = best)
+
+  score <- vapply(allowed,
+                  function(i) separation_score(distance,
+                                               country_cells$records,
+                                               candidates[[i]]$block),
+                  numeric(1))
+  best <- candidates[[allowed[which.max(score)]]]
+
+  list(block = best$block,
+       family = best$family,
+       angle = best$parameter,
+       separation_q25 = max(score))
+
 }
 
 splittable <- cells %>%
@@ -155,7 +223,10 @@ assignments <- lapply(
     country_cells <- cells %>% filter(country_name == this_country)
     result <- assign_blocks(country_cells)
     country_cells %>%
-      mutate(block = result$block, angle = result$angle)
+      mutate(block = result$block,
+             family = result$family,
+             angle = result$angle,
+             separation_q25 = result$separation_q25)
   }
 )
 
@@ -163,7 +234,8 @@ cell_blocks <- bind_rows(assignments) %>%
   bind_rows(
     cells %>%
       filter(country_name %in% splittable$country_name[!splittable$split]) %>%
-      mutate(block = NA_integer_, angle = NA_real_)
+      mutate(block = NA_integer_, family = NA_character_,
+             angle = NA_real_, separation_q25 = NA_real_)
   )
 
 stopifnot(
@@ -246,7 +318,7 @@ if (identical(environment(), globalenv())) {
 
   per_country <- cell_blocks %>%
     filter(!is.na(block)) %>%
-    group_by(country_name, angle, block) %>%
+    group_by(country_name, family, angle, separation_q25, block) %>%
     summarise(cells = n(), records = sum(records),
               area = hull_area(east, north),
               span_km = max(diff(range(east)), diff(range(north))),
@@ -256,26 +328,27 @@ if (identical(environment(), globalenv())) {
     ungroup()
 
   block_diagnostics <- per_country %>%
-    group_by(country_name, angle) %>%
+    group_by(country_name, family, angle, separation_q25) %>%
     summarise(cells = sum(cells), records = sum(records),
               worst_share = max(abs(record_share - 1 / n_blocks)),
               smallest_block_km2 = round(min(area)),
               smallest_block_span_km = round(min(span_km)),
               .groups = "drop") %>%
-    arrange(desc(worst_share))
+    arrange(separation_q25)
 
   write.csv(block_diagnostics, "outputs/cv_block_diagnostics.csv",
             row.names = FALSE)
   write.csv(cell_blocks %>% select(country_name, cell, longitude, latitude,
-                                   records, block, angle),
+                                   records, block, family, angle),
             "outputs/cv_block_assignments.csv", row.names = FALSE)
 
-  cat("\nper country, worst record share imbalance first",
-      "(a third would be 0.333):\n")
+  cat("\nper country, shortest within-country separation first",
+      "(record share of a third would be 0.333):\n")
   print(as.data.frame(block_diagnostics %>%
-    transmute(country_name, cells, records, angle,
+    transmute(country_name, cells, records, family, angle,
+              separation_q25 = round(separation_q25, 1),
               worst_share = round(worst_share, 3),
-              smallest_block_km2, smallest_block_span_km)),
+              smallest_block_km2)),
     max = 400)
 
   # maps
