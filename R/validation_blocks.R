@@ -438,9 +438,16 @@ if (identical(environment(), globalenv())) {
 
   # Maps. One panel per country, each drawn with geom_sf and its own coord_sf
   # and then combined, rather than faceted: facet_wrap cannot give panels free
-  # scales while coord_sf is in use, and hand-building the outlines from
-  # st_coordinates to get around that produced spurious polygon rings that
-  # looked like countries annexing their neighbours' coastlines.
+  # scales while coord_sf is in use.
+  #
+  # Borders come from country_borders.RDS, the dissolved GADM geometry, not from
+  # gadm_polys.RDS. The latter is a rasterise-to-the-mask-and-polygonise-back
+  # round trip in which every mask cell no country covers was filled with its
+  # nearest country, so each filled offshore cell survives as a detached
+  # one-cell part of whichever country was nearest — Kenya picks up 36 such
+  # parts, some 290 km out in the Indian Ocean, and they plot as annexed
+  # coastline. See R/prep_country_borders.R.
+  borders <- readRDS("data/clean/country_borders.RDS")
   block_colours <- c("#1B7837", "#762A83", "#E08214", "#4393C3")[seq_len(n_blocks)]
   names(block_colours) <- as.character(seq_len(n_blocks))
 
@@ -449,9 +456,9 @@ if (identical(environment(), globalenv())) {
     mutate(fold = factor(block))
 
   country_panel <- function(this_country) {
-    outline <- gadm_polys %>%
+    outline <- borders %>%
       filter(country_name == this_country) %>%
-      st_union()
+      st_geometry()
     points <- map_data %>% filter(country_name == this_country)
     ggplot() +
       geom_sf(data = outline, fill = grey(0.96), colour = grey(0.65),
@@ -488,9 +495,9 @@ if (identical(environment(), globalenv())) {
   untested <- cells %>% filter(is.na(block_of_cell[as.character(cell)]))
 
   africa_map <- ggplot() +
-    geom_sf(data = africa, fill = grey(0.97), colour = grey(0.8),
+    geom_sf(data = st_union(borders), fill = grey(0.97), colour = grey(0.8),
             linewidth = 0.2) +
-    geom_sf(data = st_geometry(gadm_polys), fill = NA, colour = grey(0.88),
+    geom_sf(data = st_geometry(borders), fill = NA, colour = grey(0.88),
             linewidth = 0.15) +
     geom_point(data = untested, aes(x = longitude, y = latitude),
                colour = grey(0.6), size = 0.5, shape = 4) +

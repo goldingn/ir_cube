@@ -3,8 +3,10 @@
 # the data-bearing cells.
 suppressMessages({library(terra); library(sf); library(dplyr)})
 mask <- rast("data/clean/raster_mask.tif")
-gadm <- readRDS("data/clean/gadm_polys.RDS")
-countries <- gadm %>% group_by(country_name) %>% summarise(.groups = "drop")
+# the dissolved GADM geometry, not gadm_polys.RDS: that one carries the
+# nearest-country fill of prep_admin.R, which would put ocean cells hundreds of
+# km from a country into that country's area. See R/prep_country_borders.R
+countries <- readRDS("data/clean/country_borders.RDS")
 country_raster <- rasterize(vect(countries), mask, field = "country_name")
 out <- data.frame(cell = which(!is.na(values(mask)))) %>%
   mutate(country_name = terra::extract(country_raster, cell)[[1]] %>%
