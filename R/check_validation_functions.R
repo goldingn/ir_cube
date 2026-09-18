@@ -139,6 +139,52 @@ report("MSE cannot separate the dispersion errors",
                         tolerance = 1e-8)))
 
 
+# the randomised PIT, against the mid-P value it is easily confused with -----
+
+# A single randomisation replicate is uniform under calibration; the average
+# over replicates converges to the mid-P value `cdf_below + 0.5 * pmf_at`,
+# which is not, because the distribution is discrete. This mattered: the first
+# version of validation_metrics.R stored the mean and the figures read it as a
+# PIT (#12 review).
+#
+# The distortion is driven by the size of the atom at the observation, so it is
+# invisible in the simulation above, where the fractions span the range and no
+# single count is very likely, and it bites in the real held-out data, where
+# about 30% of assays record 100% mortality. So it is checked here on data
+# generated with fractions close to one.
+n_atom <- 4000
+p_atom <- rbeta(n_atom, 20, 1.2)
+size_atom <- rep(100, n_atom)
+died_atom <- rbetabinom(n_atom, size_atom, p_atom, rho_true)
+
+pit_atom <- ppd_pit(
+  ppd_summary(died_atom, size_atom,
+              matrix(p_atom, nrow = 200, ncol = n_atom, byrow = TRUE),
+              matrix(rho_true, nrow = 200, ncol = n_atom)),
+  n_rep = 100
+)
+randomised <- pit_atom[, 1]
+mid_p <- rowMeans(pit_atom)
+
+cat(sprintf("\n  %.0f%% of these assays are at 100%% mortality\n",
+            100 * mean(died_atom == size_atom)))
+
+report("randomised PIT gives nominal coverage",
+       abs(mean(randomised > 0.025 & randomised < 0.975) - 0.95) < 0.02,
+       sprintf("(%.3f)", mean(randomised > 0.025 & randomised < 0.975)))
+report("the mid-P value reads over-covered, so is not a PIT",
+       mean(mid_p > 0.025 & mid_p < 0.975) - 0.95 > 0.01,
+       sprintf("(%.3f)", mean(mid_p > 0.025 & mid_p < 0.975)))
+report("randomised PIT is uniform, the mid-P value is under-dispersed",
+       var(randomised) > var(mid_p) &&
+         abs(var(randomised) - 1 / 12) < 0.005,
+       sprintf("(variance %.4f vs %.4f, uniform is %.4f)",
+               var(randomised), var(mid_p), 1 / 12))
+report("the mid-P value fails a uniformity test the randomised PIT passes",
+       cvm_stat(mid_p) > 10 * cvm_stat(randomised),
+       sprintf("(CvM %.2f vs %.2f)", cvm_stat(mid_p), cvm_stat(randomised)))
+
+
 # the noise floor ----------------------------------------------------------
 
 # with predictions equal to the truth, the mean squared error is entirely
@@ -149,17 +195,47 @@ report("noise floor recovers irreducible MSE",
        abs(floor_estimate / mse_at_truth - 1) < 0.1,
        sprintf("(%.5f vs %.5f)", floor_estimate, mse_at_truth))
 
-# and the oracle CRPS should match the CRPS achieved by the calibrated model
-sims <- ppd_simulate(mosquito_number, candidates$calibrated$p,
-                     candidates$calibrated$rho)
-crps_calibrated <- mean(ppd_crps(died, mosquito_number, sims))
-crps_floor <- noise_floor_crps(mosquito_number, p_true, rho_true)
-report("oracle CRPS matches calibrated model CRPS",
-       abs(crps_floor / crps_calibrated - 1) < 0.05,
-       sprintf("(%.4f vs %.4f)", crps_floor, crps_calibrated))
+# the pooled noise floor ---------------------------------------------------
+
+# the single-assay estimator is the one-assay case of the pooled one
+one_assay <- noise_floor_var_pooled(died[1], mosquito_number[1], rho_true)
+report("pooled floor reduces to the single-assay floor",
+       abs(one_assay - noise_floor_mse(died[1], mosquito_number[1], rho_true)) <
+         1e-12)
+
+# and over many replicate groups it should recover the variance of the pooled
+# proportion around the fraction that generated them
+group_size <- 8
+n_group <- 3000
+p_group <- rbeta(n_group, 6, 2)
+group_died <- matrix(NA_real_, n_group, group_size)
+for (j in seq_len(group_size)) {
+  group_died[, j] <- rbetabinom(n_group, rep(100, n_group), p_group, rho_true)
+}
+pooled_observed <- rowSums(group_died) / (group_size * 100)
+pooled_floor <- mean(vapply(
+  seq_len(n_group),
+  function(i) noise_floor_var_pooled(group_died[i, ], rep(100, group_size),
+                                     rho_true),
+  numeric(1)
+))
+report("pooled floor recovers the variance of a pooled proportion",
+       abs(pooled_floor / mean((pooled_observed - p_group) ^ 2) - 1) < 0.1,
+       sprintf("(%.5f vs %.5f)", pooled_floor,
+               mean((pooled_observed - p_group) ^ 2)))
+
+report("pooling lowers the floor",
+       pooled_floor < mean(vapply(
+         seq_len(n_group),
+         function(i) noise_floor_var_pooled(group_died[i, 1], 100, rho_true),
+         numeric(1))),
+       sprintf("(%.5f pooled over %i assays)", pooled_floor, group_size))
 
 
 # reliability and aggregation ----------------------------------------------
+
+sims <- ppd_simulate(mosquito_number, candidates$calibrated$p,
+                     candidates$calibrated$rho)
 
 reliability <- reliability_bins(colMeans(candidates$calibrated$p),
                                 died / mosquito_number)

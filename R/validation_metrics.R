@@ -8,19 +8,34 @@
 # Three questions are asked of each model, one measure each:
 #
 #   is the predictive distribution the right width and shape?
-#       coverage of central predictive intervals, summarised by the
-#       Cramer-von Mises statistic on the randomised PIT values
+#       coverage of central predictive intervals, with the Cramer-von Mises
+#       statistic on the randomised PIT values as a single scalar summary
 #   is the whole distribution close to the data?
-#       CRPS, in mortality units, against the noise floor
+#       CRPS, in mortality units, and mean squared error against the noise floor
 #   is it right on average, and conditional on the prediction?
 #       reliability bins, and the mean PIT
+#
+# Coverage, mean PIT and the Cramer-von Mises statistic are all functionals of
+# one PIT distribution, so only these are kept: the Kolmogorov-Smirnov
+# statistic added a fourth view of the same object, and a null band for the
+# Cramer-von Mises statistic assumed independent PIT values, which does not hold
+# for records scored against a shared posterior (#12 review).
+#
+# Every model is scored at the same overdispersion, the external
+# replicate-based estimate, rather than at its own fitted value. Letting each
+# model choose made coverage a comparison of dispersion rather than of
+# prediction: a model can look calibrated by being vague, and the intercept null
+# reached nominal coverage that way. The dispersion each model's own residuals
+# imply is reported separately, in cv_rho_comparison.csv.
 #
 # Scores are also computed on pooled groups of assays. A single bioassay is a
 # noisy measurement of the population fraction the model is predicting, so
 # aggregation is what brings the comparison to bear on that quantity: the
 # reference in every case is the model's own aggregated predictive
 # distribution, so heterogeneity in the true fraction within a group is carried
-# by the model's predictions rather than assumed away.
+# by the model's predictions rather than assumed away. Only the country-year
+# rung is reported; pooling within pixel, year and insecticide averaged 1.3
+# assays per group, so it was indistinguishable from the unpooled scores.
 
 source("R/validation_functions.R")
 
@@ -60,6 +75,14 @@ rho_for_class <- function(insecticide_class) {
   ifelse(is.na(index), pooled, rho_external$rho[index])
 }
 
+# Every model is scored at that external estimate, so the only thing differing
+# between models is the posterior on the population fraction. Set this to FALSE
+# to score each model at its own fitted overdispersion instead, which is the
+# sensitivity behind the choice: the dynamical model's posterior on p was
+# fitted jointly with its own rho, so the swap is not perfectly clean without a
+# refit, and it is worth reporting both.
+score_at_external_rho <- TRUE
+
 files <- list.files(draws_dir, pattern = "\\.rds$", full.names = TRUE)
 if (length(files) == 0) {
   stop("no draws found in ", draws_dir, "; run R/run_validation_folds.R first")
@@ -79,7 +102,25 @@ score_fold <- function(file) {
   # by greta's calculate(values = draws) in MCMC order; for the null models they
   # are analytic. Either way they are not recomputed here
   p_draws <- thin_draws(fold$p_draws)
-  rho_draws <- thin_draws(fold$rho_draws)
+
+  # the overdispersion each model's own fit implies, kept for the diagnostic
+  # table: a posterior for the dynamical model, a single fitted value for the
+  # nulls, and absent from folds saved before the two were separated
+  rho_fitted <- if (!is.null(fold$rho_class_draws)) {
+    # saved compactly as draws by insecticide class, expanded here
+    thin_draws(fold$rho_class_draws)[, fold$class_id, drop = FALSE]
+  } else if (!is.null(fold$rho_draws)) {
+    thin_draws(fold$rho_draws)
+  } else {
+    matrix(fold$rho_implied, nrow = nrow(p_draws), ncol = nrow(test))
+  }
+
+  rho_scoring <- rho_for_class(test$insecticide_class)
+  rho_draws <- if (score_at_external_rho) {
+    matrix(rho_scoring, nrow = nrow(p_draws), ncol = nrow(test), byrow = TRUE)
+  } else {
+    rho_fitted
+  }
 
   summary <- ppd_summary(test$died,
                          test$mosquito_number,
@@ -99,11 +140,16 @@ score_fold <- function(file) {
       country_name = test$country_name,
       year_start = test$year_start,
       cell = test$cell,
-      # averaged over randomisation replicates, for plotting and for the mean;
-      # the uniformity statistics use the replicates individually
-      pit = rowMeans(pit),
+      # One randomisation replicate, not the mean of them. Averaging over
+      # replicates converges to the mid-P value `cdf_below + 0.5 * pmf_at`,
+      # which is not uniform under calibration for discrete data: with ~30% of
+      # held-out assays at 100% mortality a perfectly calibrated model reads
+      # 0.969 at nominal 0.95. The uniformity statistics use the full matrix
+      # and were never affected; this column feeds the figures (#12 review)
+      pit = pit[, 1],
       crps = ppd_crps(test$died, test$mosquito_number, sims),
-      rho_external = rho_for_class(test$insecticide_class),
+      rho_external = rho_scoring,
+      rho_fitted = colMeans(rho_fitted),
       .before = everything()
     )
 
@@ -141,8 +187,6 @@ summarise_experiment <- function(scores, pit_list) {
     coverage_50 = coverage$empirical[1],
     coverage_95 = coverage$empirical[2],
     cvm = pit_statistic(pit, cvm_stat),
-    cvm_null_upper = pit_null_band(n_obs, cvm_stat, n_sim = 200)[3],
-    ks = pit_statistic(pit, ks_stat),
     crps = mean(scores$crps),
     elpd = mean(scores$log_score),
     bias = mean(scores$predicted - scores$observed),
@@ -170,12 +214,23 @@ summaries <- lapply(
 )
 summaries <- bind_rows(summaries)
 
-# skill against the nearest neighbour null, anchored at the noise floor: 0 is
-# the null model, 1 is as good as bioassay noise allows
+# Variance in the population fraction that each model explains, anchored on the
+# intercept null and on the noise floor: 0 is the no-information baseline, 1 is
+# as good as bioassay noise allows. The anchor was previously the nearest
+# neighbour null, which pinned an informative baseline at zero by construction
+# and hid that it is itself worse than a global per-insecticide mean under
+# spatial extrapolation (#12 review).
+#
+# `excess` is reported alongside every ratio: it is mean squared error above the
+# noise floor in absolute mortality-squared units, so the conclusion does not
+# rest entirely on the floor. `rms_p` is its square root, an error in the
+# population fraction itself.
 summaries <- summaries %>%
   group_by(experiment) %>%
   mutate(
-    mse_null = mse[model == "nearest_neighbour"],
+    excess = mse - mse_floor,
+    rms_p = sqrt(pmax(excess, 0)),
+    mse_null = mse[model == "intercept"],
     skill = mse_skill(mse, mse_null, mse_floor)
   ) %>%
   ungroup()
@@ -184,7 +239,8 @@ write.csv(summaries, "outputs/cv_summary.csv", row.names = FALSE)
 
 cat("\nsummary by experiment and model:\n")
 print(summaries %>%
-        select(experiment, model, n, coverage_95, mean_pit, crps, skill, cvm) %>%
+        select(experiment, model, n, coverage_95, mean_pit, crps, mse,
+               mse_floor, excess, rms_p, skill, cvm) %>%
         mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
         as.data.frame())
 
@@ -228,18 +284,17 @@ write.csv(reliability, "outputs/cv_reliability.csv", row.names = FALSE)
 
 # aggregated scores --------------------------------------------------------
 
-# Two ladders. The first pools assays sharing a pixel, year and insecticide:
-# the model asserts a single fraction there, so these are replicates of one
-# population quantity, and this is the strictest test of the model at its own
-# unit of inference. The second pools by country, year and insecticide: many
-# more assays per group, so assay noise falls further, at the cost of testing
-# an aggregate rather than any single pixel.
+# Assays are pooled by country, year and insecticide: 17-18 assays per group,
+# so assay noise falls roughly seventeen-fold and the comparison is nearly
+# purely about the population fraction, at the cost of testing an aggregate
+# rather than any single pixel. Pooling within pixel, year and insecticide was
+# also reported, and dropped: it averaged 1.3 assays per group, so it was the
+# unpooled comparison under another name (#12 review).
 aggregate_fold <- function(entry, grouping) {
 
   test <- entry$fold$test_df
   group <- switch(
     grouping,
-    pixel_year = paste(test$cell, test$year_start, test$insecticide_type),
     country_year = paste(test$country_name, test$year_start,
                          test$insecticide_type)
   )
@@ -253,10 +308,7 @@ aggregate_fold <- function(entry, grouping) {
 }
 
 aggregated <- bind_rows(
-  unname(
-    c(lapply(scored, aggregate_fold, grouping = "pixel_year"),
-      lapply(scored, aggregate_fold, grouping = "country_year"))
-  )
+  unname(lapply(scored, aggregate_fold, grouping = "country_year"))
 )
 
 write.csv(aggregated, "outputs/cv_aggregate.csv", row.names = FALSE)
@@ -317,14 +369,8 @@ if (nrow(sampling_diagnostics) > 0) {
 
 
 rho_comparison <- bind_rows(lapply(scored, function(entry) {
-  test <- entry$fold$test_df
-  data.frame(
-    model = entry$fold$model,
-    experiment = entry$fold$experiment,
-    fold = entry$fold$fold,
-    insecticide_class = test$insecticide_class,
-    rho_fitted = colMeans(entry$fold$rho_draws)
-  )
+  entry$scores %>%
+    select(model, experiment, fold, insecticide_class, rho_fitted)
 })) %>%
   group_by(model, experiment, insecticide_class) %>%
   summarise(rho_fitted = mean(rho_fitted), .groups = "drop") %>%
@@ -338,48 +384,56 @@ print(rho_comparison %>%
         as.data.frame())
 
 
-# WHO threshold check ------------------------------------------------------
+# per fold and per year ----------------------------------------------------
 
-# The same comparison in the terms the results are used in: WHO classifies a
-# population as showing confirmed resistance below 90% mortality, and possible
-# resistance between 90% and 98%. This asks whether the model predicts the right
-# proportion of held-out bioassays in each category, which needs no
-# distributional vocabulary to read.
-who_thresholds <- bind_rows(unname(lapply(scored, function(entry) {
+# The pooled numbers hide which folds carry the result, and master reported a
+# per-country and a per-lead-year breakdown that the first version of this
+# pipeline dropped. `excess` is again mean squared error above the noise floor,
+# and `explained` is the share of the intercept null's excess that this model
+# removes, computed within each group so that groups of differing difficulty are
+# not compared on a common denominator (#12 review).
+by_group <- function(scores, ...) {
+  scores %>%
+    group_by(experiment, ..., model) %>%
+    summarise(
+      n = n(),
+      mean_observed = mean(observed),
+      mean_predicted = mean(predicted),
+      bias = mean(predicted - observed),
+      mean_pit = mean(pit),
+      coverage_95 = mean(pit > 0.025 & pit < 0.975),
+      crps = mean(crps),
+      mse = mean((observed - predicted) ^ 2),
+      mse_floor = noise_floor_mse(died, mosquito_number, rho_external),
+      .groups = "drop"
+    ) %>%
+    group_by(experiment, ...) %>%
+    mutate(excess = mse - mse_floor,
+           explained = 1 - excess / excess[model == "intercept"]) %>%
+    ungroup()
+}
 
-  test <- entry$fold$test_df
-  observed_proportion <- test$died / test$mosquito_number
-  simulated_proportion <- sweep(entry$sims, 2, test$mosquito_number, FUN = "/")
+by_fold <- by_group(all_scores, fold)
+write.csv(by_fold, "outputs/cv_by_fold.csv", row.names = FALSE)
 
-  categorise <- function(x) {
-    c(confirmed = mean(x < 0.9),
-      possible = mean(x >= 0.9 & x < 0.98),
-      susceptible = mean(x >= 0.98))
-  }
-
-  observed <- categorise(observed_proportion)
-  # the same summary under each posterior predictive replicate dataset
-  simulated <- t(apply(simulated_proportion, 1, categorise))
-
-  data.frame(
-    model = entry$fold$model,
-    experiment = entry$fold$experiment,
-    fold = entry$fold$fold,
-    category = names(observed),
-    observed = as.numeric(observed),
-    predicted = colMeans(simulated),
-    lower = apply(simulated, 2, quantile, 0.025),
-    upper = apply(simulated, 2, quantile, 0.975)
-  )
-
-})))
-
-write.csv(who_thresholds, "outputs/cv_who_thresholds.csv", row.names = FALSE)
-
-cat("\nWHO resistance categories, observed against predicted:\n")
-print(who_thresholds %>%
-        group_by(model, experiment, category) %>%
-        summarise(across(c(observed, predicted, lower, upper), mean),
-                  .groups = "drop") %>%
+cat("\nby fold:\n")
+print(by_fold %>%
+        select(experiment, fold, model, n, bias, coverage_95, excess,
+               explained) %>%
         mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
         as.data.frame())
+
+by_year <- by_group(
+  all_scores %>% filter(experiment == "temporal_forecasting"),
+  year_start
+)
+write.csv(by_year, "outputs/cv_by_year.csv", row.names = FALSE)
+
+if (nrow(by_year) > 0) {
+  cat("\nforecasting, by lead year:\n")
+  print(by_year %>%
+          select(year_start, model, n, mean_observed, mean_predicted, bias,
+                 mean_pit, excess, explained) %>%
+          mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
+          as.data.frame())
+}

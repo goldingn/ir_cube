@@ -394,20 +394,29 @@ pop_final_year <- pop_cube %>%
 final_year <- min(nets_final_year, irs_final_year, pop_final_year)
 validation_years <- final_year + -2:0
 
-# split into a training set (before those years) and a test set
+# Split into a training set strictly before those years and a test set.
+#
+# This must be `<  min(validation_years)`, not "not in validation_years". The
+# data run to 2024 while the covariates stop in 2022, so excluding only the
+# three validation years left 888 records from 2023 and 2024 in the training
+# set: the model was fitted on both sides of the window it was asked to
+# forecast, which is temporal interpolation with both endpoints pinned. A
+# quarter of the held-out records were at cells that also carried post-horizon
+# training data. The leak was asymmetric, because the nearest neighbour null
+# masks on `year + (0, -1, -2, -3)` and so could never see them, and it
+# therefore favoured the dynamical model. Inherited from
+# predictive_validation.R, so results from before this fix are affected
+# (#12 review).
 temporal_forecasting <- list(
-  training = split_data(
-    field_values = validation_years,
-    field_name = "year_start",
-    dataset = df,
-    keep = FALSE
-  ),
-  test = split_data(
-    field_values = validation_years,
-    field_name = "year_start",
-    dataset = df,
-    keep = TRUE
-  )
+  training = df %>%
+    filter(year_start < min(validation_years)),
+  test = df %>%
+    filter(year_start %in% validation_years)
+)
+
+stopifnot(
+  max(temporal_forecasting$training$year_start) < min(validation_years),
+  all(temporal_forecasting$test$year_start %in% validation_years)
 )
 
 # these are the train and test sets

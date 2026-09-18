@@ -36,27 +36,9 @@ fit_fold <- function(train_df,
                      n_countries,
                      n_chains = 4,
                      warmup = 2000,
-                     n_samples = 500,
-                     n_sim = 1000,
+                     n_samples = 5000,
                      Lmax = 30,
-                     target_ess = 1000,
-                     max_samples = 5000,
-                     batch_samples = 500,
-                     threads = 0,
                      inits_file = "temporary/inits.RDS") {
-
-  # TensorFlow parallelises one op across cores rather than running a chain per
-  # core, and scales poorly beyond about four threads, so confining each fold to
-  # a couple of threads costs it little and leaves room to run several folds at
-  # once. greta exposes no interface for this; it has to be set through
-  # reticulate, before any ops are created
-  if (threads > 0) {
-    tensorflow_module <- reticulate::import("tensorflow")
-    tensorflow_module$config$threading$set_intra_op_parallelism_threads(
-      as.integer(threads))
-    tensorflow_module$config$threading$set_inter_op_parallelism_threads(
-      as.integer(threads))
-  }
 
 
   # doubly hierarchical version
@@ -208,11 +190,14 @@ fit_fold <- function(train_df,
                 sampler = hmc(Lmin = Lmin, Lmax = Lmax),
                 n_samples = n_samples)
 
-  # Extend sampling until the effective sample size is adequate, rather than
-  # guessing a sample count up front. How many draws are needed per effective
-  # sample cannot be known before the sampler has adapted, so take an initial
-  # batch, measure, and top up. Each batch reports its effective sample size, so
-  # progress is visible in the fold's log rather than only on completion.
+  # `n_samples` is taken in one call rather than accumulated in batches towards
+  # an effective sample size target. The previous version topped up with
+  # extra_samples() until `coda::effectiveSize(draws)` reached 1,000, but that
+  # is the effective sample size of the ~690 raw hierarchical parameters, whose
+  # minimum was 76-96 on every fold: the target was never reachable and the cap
+  # always bound, so this was a fixed-length run with extra bookkeeping. Folds
+  # compared with each other must share their sampling settings anyway, so
+  # stopping when one fold happens to converge is not an option (#12 review).
   report <- function(...) {
     cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), sprintf(...), "\n")
     flush(stdout())
@@ -220,18 +205,8 @@ fit_fold <- function(train_df,
 
   sampled <- n_samples
   ess <- coda::effectiveSize(draws)
-  report("sampled %d per chain | ESS min %.0f median %.0f | target %d",
-         sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE), target_ess)
-
-  while (min(ess, na.rm = TRUE) < target_ess && sampled < max_samples) {
-    draws <- extra_samples(draws,
-                           n_samples = batch_samples,
-                           verbose = TRUE)
-    sampled <- sampled + batch_samples
-    ess <- coda::effectiveSize(draws)
-    report("sampled %d per chain | ESS min %.0f median %.0f | target %d",
-           sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE), target_ess)
-  }
+  report("sampled %d per chain | raw parameter ESS min %.0f median %.0f",
+         sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE))
 
   # Predictions at the held-out data.
   #
@@ -267,8 +242,6 @@ fit_fold <- function(train_df,
   rho_columns <- grep("rho_classes", colnames(prediction_matrix))
   p_draws <- prediction_matrix[, p_columns, drop = FALSE]
   rho_class_draws <- prediction_matrix[, rho_columns, drop = FALSE]
-  # expand the class-level overdispersion out to one column per held-out assay
-  rho_draws <- rho_class_draws[, test_df$class_id, drop = FALSE]
 
   convergence <- coda::gelman.diag(draws,
                                    multivariate = FALSE,
@@ -289,7 +262,7 @@ fit_fold <- function(train_df,
        # previous session and is now invalid", because the sampler state is
        # bound to the session that created it, and redefining the model gives
        # new nodes the draws cannot attach to. So a longer run has to be asked
-       # for up front through `warmup` and `max_samples` — it cannot be added
+       # for up front through `warmup` and `n_samples` — it cannot be added
        # to a fold afterwards. Note also that folds to be compared with each
        # other must share their sampling settings, so extending one fold means
        # refitting all of them.
@@ -297,16 +270,18 @@ fit_fold <- function(train_df,
        prediction_arrays = list(p = population_mortality_vec_test,
                                 rho = rho_classes),
        p_draws = p_draws,
-       rho_draws = rho_draws,
+       # the overdispersion is shared by every assay of an insecticide class, so
+       # it is stored by class with the index needed to expand it, rather than
+       # as one column per held-out assay
+       rho_class_draws = rho_class_draws,
+       class_id = test_df$class_id,
        test_df = test_df,
-       n_train = nrow(train_df),
        convergence = convergence,
        ess = ess,
        ess_p = ess_p,
        ess_rho = ess_rho,
        n_sampled = sampled,
-       n_chains = n_chains,
-       draws_per_ess = (sampled * n_chains) / median(ess, na.rm = TRUE))
+       n_chains = n_chains)
 
 }
 

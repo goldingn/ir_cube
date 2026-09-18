@@ -12,20 +12,14 @@
 # The null models are cheap and are run here too, so that every candidate is
 # stored in the same format and scored by the same code.
 
-# Initialise greta's python session before terra and sf are attached. Those
-# load the system XML libraries, which the conda environment's pyexpat is then
-# linked against, and tensorflow_probability fails to import as a result.
-suppressMessages(library(greta))
-invisible(calculate(normal(0, 1), nsim = 1))
-
-library(future)
-library(future.apply)
-
+# This process fits the null models and dispatches the dynamical folds as
+# separate processes; it never calls fit_fold() itself. So it needs neither
+# greta's python session nor the covariate extraction, both of which used to be
+# paid for here for nothing. run_one_fold.R does that setup, in the order it
+# has to be done in (#12 review).
 source("R/validation_functions.R")
 source("R/validation_folds.R")
 source("R/null_models.R")
-source("R/validation_covariates.R")
-source("R/fit_validation_fold.R")
 
 draws_dir <- "outputs/cv_draws"
 dir.create(draws_dir, showWarnings = FALSE, recursive = TRUE)
@@ -40,7 +34,9 @@ save_fold <- function(fit, model, experiment, fold) {
     experiment = experiment,
     fold = fold,
     p_draws = fit$p_draws,
-    rho_draws = fit$rho_draws,
+    # the overdispersion each null's own residuals imply, a diagnostic only:
+    # every model is scored at the external replicate-based estimate
+    rho_implied = fit$rho_implied,
     test_df = fit$test_df
   )
   file <- file.path(draws_dir,

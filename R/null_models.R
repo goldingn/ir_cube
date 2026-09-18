@@ -4,9 +4,10 @@
 # Moved out of predictive_validation.R so that both the existing point-prediction
 # scoring and the posterior predictive scoring (#10) use one definition of each
 # null model. The lower half of this file adds predictive distributions for the
-# nulls: scoring them at a fixed overdispersion while the dynamical model uses
-# its own fitted value is not a like-for-like comparison, and a proper scoring
-# rule needs a distribution rather than a point from every candidate.
+# nulls, because a proper scoring rule needs a distribution rather than a point
+# from every candidate. Every model is scored at the same external,
+# replicate-based overdispersion (see validation_metrics.R); what each model's
+# own residuals imply is reported separately as a diagnostic.
 
 prop <- function(died, tested) {
   died / tested
@@ -33,55 +34,19 @@ predict_null_fixed_nn <- function(latitude,
                                   training_data,
                                   n_nearest_neighbours,
                                   n_years_prior = 1) {
-  
-  training_coords <- training_data %>%
-    select(longitude, latitude) %>%
-    as.matrix()
-  
-  test_coords <- bind_cols(longitude = longitude,
-                           latitude = latitude) %>%
-    as.matrix()
-  
-  # compute the distance matrix between the test and training sets
-  dists <- fields::rdist.earth(test_coords,
-                               training_coords,
-                               miles = FALSE)
-  
-  year_diff <- -1 * seq(0, n_years_prior)
-  
-  n_test <- nrow(test_coords)
-  preds <- rep(NA, n_test)
-  # loop through each test record
-  for (i in seq_len(n_test)) {
-    # obtain the vector of distances to that record from all training records
-    distance_vec <- dists[i, ]
-    
-    # mask these (with Inf) if they are not in the same or the previous year or
-    # not for the same insecticide type
-    this_year <- year[i]
-    this_insecticide <- insecticide_type[i]
-    
-    valid_years <- this_year + year_diff
-    training_year_valid <- training_data$year_start %in% valid_years
-    insecticide_type_valid <- training_data$insecticide_type == this_insecticide
-    valid <- training_year_valid & insecticide_type_valid
-    masked_distance_vec <- ifelse(valid, distance_vec, Inf)
-    
-    # identify the X closest records
-    threshold_distance <- sort(masked_distance_vec,
-                               decreasing = FALSE)[n_nearest_neighbours]
-    nearest_training_idx <- which(masked_distance_vec <= threshold_distance)
-    
-    # compute a weighted mean of these as the prediction
-    total_died <- sum(training_data$died[nearest_training_idx])
-    total_tested <- sum(training_data$mosquito_number[nearest_training_idx])
-    preds[i] <- emplog_prop(total_died, total_tested)
-    
-  }
-  
-  # return the predictions
-  preds
-  
+
+  counts <- predict_null_fixed_nn_counts(
+    latitude = latitude,
+    longitude = longitude,
+    year = year,
+    insecticide_type = insecticide_type,
+    training_data = training_data,
+    n_nearest_neighbours = n_nearest_neighbours,
+    n_years_prior = n_years_prior
+  )
+
+  emplog_prop(counts$total_died, counts$total_tested)
+
 }
 
 # given tibbles of test and training data, return the test data tibble augmented
@@ -168,23 +133,14 @@ predict_null_optimal_nn <- function(test_data,
 
 # predictive distributions for the null models ------------------------------
 
-# great circle distance in km between two sets of coordinates, as a matrix with
-# one row per point in `x1`. Equivalent to fields::rdist.earth(miles = FALSE)
-rdist_earth <- function(x1, x2, radius = 6378.388) {
-  to_radians <- pi / 180
-  longitude_1 <- x1[, 1] * to_radians
-  latitude_1 <- x1[, 2] * to_radians
-  longitude_2 <- x2[, 1] * to_radians
-  latitude_2 <- x2[, 2] * to_radians
-  cosine <- outer(sin(latitude_1), sin(latitude_2)) +
-    outer(cos(latitude_1), cos(latitude_2)) *
-    cos(outer(longitude_1, longitude_2, FUN = "-"))
-  radius * acos(pmin(pmax(cosine, -1), 1))
-}
-
 # maximum likelihood estimate of the observation overdispersion implied by a
-# set of predictions, so that each null model is scored under the dispersion
-# that best explains its own residual scatter on the training data
+# set of predictions. This is reported as a diagnostic - a model whose implied
+# overdispersion greatly exceeds the replicate-based estimate is absorbing
+# process misfit into the observation process - but it is no longer the
+# dispersion the model is scored under. Letting each model choose its own rho
+# made coverage a comparison of dispersion rather than of prediction: the
+# intercept null reached nominal coverage by inflating rho to 0.45 against an
+# external estimate of 0.12-0.22 (#12 review)
 fit_rho_given_predictions <- function(died, mosquito_number, predicted,
                                       interval = c(1e-4, 0.9)) {
   negative_log_likelihood <- function(rho) {
@@ -208,7 +164,8 @@ predict_null_fixed_nn_counts <- function(latitude,
   training_coords <- as.matrix(training_data[, c("longitude", "latitude")])
   test_coords <- cbind(longitude, latitude)
 
-  dists <- rdist_earth(test_coords, training_coords)
+  dists <- fields::rdist.earth(test_coords, training_coords,
+                               miles = FALSE)
   year_diff <- -1 * seq(0, n_years_prior)
 
   n_test <- nrow(test_coords)
@@ -249,7 +206,9 @@ pooled_count_draws <- function(total_died, total_tested, n_draws) {
 
 # Predictive distribution of the insecticide-type intercept null: the fraction
 # for each type has a beta posterior from the pooled training counts for that
-# type, and the overdispersion is fitted to the training residuals
+# type. `rho_implied` is the overdispersion that best explains this model's own
+# training residuals, returned for the diagnostic table only; scoring uses the
+# external estimate
 intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
 
   pooled <- aggregate(
@@ -267,21 +226,20 @@ intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
                           pooled$insecticide_type)
   training_predicted <- pooled$died[training_index] /
     pooled$mosquito_number[training_index]
-  rho <- fit_rho_given_predictions(training_data$died,
-                                   training_data$mosquito_number,
-                                   training_predicted)
+  rho_implied <- fit_rho_given_predictions(training_data$died,
+                                           training_data$mosquito_number,
+                                           training_predicted)
 
   list(p_draws = p_draws,
-       rho_draws = matrix(rho, nrow = n_draws, ncol = nrow(test_data)),
-       rho = rho,
+       rho_implied = rho_implied,
        test_df = test_data)
 
 }
 
 # Predictive distribution of the nearest neighbour null. `n_neighbours` is the
-# value already selected by grid search on an internal holdout; the
-# overdispersion is fitted on that same holdout, so neither quantity is tuned
-# on the test fold
+# value already selected by grid search on an internal holdout, and
+# `rho_implied` - a diagnostic only, as for the intercept null - is fitted on a
+# further internal holdout, so neither quantity is tuned on the test fold
 nn_null_draws <- function(training_data, test_data, n_neighbours,
                           n_years_prior = 1, n_draws = 1000,
                           holdout_size = 100, seed = 111) {
@@ -300,7 +258,13 @@ nn_null_draws <- function(training_data, test_data, n_neighbours,
                                 counts$total_tested,
                                 n_draws)
 
-  # fit the overdispersion on an internal holdout from the training data
+  # Fit the implied overdispersion on an internal holdout from the training
+  # data. The seed is fixed so the holdout is reproducible, and the caller's
+  # random stream is restored afterwards rather than left reset (#12 review)
+  if (exists(".Random.seed", envir = globalenv())) {
+    caller_seed <- get(".Random.seed", envir = globalenv())
+    on.exit(assign(".Random.seed", caller_seed, envir = globalenv()))
+  }
   set.seed(seed)
   holdout <- sample(nrow(training_data), min(holdout_size, nrow(training_data)))
   holdout_data <- training_data[holdout, ]
@@ -318,13 +282,12 @@ nn_null_draws <- function(training_data, test_data, n_neighbours,
 
   holdout_predicted <- emplog_prop(holdout_counts$total_died,
                                    holdout_counts$total_tested)
-  rho <- fit_rho_given_predictions(holdout_data$died,
-                                   holdout_data$mosquito_number,
-                                   holdout_predicted)
+  rho_implied <- fit_rho_given_predictions(holdout_data$died,
+                                           holdout_data$mosquito_number,
+                                           holdout_predicted)
 
   list(p_draws = p_draws,
-       rho_draws = matrix(rho, nrow = n_draws, ncol = nrow(test_data)),
-       rho = rho,
+       rho_implied = rho_implied,
        test_df = test_data)
 
 }

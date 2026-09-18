@@ -15,8 +15,7 @@ n_chains <- if (length(arguments) >= 3) as.integer(arguments[3]) else 4L
 threads <- if (length(arguments) >= 4) as.integer(arguments[4]) else 4L
 # optional overrides, for smoke-testing the path without a real fit
 warmup <- if (length(arguments) >= 5) as.integer(arguments[5]) else 2000L
-n_samples <- if (length(arguments) >= 6) as.integer(arguments[6]) else 500L
-max_samples <- if (length(arguments) >= 7) as.integer(arguments[7]) else 5000L
+n_samples <- if (length(arguments) >= 6) as.integer(arguments[6]) else 5000L
 
 # Order matters here, and for two separate reasons. TensorFlow refuses to change
 # its thread count once initialised, so that has to be set first. And python has
@@ -55,6 +54,20 @@ if (experiment_name == "spatial_extrapolation") {
   stop("unknown experiment: ", experiment_name)
 }
 
+destination <- file.path("outputs/cv_draws",
+                         sprintf("dynamical__%s__%s.rds",
+                                 experiment_name, fold_name))
+
+# resume by file: a fold already on disk is not refitted, so the dispatcher can
+# be restarted without checking anything itself
+if (file.exists(destination)) {
+  cat(sprintf("%s | %s / %s already fitted, skipping\n",
+              format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+              experiment_name, fold_name))
+  cat("FOLD COMPLETE\n")
+  quit(save = "no", status = 0)
+}
+
 cat(sprintf("%s | %s / %s | %i training, %i held out | %i chains, %i threads\n",
             format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
             experiment_name, fold_name, nrow(training), nrow(test),
@@ -78,10 +91,7 @@ elapsed <- system.time(
     n_countries = n_countries,
     n_chains = n_chains,
     warmup = warmup,
-    n_samples = n_samples,
-    max_samples = max_samples,
-    batch_samples = n_samples,
-    threads = 0    # already set above, before python came up
+    n_samples = n_samples
   )
 )
 
@@ -95,12 +105,17 @@ saveRDS(
   list(model = "dynamical",
        experiment = experiment_name,
        fold = fold_name,
-       # the draws object, which greta's calculate() needs in order to predict,
-       # and the greta arrays it predicts from
+       # The draws object, and the greta arrays the predictions came from, so
+       # that calculate() can be used on a reloaded fold to predict a quantity
+       # that was not asked for at fitting time. This is the only supported way
+       # to predict from a fitted greta model, so it is kept deliberately even
+       # though the scoring path reads only the matrices below; it is also the
+       # bulk of each file's size.
        draws = fit$draws,
        prediction_arrays = fit$prediction_arrays,
        p_draws = fit$p_draws,
-       rho_draws = fit$rho_draws,
+       rho_class_draws = fit$rho_class_draws,
+       class_id = fit$class_id,
        test_df = fit$test_df,
        convergence = fit$convergence,
        ess = fit$ess,
@@ -108,8 +123,7 @@ saveRDS(
        ess_rho = fit$ess_rho,
        n_sampled = fit$n_sampled,
        n_chains = fit$n_chains),
-  file.path("outputs/cv_draws",
-            sprintf("dynamical__%s__%s.rds", experiment_name, fold_name))
+  destination
 )
 
 cat(sprintf("%s | saved. p ESS median %.0f, rho ESS median %.0f, worst Rhat %.3f\n",

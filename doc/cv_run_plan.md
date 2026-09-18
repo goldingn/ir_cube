@@ -1,29 +1,12 @@
-# Cross-validation run: state, plan, and handover notes
+# Cross-validation: run recipe, and the rebuild after the #12 review
 
-Working document for the posterior predictive validation work on branch
-`posterior-predictive-validation` (PR idem-lab/ir_cube#12, issue #10).
-Written so that someone picking this up cold can continue without re-deriving
-what has already been established or repeating what has already failed.
-
-Last updated: 2026-09-12.
+Written for whoever runs the next set of fits. Sections 1–3 are the recipe and
+the constraints it exists to satisfy; sections 4–7 are the rebuild the review of
+PR #12 asks for, and what it costs.
 
 ---
 
-## 1. What this is for
-
-Cross-validation previously scored the model on its ability to predict the value
-of an individual held-out bioassay, with the posterior collapsed to a mean
-before scoring. A bioassay is a noisy, overdispersed measurement of the quantity
-the model actually targets — the susceptibility fraction of the whole mosquito
-population — so that comparison has an unreachable noise floor and discards
-parameter uncertainty. The work replaces it with scoring of the full
-out-of-sample posterior predictive distribution: calibration and coverage
-alongside accuracy.
-
-The plan is set out in full in the comment on issue #10. Nothing in the
-statistical design has changed since; what follows is about executing it.
-
-## 2. Environment: do not upgrade greta
+## 1. Environment: do not upgrade greta
 
 Sampling this model fails on greta 0.6.0 — `mcmc()` raises a TensorFlow
 `while_loop` shape error whenever the likelihood depends on
@@ -42,195 +25,260 @@ remotes::install_github("greta-dev/greta.dynamics@db7df31")   # 0.2.2
 Python side is a conda env built by `greta::install_greta_deps()`:
 TensorFlow 2.15.1, TFP 0.23.0.
 
-Two ordering constraints, both load-bearing, both encoded in `run_one_fold.R`:
+## 2. Two ordering constraints, both load-bearing
+
+Both are encoded at the top of `R/run_one_fold.R`, and the file will fail in
+confusing ways if they are disturbed:
 
 - TensorFlow will not change its thread count after initialisation, so threads
-  must be set before python comes up. greta exposes no interface for this;
+  must be set **before** python comes up. greta exposes no interface for this;
   it must go through `reticulate::import("tensorflow")$config$threading$...`.
-  Environment variables (`TF_NUM_INTRAOP_THREADS` etc.) are ignored.
+  The environment variables (`TF_NUM_INTRAOP_THREADS` and friends) are ignored.
 - python must initialise **before** `terra` or `sf` are attached. Those load the
   system XML libraries, against which the conda environment's `pyexpat` is then
   resolved, and `tensorflow_probability` fails to import.
 
-## 3. What is already done
-
-| piece | file | state |
-|---|---|---|
-| Scoring functions | `R/validation_functions.R` | done, 24 checks pass |
-| Checks on those | `R/check_validation_functions.R` | done |
-| Overdispersion from replicates | `R/estimate_bioassay_rho.R` | done, run |
-| Fold definitions | `R/validation_folds.R` | done, verified identical to master's |
-| Null models | `R/null_models.R` | done, all 16 null folds saved |
-| Covariates | `R/validation_covariates.R` | done |
-| Model fit per fold | `R/fit_validation_fold.R` | done |
-| Single fold runner | `R/run_one_fold.R` | done, smoke tested |
-| Dispatcher | `R/run_validation_folds.R` | done, running |
-| Null models test data | `R/null_models.R` | fixed; nulls regenerated |
-| Metrics | `R/validation_metrics.R` | adapted for MCMC folds, being tested |
-| Figures | `R/fig_predictive_validation.R` | written, tested on synthetic draws |
-
-External overdispersion estimates, from all 3,713 replicated
-pixel-year-insecticide groups (`outputs/bioassay_rho.csv`): 0.155 overall;
-0.118 organochlorines, 0.131 carbamates, 0.164 pyrethroids,
-0.216 organophosphates. These set the noise floor and are independent of the
-models being scored.
-
-## 4. The run now in progress
-
-Launched 2026-09-04 07:09 by `Rscript R/run_validation_folds.R`. Six of eight
-folds complete as of 2026-09-12; interpolation and forecasting in warmup, due
-14-15 September. Observed cost ~62h per fold, two at a time, so ~250h in total
-rather than the 150-200h estimated.
-
-**Next step, agreed with Nick:** leave these eight folds as they are. From
-18 September, while he compiles results and drafts the paper figures, refit
-**all** folds with longer warmup — not a subset, since folds compared with each
-other must share their sampling settings.
-
-- 8 folds: 6 leave-one-country-out, plus spatial interpolation and temporal
-  forecasting.
-- **2 folds at a time, 4 chains and 4 threads each**, `Lmax = 30`,
-  2,000 warmup, 500 initial samples extending in batches of 500 to a cap of
-  5,000.
-- One process per fold (`run_one_fold.R`), logging to
-  `outputs/cv_logs/<experiment>__<fold>.log`.
-- Draws saved to `outputs/cv_draws/dynamical__<experiment>__<fold>.rds`.
-  Folds already on disk are skipped, so the run resumes after interruption.
-
-Why this configuration, from measurements on one fold of this model:
-
-- Chains are vectorised into one TensorFlow op, not run one per core, and that
-  op scales poorly beyond ~4 threads: 8.39 s/iteration at 2 threads against
-  6.96 s with the whole machine. So confining a fold to 4 threads costs little
-  and leaves room for a second fold.
-- Chain count costs more than linearly once cores are saturated: 6.96 s/iteration
-  at 2 chains, 15.21 at 4, 70.61 at 8.
-- But 2 chains adapt badly. greta pools information across chains during warmup,
-  and the 2-chain run produced Rhat 7.6 on the Kenya fold with all 689
-  parameters above 1.01, against 1.2–1.6 elsewhere. 4 chains is the compromise.
-
-## 5. Monitoring, and what to check when a fold lands
-
-Watch progress:
+## 3. Running the folds
 
 ```bash
-tail -f "outputs/cv_logs/spatial_extrapolation__Kenya.log"
-grep -h "ESS" outputs/cv_logs/*.log | tail
+Rscript R/run_validation_folds.R        # nulls, then dispatch the model folds
+Rscript R/validation_metrics.R          # score everything on disk
+Rscript R/validation_geometry.R         # skill against distance and data volume
+Rscript R/fig_predictive_validation.R   # figures and the table
 ```
 
-Each fold logs, with timestamps: warmup and sampling progress bars, effective
-sample size after every batch of extra samples, prediction ESS for `p` and
-`rho`, and the worst Rhat.
+`run_validation_folds.R` fits the nulls in process (minutes) and then dispatches
+each model fold as a separate `Rscript R/run_one_fold.R <experiment> <fold>`,
+two at a time, logging to `outputs/cv_logs/<experiment>__<fold>.log`. A fold
+whose `.rds` is already in `outputs/cv_draws/` is skipped, by `run_one_fold.R`
+itself, so the run resumes after an interruption.
 
-**Check the first fold before trusting the rest of the run.** For the September
-run this was done and passed; repeat it on any refit:
+**Run from a frozen copy of the scripts.** R reads `--file=` incrementally, so
+editing a script while a fold is running corrupts that fold — two folds were
+lost this way after 62 h each, both crashing at the `saveRDS` block. Copy `R/`
+to a scratch directory, symlink `data/`, `outputs/` and `temporary/` into it,
+and launch from there.
 
-```r
-d <- readRDS("outputs/cv_draws/dynamical__spatial_extrapolation__Côte d’Ivoire.rds")
-names(d)                       # must include `draws`
-class(d$draws)                 # greta_mcmc_list
-dim(d$p_draws)                 # (n_chains * n_sampled) x n_test
-median(d$ess_p); min(d$ess_p)  # ESS of the predicted fractions
-median(d$ess_rho)
-max(d$convergence[, 1])        # worst Rhat
+Smoke test the whole path before committing to a long run:
+
+```bash
+Rscript R/run_one_fold.R spatial_extrapolation Kenya 2 4 5 5
 ```
 
-What counts as acceptable: `ess_p` median in the hundreds is fine for the
-metrics, which pool over ~900–1,960 held-out assays per fold. The September run
-achieved 540–861. Rhat is the harder question — see §7.
+takes a few minutes and exercises everything. Delete the resulting `.rds`
+afterwards, or the real fold will be skipped.
 
-Achieved, September run (six country folds):
+### Sampling settings
 
-| fold | ESS p median / min | ESS rho | Rhat worst | above 1.01 |
-|---|---|---|---|---|
-| Côte d'Ivoire | 586 / 434 | 627 | 2.33 | 689 |
-| Nigeria | 540 / 273 | 428 | 1.25 | 553 |
-| Ethiopia | 861 / 698 | 847 | 1.17 | 288 |
-| Senegal | 758 / 435 | 665 | 1.17 | 342 |
-| Kenya | 827 / 363 | 621 | 1.15 | 370 |
-| Tanzania | 572 / 447 | 693 | 1.12 | 395 |
+4 chains, 2,000 warmup, 5,000 post-warmup samples, `hmc(Lmin = 15, Lmax = 30)`,
+initialised from `temporary/inits.RDS`. Roughly 62 h per fold at four threads,
+two folds at a time.
 
-If the object lacks `draws`, or `p_draws` has the wrong number of rows, stop the
-run; something in `fit_fold()` has regressed and the remaining folds will be
-unusable too.
+Four chains rather than two because greta pools information across chains when
+adapting during warmup: at two chains the Kenya fold reached Rhat 7.6, and at
+four it reached 1.15. Chains cost super-linearly in this model (6.96, 15.21 and
+70.61 s per iteration at 2, 4 and 8 chains), and TensorFlow threads scale poorly
+beyond about four (8.39 s/iteration at 2 threads against 6.96 s using the whole
+machine), which is why the budget goes into concurrent folds rather than into
+threads.
 
-## 6. Work to do while the run proceeds
+The September run reached this same 5,000 samples by taking 500 and topping up
+with `extra_samples()` towards a 1,000 ESS target. That target was set on the
+~690 raw hierarchical parameters, whose minimum ESS was 76–96 on every fold, so
+it was never reachable and the cap always bound. The loop has been removed and
+the samples are asked for directly; the two are statistically equivalent, since
+`extra_samples()` continues the same chains without re-adapting.
 
-`R/validation_metrics.R` has been adapted for the MCMC fold format. What was
-done, and why, in case it needs revisiting:
+## 4. What is being changed, and why
 
-1. **It must not re-predict.** Use the `p_draws` and `rho_draws` in the saved
-   object, which came from `calculate(values = draws)`. Do not write bespoke
-   prediction code. If predictions at new points are ever needed,
-   `calculate(target, values = draws)` does work on a reloaded draws object —
-   see §10 for what does and does not survive a session.
-2. **Draw count has changed** from 1,000 to `n_chains * n_sampled`, up to
-   20,000. `ppd_summary()` loops over observations building an
-   `n_draws x (died + 1)` matrix each time, so this is ~20x slower than before
-   and may need thinning. Thinning is cheap here: at ~50 draws per effective
-   sample, taking every 10th draw loses almost nothing. Add a `thin` argument
-   rather than silently subsampling.
-3. **Use the per-class external `rho`** from `outputs/bioassay_rho.csv` for the
-   noise floor, not the fitted values.
-4. The null-model folds in `outputs/cv_draws/` have 1,000 draws and no `draws`
-   object, by construction — they are analytic, not MCMC. The metrics code must
-   handle both shapes.
+The review of PR #12 found one blocking defect and one set of experiments that
+measures something other than what it claims to. Both force refits; the rest of
+the review is scoring and reporting, and has been done without refitting.
 
-Test it against the first completed fold as soon as it lands, together with the
-16 null folds already on disk. That exercises the whole path end to end long
-before the run finishes.
+### 4.1 The temporal forecasting fold leaked post-horizon data — refit
 
-`R/fig_predictive_validation.R` reads only the tables the metrics script writes,
-so it should need little change, but it has only ever been run on synthetic
-draws.
+The training set was "every record whose year is not 2020–2022". The data run to
+2024 while the covariates stop in 2022, so 888 records from 2023 and 2024 stayed
+in training: the model was fitted on both sides of the window it was asked to
+forecast. 354 of the 1,461 held-out assays (24%) sat at pixels that also carried
+post-horizon training data, and on those pixels the dynamical model's MSE was
+0.060 against 0.086 elsewhere.
 
-## 7. Open questions for Nick
+Fixed in `validation_folds.R` (`year_start < min(validation_years)`, with a
+`stopifnot`). The old fit is in `outputs/cv_draws_leaky_forecast/` with a note;
+its scores are in the git history of `outputs/cv_summary.csv` at `6b1ba1b`. The
+nulls have been regenerated on the corrected split already, since they need no
+MCMC; the dynamical model waits for the refit.
 
-- **Convergence.** The production fit in `temporary/fitted_model.RData`
-  (8 chains x 2,000) has worst Rhat 1.215 with 631 of 689 parameters above 1.01,
-  and 45.7 draws per effective sample. The CV folds mix comparably. So
-  non-convergence is a standing property of this model's geometry rather than
-  something the validation introduced, and the options are to accept it with an
-  explicit caveat in the supplement, or to treat reparameterisation as separate
-  modelling work affecting the main fit too.
-- **Fitted `rho` runs about double the external estimate** — 0.24–0.38 against
-  0.118–0.216 — consistently across all four folds of the earlier run. If it
-  holds, this is the diagnostic the plan anticipated: the model absorbing
-  process misfit into the observation process, which should also show as
-  over-coverage. Worth a supplementary panel.
-- **ESS target.** 1,000 was set arbitrarily and the cap of 5,000 samples binds
-  instead. This turned out not to matter: with 4 chains, the quantities the
-  metrics consume are well sampled, with `p` at held-out assays reaching median
-  ESS 540–861 (minimum across assays 273–698) and `rho` 428–847. It is the raw
-  hierarchical parameters that mix badly (min ESS 76–96); `p` and `rho` are
-  smooth aggregates of them and mix 5–8x better.
-- **Rhat.** Still the weak point, and uneven between folds: 1.12–1.25 for five
-  country folds but 2.33 for Côte d'Ivoire, with all 689 parameters above 1.01.
-  More samples will not fix this; longer warmup is the lever worth trying.
+### 4.2 Leave-one-country-out confounds spatial skill with an unidentified initial condition — retained, reported with the caveat
 
-## 8. Pitfalls already hit, worth not repeating
+A held-out country's `init_country_raw` has no data, so its initial resistant
+fraction reverts to the region prior, and that error is amplified through 15–29
+years of deterministic selection before the comparison year. The review argued
+this from the model structure; it is now confirmed empirically. Across the six
+folds, the held-out bias correlates with that country's fitted country effect in
+the full-data fit at **r = −0.94**, and excess MSE against the magnitude of that
+effect at **r = +0.91**. Côte d'Ivoire and Ethiopia have the two largest
+negative country effects (−3.4 and −4.7 on the logit initial-fraction scale) and
+are the two worst-predicted folds, both overpredicting mortality by 0.27–0.36.
 
-- `calculate(..., nsim = n)` returns an **independent resample** of the
-  posterior. It preserves joint structure across quantities, so it is valid for
-  prediction, but it destroys MCMC ordering, so effective sample size cannot be
-  recovered from it, and it is not what greta's prediction interface expects to
-  be handed. Use `calculate(values = draws)` without `nsim`.
-- `coda::effectiveSize()` on 20 draws returns roughly 20. Any ESS computed from
-  a short run is meaningless; several tuning conclusions were drawn from such
-  numbers and had to be withdrawn.
-- `future.callr` buffers worker stdout until the future resolves. A long run
-  under it is invisible. Hence one process per fold.
-- Functions called from a worker must have every dependency passed explicitly.
-  `codetools::findGlobals(fit_fold, merge = FALSE)$variables` catches free
-  variables; `n_unique_cells` was missing this way and cost a run.
-- Verify that string edits to these scripts actually applied. A silently
-  non-matching `str.replace` cost a second run.
-- Always smoke test the full path with tiny settings before a long run:
-  `Rscript R/run_one_fold.R spatial_extrapolation Kenya 2 4 5 5 5` takes a few
-  minutes and exercises everything. Delete the resulting `.rds` afterwards, or
-  the real fold will be skipped.
+These folds are **not refitted**. The Côte d'Ivoire fold's worst Rhat of 2.33
+raised the possibility that the negative result was a convergence artefact; the
+per-fold breakdown rules that out — five of six countries have the dynamical
+model worse than the insecticide mean, the ordering tracks the country effect
+rather than Rhat, and Côte d'Ivoire is in fact the one country where the
+dynamical model wins. So the result is structural and the fits are informative
+as they stand. They are reported as what they measure: the difficulty of
+predicting an entirely unsampled country, which is not a situation the deployed
+model faces, since there are bioassays in every country.
 
-## 10. What survives a session, and what does not
+### 4.3 A sub-national spatial block design replaces the national extrapolation concept — three new fits
+
+Holding out blocks of cells within countries keeps every country intercept
+identified, so the test isolates spatial prediction rather than compounding it
+with the initial condition. See §5.
+
+### 4.4 Scoring and reporting changes, all made without refitting
+
+- **The PIT column was the mid-P value, not a randomised PIT.** `rowMeans()` over
+  100 randomisations converges to `cdf_below + 0.5 * pmf_at`, which is not
+  uniform under calibration for discrete data. Now `pit[, 1]`. The headline
+  uniformity statistics used the full matrix and were never affected; the
+  figures were. `check_validation_functions.R` now demonstrates the distortion
+  on data with a large atom at 100% mortality: coverage 0.973 at nominal 0.95,
+  CvM 10.58 against 0.03.
+- **Skill is anchored on the intercept null**, not the nearest neighbour, which
+  pinned an informative baseline at zero by construction. `excess` (MSE above
+  the noise floor, in absolute mortality² units) and `rms_p` (its square root)
+  are reported alongside every ratio.
+- **Every model is scored at the external replicate-based overdispersion.**
+  Letting each model fit its own made coverage a comparison of dispersion rather
+  than of prediction: the intercept null reached 0.96 coverage by inflating rho
+  to 0.45 against an external estimate of 0.12–0.22. What each model's own
+  residuals imply is kept as a diagnostic in `cv_rho_comparison.csv`.
+  `score_at_external_rho <- FALSE` in `validation_metrics.R` recovers the old
+  behaviour as a sensitivity. The caveat to state in the paper: the dynamical
+  model's posterior on p was fitted jointly with its own rho ≈ 0.3, so the swap
+  is not perfectly clean without a refit.
+- **The metric surface is smaller.** Coverage, mean PIT and Cramér–von Mises are
+  three functionals of one PIT distribution, which is enough; the
+  Kolmogorov–Smirnov statistic and the PIT ECDF figure are gone. The CvM null
+  band is gone from the reported tables, because it assumes independent PIT
+  values and held-out records share a posterior, so it is too narrow — CvM is an
+  ordering, not a test. The WHO-threshold block scored the sample quantity
+  rather than the population quantity and averaged predictive quantiles across
+  folds; gone. The pixel-year aggregation rung averaged 1.3 assays per group, so
+  it was the unpooled comparison under another name; only the country-year rung
+  (17–18 assays per group) is kept.
+- **Per-fold and per-lead-year breakdowns are restored** (`cv_by_fold.csv`,
+  `cv_by_year.csv`), which master reported and the first version of this
+  pipeline dropped.
+- **Skill is reported against distance and data volume**, in
+  `R/validation_geometry.R`. For every held-out record: km to the nearest
+  training record of the same insecticide, number of such records within 100 km,
+  and years since the last observation at that pixel. This is what makes the
+  arbitrary geometry of the folds matter less, and it is the answer to the
+  question a user of the map actually has.
+
+## 5. The sub-national spatial block design
+
+**Construction.** Within each country, k-means on the coordinates of its
+data-bearing cells, K = 3. Fold *j* holds out block *j* of every country, so
+training always retains roughly two thirds of each country's records and every
+country intercept stays identified. Training records within 13 km of any
+held-out cell are dropped, which reproduces the separation the interpolation
+fold already guarantees by the triangle inequality, and is two to three cells on
+the ~5 km grid. Countries with fewer than 15 data-bearing cells are kept wholly
+in training rather than given degenerate one-cell blocks; which countries those
+are is recorded in the fold definition output.
+
+**Why K = 3 and not 5.** Block radius scales as K^(−1/2), so thirds put held-out
+cells about 29% further from the nearest training record than fifths would,
+moving the test closer to the national folds while still leaving two thirds of
+each country to pin its initial condition. Nothing is lost on precision: every
+cell is held out exactly once whatever K, so the pooled estimate has the same
+standard error either way. K sets how much training data each fit sees and how
+far the extrapolation reaches, not how well the result is measured.
+
+**Sampling settings.** Unchanged from §3. Pinning each country's initial
+condition in every fold removes the parameter that was previously unidentified,
+so convergence should be better than the national folds, not worse. Check Rhat
+on the first completed fold before launching the other two. If it has not
+improved, a longer warmup is available for these folds, because they are a new
+experiment and do not have to match the sampling settings of the retained
+national folds.
+
+## 6. Change-based scoring for the forecasting experiment
+
+With the leak fixed, the experiment is still substantially a spatial test: most
+held-out site-years are at sites with training data one to three years earlier,
+so a local method gets the level nearly free. Scoring the *change* differences
+the site level out and leaves the local slope, which is what the model claims to
+know.
+
+For each group *g* — a (cell, insecticide) or (country, insecticide) pair with
+data in both windows — with before window *B* (the three years preceding the
+cut) and holdout window *H*:
+
+```
+delta_obs(g)  = sum_H died / sum_H tested  -  sum_B died / sum_B tested
+delta_pred(g) = mean over draws of ( weighted mean of p over H
+                                     - weighted mean of p over B )
+```
+
+The target is a difference of two empirical proportions, with no model
+assumptions in it. The floor is the sum of the two windows' irreducible
+variances, which is what `noise_floor_var_pooled()` computes (added to
+`validation_functions.R`, with checks: it reduces to `noise_floor_mse()` for a
+single assay, and recovers the variance of a pooled proportion to within 2% over
+3,000 simulated groups). So the existing MSE-minus-floor framework applies
+unchanged, anchored at "no change" — which is what the nearest neighbour null
+predicts by construction, so it needs no separate treatment.
+
+Report a sign test alongside: the proportion of groups where the model gets the
+direction of change right, among groups whose |delta_obs| exceeds its own noise
+standard deviation.
+
+Run it at both scales. Cell-insecticide is the most local and the thinnest, and
+the floor handles that honestly; country-insecticide has 17–18 assays per group,
+so the floor falls roughly seventeen-fold and the comparison is almost purely
+about the population fraction.
+
+**What this requires at fit time.** Predictions at the before-window cell-years,
+which means a second index into `dynamic_cells$all_states` and one more term in
+the `calculate()` call in `fit_validation_fold.R`. Because sampling cannot be
+resumed across sessions (§8), this has to be in place before the refit starts —
+it cannot be added to a finished fold. The before-window records are defined in
+`validation_folds.R` alongside the training and test sets.
+
+A single temporal origin means the conclusion rests on one realisation of the
+recent trend. A rolling origin would cost another full run and is not worth it;
+the limitation should be stated.
+
+## 7. Cost
+
+| fits | wall clock, two at a time |
+|---|---|
+| temporal forecasting, corrected split | ~62 h |
+| three sub-national block folds | ~124 h |
+| **total** | **~124 h, about five days** |
+
+Per-fold cost is set by the dynamics graph, which is solved over all unique
+cells × years × types regardless of how many rows enter the likelihood, so a
+smaller K does not make each fold cheaper — it runs fewer of them. Four fits two
+at a time is about 124 h against 250 h for the September run.
+
+Running all four concurrently at two threads each is worth testing on one fold
+first, given how weakly threads scale; memory is the constraint, since each
+process holds the full dynamics graph.
+
+The seven retained folds in `outputs/cv_draws/` are not refitted. They can be
+slimmed offline — `rho_draws` is stored expanded to `n_draws × n_test` when only
+`n_draws × n_classes` is distinct, about 1.8 GB across the folds — but the
+scoring path already accepts either layout, and rewriting irreplaceable 62 h
+files for disk space is not obviously worth the risk.
+
+## 8. What survives a session, and what does not
 
 Established by experiment, not assumption:
 
@@ -240,26 +288,54 @@ Established by experiment, not assumption:
 | `extra_samples(draws, n_samples = ...)` | **fails** — `"object is from previous session and is now invalid"` |
 
 The sampler state is bound to the session that created it, and redefining the
-model produces new nodes the draws cannot attach to. In principle the node
-objects could be reached through the nested environments held in the model and
-coerced back to greta arrays in a fresh session, but reattaching them under the
-names the original model gave them is the hard part, and not worth attempting.
+model produces new nodes the draws cannot attach to.
 
-The consequences for planning:
+Consequences for planning:
 
-- **A longer run must be requested up front**, through `warmup` and
-  `max_samples`. Sampling cannot be topped up afterwards.
+- **A longer run must be requested up front**, through `warmup` and `n_samples`.
+  Sampling cannot be topped up afterwards.
 - **Folds to be compared must share their sampling settings.** Refitting one
-  fold with longer warmup means refitting all of them, since the validation
-  compares folds with each other.
-- Saved folds therefore also carry `prediction_arrays`, the greta arrays the
-  predictions came from, so that prediction does not depend on greta's internal
-  attribute layout. Note the eight folds from the September run predate this
-  and do not have it; the draws object is sufficient for them.
+  fold with longer warmup means refitting all of them.
+- **Each saved fold therefore keeps `draws` and `prediction_arrays`.** Nothing in
+  the committed pipeline reads them back, but they are what lets a finished fold
+  produce a new prediction target — new cell-years, new aggregations, the
+  before-window predictions of §6 — without re-running 62 h of MCMC. They are
+  also most of each file's size. The four defunct folds in
+  `outputs/cv_draws_defunct/` have no `draws` object and so cannot be used with
+  greta's prediction interface at all, which is what that costs.
 
-## 11. Superseded artefacts
+## 9. Pitfalls already hit, worth not repeating
 
-`outputs/cv_draws_defunct/` holds four folds from the earlier 2-chain run. They
-have no `draws` object, so they cannot be used with greta's prediction
-interface, and their Kenya fold did not converge. Kept only for the diagnostics
-quoted above; delete once the new run is complete.
+- `calculate(..., nsim = n)` returns an **independent resample** of the
+  posterior. It preserves joint structure across quantities, so it is valid for
+  prediction, but it destroys MCMC ordering, so effective sample size cannot be
+  recovered from it. Use `calculate(values = draws)` without `nsim`.
+- `coda::effectiveSize()` on 20 draws returns roughly 20. Any ESS computed from
+  a short run is meaningless; several tuning conclusions were drawn from such
+  numbers and had to be withdrawn.
+- `future.callr` buffers worker stdout until the future resolves, so a long run
+  under it is invisible. Hence one process per fold.
+- Functions called from a worker must have every dependency passed explicitly.
+  `codetools::findGlobals(fit_fold, merge = FALSE)$variables` catches free
+  variables; `n_unique_cells` was missing this way and cost a run.
+- Verify that string edits to these scripts actually applied. A silently
+  non-matching replacement cost a second run.
+- Arm a monitor on the logs and check that the monitor itself is alive. A run
+  died and went unnoticed for 14 h because the watcher had exited days earlier.
+- `pgrep -f "validation_metrics.R"` matches the shell waiting on it as well as
+  the R process. A completed run was reported as still running for six days on
+  the strength of that.
+
+## 10. Superseded artefacts
+
+- `outputs/cv_draws_defunct/` — four folds from the earlier 2-chain run, no
+  `draws` object, Kenya did not converge. Delete once the rebuild is complete.
+- `outputs/cv_draws_leaky_forecast/` — the forecasting fold fitted on the leaky
+  split (§4.1). Keep until the corrected fold is reported, as the record of what
+  the leak was worth.
+- `predictive_validation.R` and `dynamic_predictive_validation.R` still hold the
+  plug-in deviance path and, in the latter, three copies of the model
+  definition. Left in place deliberately, pending a decision on whether to
+  report the plug-in results alongside; deleting
+  `dynamic_predictive_validation.R` is what makes "three copies became one"
+  true.

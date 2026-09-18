@@ -32,7 +32,10 @@ ppd <- ppd_summary(df$died,
 # scale to a normal distribution for easier checking
 df_validate <- df %>%
   mutate(
-    z_resid = pit_to_z(rowMeans(ppd_pit(ppd, n_rep = 100))),
+    # one randomisation replicate, not the mean of them: averaging converges
+    # to the mid-P value, which is not uniform under calibration for discrete
+    # data and so would show a spurious bulge here (#12 review)
+    z_resid = pit_to_z(ppd_pit(ppd, n_rep = 1)[, 1]),
   ) %>%
   # add on covariate values
   left_join(

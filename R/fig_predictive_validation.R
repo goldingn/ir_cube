@@ -25,7 +25,8 @@ reliability <- read.csv("outputs/cv_reliability.csv")
 scores <- read.csv("outputs/cv_scores.csv")
 aggregated <- read.csv("outputs/cv_aggregate_summary.csv")
 rho_comparison <- read.csv("outputs/cv_rho_comparison.csv")
-who_thresholds <- read.csv("outputs/cv_who_thresholds.csv")
+by_fold <- read.csv("outputs/cv_by_fold.csv", encoding = "UTF-8")
+skill_by_geometry <- read.csv("outputs/cv_skill_by_geometry.csv")
 
 model_labels <- c(dynamical = "dynamical model",
                   nearest_neighbour = "nearest neighbour",
@@ -132,9 +133,12 @@ table_out <- summaries %>%
     `95% interval coverage` = round(coverage_95, 3),
     `mean PIT` = round(mean_pit, 3),
     `CRPS (mortality)` = round(crps, 4),
-    `skill vs nearest neighbour` = round(skill, 3),
-    `Cramer-von Mises` = round(cvm, 2),
-    `CvM null upper` = round(cvm_null_upper, 2)
+    `MSE` = round(mse, 4),
+    `bioassay noise floor` = round(mse_floor, 4),
+    `MSE above the floor` = round(excess, 4),
+    `RMS error in the fraction` = round(rms_p, 3),
+    `variance explained vs insecticide mean` = round(skill, 3),
+    `Cramer-von Mises` = round(cvm, 2)
   ) %>%
   arrange(experiment, model)
 
@@ -143,48 +147,6 @@ print(as.data.frame(table_out))
 
 
 # supplementary figures ----------------------------------------------------
-
-# departure of the randomised PIT values from uniformity, which is the same
-# check as the coverage curve at full resolution
-pit_ecdf <- scores %>%
-  tidy_labels() %>%
-  group_by(model, experiment) %>%
-  arrange(pit, .by_group = TRUE) %>%
-  mutate(
-    empirical = row_number() / n(),
-    difference = empirical - pit
-  ) %>%
-  ungroup()
-
-# a simultaneous band, from the same statistic under uniform draws
-band_width <- scores %>%
-  count(model, experiment) %>%
-  summarise(width = 1.36 / sqrt(min(n))) %>%
-  pull(width)
-
-pit_plot <- pit_ecdf %>%
-  ggplot(
-    aes(x = pit,
-        y = difference,
-        colour = model)
-  ) +
-  annotate("rect", xmin = 0, xmax = 1,
-           ymin = -band_width, ymax = band_width,
-           fill = grey(0.9)) +
-  geom_hline(yintercept = 0, linetype = 2, colour = grey(0.6)) +
-  geom_line(linewidth = 0.7) +
-  facet_wrap(~ experiment, nrow = 1) +
-  scale_colour_manual(values = model_colours, name = "") +
-  labs(
-    x = "probability integral transform",
-    y = "empirical minus expected",
-    title = "Departure of held-out data from the predictive distribution",
-    subtitle = "grey band is the range expected by chance for a calibrated model"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-ggsave("figures/CV_pit.png", pit_plot, bg = "white", width = 11, height = 4)
 
 # fitted overdispersion against the external, replicate-based estimate. A
 # fitted value above the external one means the model is absorbing process
@@ -222,7 +184,6 @@ aggregate_plot <- aggregated %>%
   tidy_labels() %>%
   mutate(
     grouping = recode(grouping,
-                      pixel_year = "pooled within pixel, year and insecticide",
                       country_year = "pooled within country, year and insecticide")
   ) %>%
   ggplot(
@@ -231,7 +192,7 @@ aggregate_plot <- aggregated %>%
         colour = model)
   ) +
   geom_point(size = 3) +
-  facet_grid(grouping ~ experiment) +
+  facet_wrap(~ experiment, nrow = 1) +
   scale_colour_manual(values = model_colours, name = "") +
   labs(
     x = "mean bioassays pooled per group",
@@ -243,48 +204,58 @@ aggregate_plot <- aggregated %>%
   theme(legend.position = "bottom")
 
 ggsave("figures/CV_aggregated.png", aggregate_plot, bg = "white",
-       width = 11, height = 6)
+       width = 11, height = 4)
 
-# the same comparison in WHO resistance categories
-who_plot <- who_thresholds %>%
+
+# where the error sits: per fold, and against separation from the training data.
+# The pooled numbers hide which folds carry the result, and the geometry panel
+# is the practical question — at what separation from the data should the
+# mechanistic model be preferred to local interpolation (#12 review)
+fold_plot <- by_fold %>%
+  filter(experiment == "spatial_extrapolation") %>%
   tidy_labels() %>%
-  group_by(model, experiment, category) %>%
-  summarise(across(c(observed, predicted, lower, upper), mean),
-            .groups = "drop") %>%
-  mutate(
-    category = factor(category,
-                      levels = c("confirmed", "possible", "susceptible"),
-                      labels = c("confirmed resistance\n(< 90% mortality)",
-                                 "possible resistance\n(90 - 98%)",
-                                 "susceptible\n(> 98%)"))
-  ) %>%
   ggplot(
-    aes(x = category,
-        colour = model)
+    aes(x = reorder(fold, excess),
+        y = excess,
+        fill = model)
   ) +
-  geom_linerange(
-    aes(ymin = lower, ymax = upper),
-    position = position_dodge(width = 0.5),
-    linewidth = 1
-  ) +
-  geom_point(
-    aes(y = observed),
-    position = position_dodge(width = 0.5),
-    shape = 4,
-    size = 3,
-    colour = "black"
-  ) +
-  facet_wrap(~ experiment, nrow = 1) +
-  scale_colour_manual(values = model_colours, name = "predicted") +
-  scale_y_continuous(labels = scales::percent) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = model_colours, name = "") +
   labs(
     x = "",
-    y = "proportion of held-out bioassays",
-    title = "Does the model reproduce the observed pattern of resistance?",
-    subtitle = "crosses are the observed proportions, bars the 95% predictive range"
+    y = "mean squared error above the bioassay noise floor",
+    title = "Which held-out countries carry the extrapolation result?",
+    subtitle = "lower is better; the insecticide mean is the no-information baseline"
   ) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
-ggsave("figures/CV_who_thresholds.png", who_plot, bg = "white",
-       width = 11, height = 5)
+ggsave("figures/CV_by_country.png", fold_plot, bg = "white",
+       width = 8, height = 5)
+
+geometry_plot <- skill_by_geometry %>%
+  filter(axis == "km to nearest same-insecticide training record",
+         n > 50) %>%
+  tidy_labels() %>%
+  ggplot(
+    aes(x = bin,
+        y = excess,
+        colour = model,
+        group = model)
+  ) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 2) +
+  facet_wrap(~ experiment, nrow = 1, scales = "free_x") +
+  scale_colour_manual(values = model_colours, name = "") +
+  labs(
+    x = "km to the nearest training bioassay of the same insecticide",
+    y = "mean squared error above the bioassay noise floor",
+    title = "Predictive error against separation from the data",
+    subtitle = "bins with fewer than fifty held-out bioassays are omitted"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("figures/CV_skill_by_distance.png", geometry_plot, bg = "white",
+       width = 11, height = 4.5)
