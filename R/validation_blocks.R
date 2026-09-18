@@ -32,7 +32,14 @@
 # identified in every fold. That is the whole purpose of blocking rather than
 # holding out countries.
 #
-# Three requirements on the blocks, in this order:
+# Requirements on the blocks, in priority order: each is one contiguous region;
+# the three are large and even in area; and each carries at least a floor number
+# of bioassays. Area comes before record balance deliberately — see the note on
+# the objective below. No buffer is applied: the blocks are large enough that a
+# few cells near a boundary cannot carry the result, and a buffer would remove
+# training records from exactly the countries whose intercepts this design
+# exists to keep identified.
+#
 # Sourcing this file defines `spatial_blocks`, a list of three training and test
 # pairs. Running it as a script also writes the diagnostics table and the maps.
 
@@ -54,6 +61,14 @@ countries_to_block <- countries_to_validate
 # regions, checked rather than assumed
 min_cells_per_country <- 12
 min_records_per_country <- 40
+# floors on what a single block may carry, so that favouring area over record
+# balance cannot leave a fold with too little to score
+min_records_per_block <- 150
+min_record_share <- 0.12
+min_cells_per_block <- 10
+# area of one cell of the mask at the equator, in square km; the mask is a
+# 0.0416667 degree grid, so roughly 4.6 km on a side
+cell_area_km2 <- (0.04166665 * 111.32) ^ 2
 # candidate cut directions, in degrees
 angles <- seq(0, 175, by = 5)
 # equal area projection for Africa, so block areas are comparable
@@ -78,136 +93,142 @@ projected <- cells %>%
 cells$east <- st_coordinates(projected)[, 1]
 cells$north <- st_coordinates(projected)[, 2]
 
-# area of the convex hull of a set of projected points, in square km. Reported
-# as a diagnostic; it is not what the cut is chosen on, for the reason below
-hull_area <- function(east, north) {
-  if (length(east) < 3) {
-    return(max(diff(range(east)), diff(range(north))) * 5)
-  }
-  points <- st_multipoint(cbind(east, north))
-  area <- as.numeric(st_area(st_convex_hull(points)))
-  max(area, max(diff(range(east)), diff(range(north))) * 5)
-}
+# Blocks are chosen to be large and even in *area*, subject to a floor on the
+# number of bioassays each one carries.
+#
+# Balancing the record counts instead does not give usable blocks. Bioassay
+# effort is wildly uneven in space — Kenya holds most of its records in one
+# cluster west of Lake Victoria — so cutting at the record terciles puts one
+# boundary straight through the densest cluster, and the block that gets a third
+# of the records occupies a tiny area. The result is short separations exactly
+# where most of the data is. Cutting at the *area* terciles instead lets a dense
+# cluster sit whole inside one block, which both keeps the blocks large and
+# lengthens the separation for the two sparse blocks, at the cost of an uneven
+# split of the records between folds. Every record is still held out exactly
+# once, so nothing is lost overall; only the per-fold record counts differ.
+#
+# Area is the number of land cells of the mask that fall in the block, not the
+# convex hull of its data-bearing cells: the cut is applied to every land cell
+# of the country, so the three areas are directly comparable and sum to the
+# country. The floor on records stops a block being so empty that its fold
+# cannot be scored.
+#
+# Maximising the smallest block's area is what "large and even" means here,
+# since the three areas sum to the country: a cut that makes one block small
+# necessarily makes another large.
 
-# The quantity a cut is chosen on: how far each cell sits from the nearest cell
-# in a different block.
-#
-# Maximising the smallest block's area does not work. Rotating a cut barely
-# changes the areas — they are three thirds of the same country however it is
-# sliced — so that objective is nearly flat across angles and ends up choosing
-# on density noise. What it does not see is block *shape*, and the cuts it
-# picked were thin slices, which put a large share of cells within a few km of
-# the next block.
-#
-# Scoring the separation directly fixes that, because it is what the experiment
-# is for. It also chooses the axis sensibly without being told to: cutting a
-# long country across its length gives three roughly square blocks, while
-# cutting along its length gives three thin ribbons, and the ribbons score far
-# worse.
-#
-# The 25th percentile rather than the minimum, because one unlucky pair of cells
-# either side of a boundary should not decide the cut, and weighted by records
-# because that is what the scoring will see.
-separation_score <- function(distance, outside_distance, records, block) {
-  separation <- vapply(seq_along(block), function(i) {
-    other <- block != block[i]
-    if (!any(other)) return(NA_real_)
-    min(distance[i, other], outside_distance[i])
-  }, numeric(1))
-  if (anyNA(separation)) return(-Inf)
-  as.numeric(quantile(rep(separation, records), 0.25))
-}
-
-# Two families of contiguous partition, both cut at record-count terciles so
-# the blocks are balanced by construction.
+# Two families of contiguous partition, both parameterised by where along a
+# one-dimensional ordering the two cuts fall.
 #
 # Slabs: project onto a direction and cut across it. Three bands, each spanning
 # the country's full width in the perpendicular direction.
 #
-# Sectors: take the bearing from the record-weighted centroid and cut on that.
+# Sectors: take the bearing from the country's area centroid and cut on that.
 # Three wedges meeting at the centre. For a compact country these are fatter
 # than any slab, at the cost of cells near the centre being close to two other
-# blocks, so which family wins is a real question and is left to the score.
-tercile_cut <- function(ordering, records) {
-  cumulative <- cumsum(records[ordering])
-  total <- sum(records)
-  block <- findInterval(cumulative - records[ordering] / 2,
-                        total * seq_len(n_blocks - 1) / n_blocks) + 1
-  out <- integer(length(ordering))
-  out[ordering] <- block
-  out
+# blocks, so which family wins is left to the objective.
+slab_ordering <- function(east, north, angle) {
+  radians <- angle * pi / 180
+  east * cos(radians) + north * sin(radians)
 }
 
-slab_cuts <- function(country_cells) {
-  lapply(angles, function(angle) {
-    radians <- angle * pi / 180
-    projection <- country_cells$east * cos(radians) +
-      country_cells$north * sin(radians)
-    list(block = tercile_cut(order(projection), country_cells$records),
-         family = "slab",
-         parameter = angle)
-  })
+sector_ordering <- function(east, north, angle, centre_east, centre_north) {
+  bearing <- atan2(north - centre_north, east - centre_east)
+  (bearing - angle * pi / 180) %% (2 * pi)
 }
 
-sector_cuts <- function(country_cells) {
-  centre_east <- weighted.mean(country_cells$east, country_cells$records)
-  centre_north <- weighted.mean(country_cells$north, country_cells$records)
-  bearing <- atan2(country_cells$north - centre_north,
-                   country_cells$east - centre_east)
-  lapply(angles, function(angle) {
-    rotated <- (bearing - angle * pi / 180) %% (2 * pi)
-    list(block = tercile_cut(order(rotated), country_cells$records),
-         family = "sector",
-         parameter = angle)
-  })
-}
+# Both families reduce to the same problem: a one-dimensional ordering of the
+# country's land cells and of its data-bearing cells, and two cut points on it.
+# That makes the search cheap. Sort both orderings once; the three areas are
+# then just the three index ranges of the sorted land values, and the three
+# record counts come from two binary searches into the sorted data values
+# against a cumulative sum, so no candidate has to touch a cell.
+#
+# Maximising the smallest area over the two cut points puts them at exactly the
+# area thirds, so the search over cut positions only does any work when the
+# record floor binds and the split has to be pulled away from even.
+cut_fractions <- sort(unique(c(seq(0.10, 0.90, by = 0.01), 1 / 3, 2 / 3)))
 
-# how far each block is from taking its share of the records
-imbalance_of <- function(records, block) {
-  shares <- tapply(records, block, sum) / sum(records)
-  if (length(shares) < n_blocks) return(Inf)
-  max(abs(shares - 1 / n_blocks))
-}
+assign_blocks <- function(country_cells, country_land) {
 
-max_imbalance <- 0.12
+  centre_east <- mean(country_land$east)
+  centre_north <- mean(country_land$north)
 
-assign_blocks <- function(country_cells) {
+  orderings <- c(
+    lapply(angles, function(angle) list(
+      family = "slab",
+      parameter = angle,
+      land = slab_ordering(country_land$east, country_land$north, angle),
+      data = slab_ordering(country_cells$east, country_cells$north, angle)
+    )),
+    lapply(angles, function(angle) list(
+      family = "sector",
+      parameter = angle,
+      land = sector_ordering(country_land$east, country_land$north, angle,
+                             centre_east, centre_north),
+      data = sector_ordering(country_cells$east, country_cells$north, angle,
+                             centre_east, centre_north)
+    ))
+  )
 
-  coordinates <- as.matrix(country_cells[, c("longitude", "latitude")])
-  distance <- fields::rdist.earth(coordinates, coordinates, miles = FALSE)
-  # distance to the nearest cell that is in training whatever the cut, which
-  # caps how much separation any cut near a border can achieve
-  outside_distance <- apply(
-    fields::rdist.earth(coordinates,
-                        as.matrix(always_training[, c("longitude",
-                                                      "latitude")]),
-                        miles = FALSE),
-    1, min)
+  minimum_records <- max(min_records_per_block,
+                         round(min_record_share * sum(country_cells$records)))
+  n_land <- nrow(country_land)
 
-  candidates <- c(slab_cuts(country_cells), sector_cuts(country_cells))
-  imbalance <- vapply(candidates,
-                      function(x) imbalance_of(country_cells$records, x$block),
-                      numeric(1))
+  best <- NULL
+  for (ordering in orderings) {
 
-  allowed <- which(imbalance <= max_imbalance)
-  if (length(allowed) == 0) {
-    # no cut balances the records this well; take the best balanced one and let
-    # the diagnostics table show it
-    allowed <- which.min(imbalance)
+    land_sorted <- sort(ordering$land)
+    data_order <- order(ordering$data)
+    data_sorted <- ordering$data[data_order]
+    record_cumulative <- c(0, cumsum(country_cells$records[data_order]))
+    n_data <- length(data_sorted)
+
+    indices <- unique(pmax(1L, pmin(n_land - 1L,
+                                    round(cut_fractions * n_land))))
+
+    for (a in seq_along(indices)) {
+      for (b in seq_along(indices)) {
+        if (b <= a) next
+        k1 <- indices[a]
+        k2 <- indices[b]
+        areas <- c(k1, k2 - k1, n_land - k2)
+        if (min(areas) <= 0) next
+        # nothing to gain unless this beats the incumbent on the smallest block
+        if (!is.null(best) && min(areas) <= best$min_area) next
+
+        thresholds <- land_sorted[c(k1, k2)]
+        if (thresholds[1] >= thresholds[2]) next
+
+        # where the two thresholds fall among the sorted data cells
+        d1 <- findInterval(thresholds[1], data_sorted)
+        d2 <- findInterval(thresholds[2], data_sorted)
+        if (min(c(d1, d2 - d1, n_data - d2)) < min_cells_per_block) next
+        records <- c(record_cumulative[d1 + 1],
+                     record_cumulative[d2 + 1] - record_cumulative[d1 + 1],
+                     record_cumulative[n_data + 1] - record_cumulative[d2 + 1])
+        if (min(records) < minimum_records) next
+
+        best <- list(min_area = min(areas),
+                     thresholds = thresholds,
+                     ordering = ordering,
+                     areas = areas,
+                     records = records)
+      }
+    }
   }
 
-  score <- vapply(allowed,
-                  function(i) separation_score(distance,
-                                               outside_distance,
-                                               country_cells$records,
-                                               candidates[[i]]$block),
-                  numeric(1))
-  best <- candidates[[allowed[which.max(score)]]]
+  if (is.null(best)) {
+    stop("no cut of ", country_cells$country_name[1],
+         " meets the record floor; lower min_record_share")
+  }
 
-  list(block = best$block,
-       family = best$family,
-       angle = best$parameter,
-       separation_q25 = max(score))
+  list(block = findInterval(best$ordering$data, best$thresholds) + 1L,
+       family = best$ordering$family,
+       angle = best$ordering$parameter,
+       smallest_area_km2 = min(best$areas) * cell_area_km2,
+       area_evenness = min(best$areas) / max(best$areas),
+       smallest_records = min(best$records))
 
 }
 
@@ -227,22 +248,42 @@ cat(sprintf("the other %i countries (%i records) stay wholly in training\n",
             sum(!splittable$split),
             sum(splittable$records[!splittable$split])))
 
-# cells that are in the training set of every fold, whatever the cuts: they
-# belong to the separation objective, because a block on a national border is
-# genuinely close to training data on the other side of it
-always_training <- cells %>%
-  filter(!country_name %in% splittable$country_name[splittable$split])
+# Every land cell of the mask with the country it belongs to, so that block
+# areas are true land areas. Built once by a rasterisation of the country
+# polygons; see the note in the script that writes it
+country_lookup_file <- "temporary/cell_country_lookup.RDS"
+if (!file.exists(country_lookup_file)) {
+  stop("missing ", country_lookup_file,
+       "; build it with terra::rasterize of gadm_polys onto the mask")
+}
+land <- readRDS(country_lookup_file) %>%
+  filter(country_name %in% splittable$country_name[splittable$split])
+land_xy <- st_as_sf(
+  data.frame(as.data.frame(terra::xyFromCell(mask, land$cell))),
+  coords = c("x", "y"), crs = 4326
+) %>%
+  st_transform(equal_area) %>%
+  st_coordinates()
+land$east <- land_xy[, 1]
+land$north <- land_xy[, 2]
 
 assignments <- lapply(
   splittable$country_name[splittable$split],
   function(this_country) {
     country_cells <- cells %>% filter(country_name == this_country)
-    result <- assign_blocks(country_cells)
+    result <- assign_blocks(country_cells,
+                            land %>% filter(country_name == this_country))
+    cat(sprintf("  %-14s %-7s angle %3i | smallest block %7.0f km2, ",
+                this_country, result$family, result$angle,
+                result$smallest_area_km2),
+        sprintf("area evenness %.2f, smallest fold %i bioassays\n",
+                result$area_evenness, result$smallest_records))
     country_cells %>%
       mutate(block = result$block,
              family = result$family,
              angle = result$angle,
-             separation_q25 = result$separation_q25)
+             smallest_area_km2 = result$smallest_area_km2,
+             area_evenness = result$area_evenness)
   }
 )
 
@@ -250,8 +291,8 @@ cell_blocks <- bind_rows(assignments) %>%
   bind_rows(
     cells %>%
       filter(country_name %in% splittable$country_name[!splittable$split]) %>%
-      mutate(block = NA_integer_, family = NA_character_,
-             angle = NA_real_, separation_q25 = NA_real_)
+      mutate(block = NA_integer_, family = NA_character_, angle = NA_real_,
+             smallest_area_km2 = NA_real_, area_evenness = NA_real_)
   )
 
 stopifnot(
@@ -350,9 +391,9 @@ if (identical(environment(), globalenv())) {
 
   per_country <- cell_blocks %>%
     filter(!is.na(block)) %>%
-    group_by(country_name, family, angle, separation_q25, block) %>%
+    group_by(country_name, family, angle, smallest_area_km2, area_evenness,
+             block) %>%
     summarise(cells = n(), records = sum(records),
-              area = hull_area(east, north),
               span_km = max(diff(range(east)), diff(range(north))),
               .groups = "drop") %>%
     group_by(country_name) %>%
@@ -360,27 +401,26 @@ if (identical(environment(), globalenv())) {
     ungroup()
 
   block_diagnostics <- per_country %>%
-    group_by(country_name, family, angle, separation_q25) %>%
+    group_by(country_name, family, angle, smallest_area_km2, area_evenness) %>%
     summarise(cells = sum(cells), records = sum(records),
               worst_share = max(abs(record_share - 1 / n_blocks)),
-              smallest_block_km2 = round(min(area)),
               smallest_block_span_km = round(min(span_km)),
               .groups = "drop") %>%
-    arrange(separation_q25)
+    arrange(smallest_area_km2)
 
   write.csv(block_diagnostics, "outputs/cv_block_diagnostics.csv",
             row.names = FALSE)
   write.csv(cell_blocks %>% select(country_name, cell, longitude, latitude,
-                                   records, block, family, angle),
+                                   records, block, family, angle,
+                                   smallest_area_km2, area_evenness),
             "outputs/cv_block_assignments.csv", row.names = FALSE)
 
-  cat("\nper country, shortest within-country separation first",
-      "(record share of a third would be 0.333):\n")
+  cat("\nper country, smallest block area first:\n")
   print(as.data.frame(block_diagnostics %>%
     transmute(country_name, cells, records, family, angle,
-              separation_q25 = round(separation_q25, 1),
-              worst_share = round(worst_share, 3),
-              smallest_block_km2)),
+              smallest_block_km2 = round(smallest_area_km2),
+              area_evenness = round(area_evenness, 2),
+              worst_record_share = round(worst_share, 3))),
     max = 400)
 
   # maps

@@ -206,74 +206,88 @@ identified throughout. That is the entire purpose of blocking rather than
 holding out countries.
 
 **Construction** (`R/validation_blocks.R`). Within each split country, its
-data-bearing cells are partitioned into three contiguous blocks carrying about a
-third of that country's records each. Two families of cut are tried:
+cells are partitioned into three contiguous blocks that are **large and even in
+area**, subject to a floor on the bioassays each one carries. Two families of
+cut are tried — slabs (project the cells onto a direction and cut across it) and
+sectors (cut on the bearing from the country's area centroid) — at 36
+orientations each, and the winner maximises the smallest block's area. Slabs
+win in all six countries.
 
-- **slabs** — project the cell centroids onto a direction and cut across it at
-  the record-count terciles, giving three bands each spanning the country's full
-  width in the perpendicular direction;
-- **sectors** — take the bearing from the country's record-weighted centroid and
-  cut on that, giving three wedges meeting at the centre.
+Area means the number of land cells of the mask falling in the block, not the
+convex hull of its data-bearing cells: the cut is applied to every land cell of
+the country, so the three areas are directly comparable and sum to the country.
+Because the three sum to a constant, maximising the smallest block's area is
+exactly what "large and even" means — a cut that makes one block small
+necessarily makes another large.
 
-Both are contiguous and both are balanced in records by construction. Thirty-six
-orientations of each are scored, and the winner maximises the **distance from
-held-out cells to the nearest training cell** — the record-weighted 25th
-percentile of it, so one unlucky pair either side of a boundary cannot decide the
-cut. Cells in the 40 always-training countries count towards that distance, so a
-block on a national border is scored at the separation it really achieves.
-Sectors win in Kenya, Côte d'Ivoire and Tanzania; slabs in Ethiopia, Nigeria and
-Senegal.
+This is the third objective tried, and the reasoning behind it is worth keeping.
 
-Scoring on separation rather than on block area matters, and was learned by
-getting it wrong first. Maximising the smallest block's area does not work:
-rotating a cut barely changes the areas, since they are three thirds of the same
-country however it is sliced, so the objective is nearly flat across
-orientations and ends up choosing on density noise. What it cannot see is block
-*shape*, and the cuts it picked were thin slices that put a fifth of held-out
-records within 15 km of training data. Scoring separation directly also picks
-the axis sensibly without being told to: cutting a long country across its
-length gives three roughly square blocks, while cutting along its length gives
-three ribbons, and the ribbons score far worse.
+- *Balance the records, maximise the smallest block's area.* Does not work.
+  Rotating a cut barely changes the areas, so the objective is nearly flat
+  across orientations and chooses on density noise; the cuts it picked were thin
+  slices, with a fifth of held-out records within 15 km of training data.
+- *Balance the records, maximise separation directly.* Better, but bounded by
+  the record constraint. Bioassay effort is wildly uneven in space, so cutting
+  at the record terciles puts a boundary straight through the densest cluster,
+  and the block holding a third of the records occupies a small area. Short
+  separations then occur exactly where most of the data is.
+- *Even areas with a record floor.* Lets a dense cluster sit whole inside one
+  block, which keeps all three blocks large and lengthens the separation for the
+  two sparse blocks. The cost is an uneven split of records between folds, which
+  costs nothing overall: every record is still held out exactly once, so only the
+  per-fold counts differ.
+
+Floors, so that favouring area cannot leave a fold too thin to score: each block
+must carry at least 150 bioassays or 12% of its country's records, whichever is
+larger, and at least 10 data-bearing cells. The floor binds only in Kenya.
 
 No buffer is applied. The blocks are large enough that a few cells near a
 boundary cannot carry the result, and a buffer would remove training records
 from exactly the countries whose intercepts this design exists to keep
 identified.
 
-**What the folds look like.** 2,848 / 3,005 / 2,841 held-out assays — 8,694 in
+**What the folds look like.** 2,879 / 3,563 / 2,252 held-out assays — 8,694 in
 total, the same count as the national experiment, since both use the same six
 countries and the same "2010 and later" test window. All nine insecticide types
-appear in every fold, in similar numbers. Every blocked record from 2010 on is
-held out exactly once; records at a held-out cell from before 2010 are dropped
-from the experiment rather than returned to training, which is what the national
-folds also do with pre-2010 records of a held-out country. No pixel is in both
-sets of any fold. Worst record-share imbalance is 0.01 from a third.
+appear in every fold. Every blocked record from 2010 on is held out exactly
+once; records at a held-out cell from before 2010 are dropped from the
+experiment rather than returned to training, which is what the national folds
+also do with pre-2010 records of a held-out country. No pixel is in both sets of
+any fold.
+
+Per country, with the smallest block's area, how even the three areas are, and
+the worst departure of a block's record share from a third:
+
+| country | family | smallest block | area evenness | worst record share |
+|---|---|---|---|---|
+| Senegal | slab | 68,900 km² | 1.00 | 0.19 |
+| Côte d'Ivoire | slab | 109,300 km² | 1.00 | 0.12 |
+| Kenya | slab | 130,600 km² | 0.43 | 0.41 |
+| Nigeria | slab | 309,500 km² | 1.00 | 0.15 |
+| Tanzania | slab | 319,100 km² | 1.00 | 0.19 |
+| Ethiopia | slab | 383,700 km² | 1.00 | 0.16 |
 
 Bioassay-weighted distance from a held-out pixel to the nearest training pixel,
 pooled over the folds:
 
 | | min | 10% | 25% | median | 75% | 90% | max |
 |---|---|---|---|---|---|---|---|
-| block folds | 5 | 17 | 35 | **77** | 138 | 194 | 335 |
+| block folds | 5 | 19 | 46 | **79** | 132 | 178 | 375 |
 | interpolation fold, for comparison | 14 | 21 | 25 | 36 | 48 | 66 | 466 |
 
-So the typical separation is roughly doubled. It is capped at a few hundred km
-rather than the ~800 km the national folds reach, because a held-out block is
-surrounded by training data in neighbouring countries — that is the price of
-keeping the country intercepts identified, and it is the right price.
+7% of held-out assays sit within 15 km of training data and 14% within 25 km,
+against 18% and 27% under the first objective. Separation is capped at a few
+hundred km rather than the ~800 km the national folds reach, because a held-out
+block is surrounded by training data in neighbouring countries. That is the
+price of keeping the country intercepts identified, and it is the right price.
 
-**The one country where the design cannot deliver: Kenya.** Per country, the
-bioassay-weighted median separation is Tanzania 121 km, Nigeria 116, Ethiopia
-108, Côte d'Ivoire 95, Senegal 53, **Kenya 26**, and 28% of Kenya's held-out
-assays are within 15 km of training data against 0.7-4.7% elsewhere. Kenya holds
-the majority of its records in one tight cluster west of Lake Victoria, and no
-contiguous partition carrying a third of the records each can separate a cluster
-that is itself more than a third of the records. The alternatives are to let
-that cluster sit whole in one block, which makes the other two blocks negligible
-in record terms, or to drop Kenya from the experiment, which loses one of the
-six informative countries. Neither is clearly better than reporting Kenya's
-records at the distance they actually represent, which the distance-stratified
-reporting of §4.4 does.
+Per-country median separation: Nigeria 132 km, Ethiopia 98, Tanzania 93, Côte
+d'Ivoire 83, Senegal 58, **Kenya 53**. Kenya is still the weakest, because it
+holds the majority of its records in one cluster west of Lake Victoria; the area
+objective at least keeps that cluster whole in one block, which lifted Kenya's
+median separation from 26 km to 53 and halved the share within 15 km. The
+distance-stratified reporting of §4.4 handles what remains: those records are
+not discarded, they are read at the distance they actually represent.
 
 One cosmetic note: a border cell is assigned to whichever country holds most of
 its records, so fold 3's held-out set touches a seventh country through one such
