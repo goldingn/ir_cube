@@ -52,8 +52,17 @@ save_fold <- function(fit, model, experiment, fold, label = experiment) {
 # the numbers of neighbours already chosen by grid search on internal holdouts
 # in predictive_validation.R
 optimal_nn <- read.csv("outputs/optimal_nn.csv")
+# Keyed on the experiment name, which is a free-text match: an experiment with
+# no row returns numeric(0), and the nearest neighbour null then silently
+# reduces to its prior (see predict_null_fixed_nn_counts). Fail here instead.
 neighbours_for <- function(experiment) {
-  optimal_nn$n_neighbours[optimal_nn$experiment == experiment]
+  value <- optimal_nn$n_neighbours[optimal_nn$experiment == experiment]
+  if (length(value) != 1) {
+    stop("outputs/optimal_nn.csv has ", length(value), " rows for experiment '",
+         experiment, "'; exactly one is needed. Add it, or point this ",
+         "experiment at the tuned value for the experiment it most resembles.")
+  }
+  value
 }
 
 # The folds still to fit. The six leave-one-country-out folds and the

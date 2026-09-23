@@ -161,6 +161,23 @@ predict_null_fixed_nn_counts <- function(latitude,
                                          n_nearest_neighbours,
                                          n_years_prior = 1) {
 
+  # A missing row in outputs/optimal_nn.csv returns numeric(0) from the lookup
+  # in run_validation_folds.R, and every step below then degrades silently:
+  # sort(x)[integer(0)] is numeric(0), `<= numeric(0)` is logical(0),
+  # which(logical(0)) is integer(0), and sum() of no elements is 0. The result
+  # is a pooled count of 0 died out of 0 tested for every held-out record, whose
+  # Jeffreys posterior is Beta(0.5, 0.5) — so the "nearest neighbour null"
+  # becomes a random number generator with no data in it, and nothing errors.
+  # This is exactly what happened to the two spatial block folds, whose
+  # experiment name had no row in that file: their reported score of -0.86 was
+  # the score of the prior, not of a nearest neighbour model.
+  stopifnot(
+    is.numeric(n_nearest_neighbours),
+    length(n_nearest_neighbours) == 1,
+    is.finite(n_nearest_neighbours),
+    n_nearest_neighbours >= 1
+  )
+
   training_coords <- as.matrix(training_data[, c("longitude", "latitude")])
   test_coords <- cbind(longitude, latitude)
 
