@@ -49,21 +49,19 @@ save_fold <- function(fit, model, experiment, fold, label = experiment) {
   invisible(file)
 }
 
-# the numbers of neighbours already chosen by grid search on internal holdouts
-# in predictive_validation.R
-optimal_nn <- read.csv("outputs/optimal_nn.csv")
-# Keyed on the experiment name, which is a free-text match: an experiment with
-# no row returns numeric(0), and the nearest neighbour null then silently
-# reduces to its prior (see predict_null_fixed_nn_counts). Fail here instead.
-neighbours_for <- function(experiment) {
-  value <- optimal_nn$n_neighbours[optimal_nn$experiment == experiment]
-  if (length(value) != 1) {
-    stop("outputs/optimal_nn.csv has ", length(value), " rows for experiment '",
-         experiment, "'; exactly one is needed. Add it, or point this ",
-         "experiment at the tuned value for the experiment it most resembles.")
-  }
-  value
-}
+# The nearest neighbour null is no longer tuned. It used to read a neighbour
+# count per experiment from outputs/optimal_nn.csv, chosen by grid search on an
+# internal test set of 100 records sampled at random from the training data -
+# which sat a median 0 km from their nearest usable neighbour, against 36 to 194
+# km for the records actually held out, so it chose too few neighbours and
+# handicapped the baseline. The lookup also had no row for the block folds,
+# where it returned numeric(0) and reduced the null to Beta(0.5, 0.5) without
+# erroring. Both problems go away with the table (#12).
+#
+# In its place, two specifications, neither of them a chosen value: the practice
+# baseline at one neighbour and the most recent two available years, and the
+# oracle bound at whichever neighbour count minimises the null's own error on
+# the held-out records. See nn_null_draws() and nn_oracle_draws().
 
 # The folds still to fit. The six leave-one-country-out folds and the
 # interpolation fold from the September run are kept as they are: the review of
@@ -80,30 +78,25 @@ folds <- c(
     function(i) list(experiment = "spatial_extrapolation",
                      fold = countries_to_validate[i],
                      training = spatial_extrapolation$training[[i]],
-                     test = spatial_extrapolation$test[[i]],
-                     n_years_prior = 1)
+                     test = spatial_extrapolation$test[[i]])
   ),
   lapply(
     seq_along(spatial_blocks),
     function(i) list(experiment = "spatial_blocks",
                      fold = as.character(i),
                      training = spatial_blocks[[i]]$training,
-                     test = spatial_blocks[[i]]$test,
-                     n_years_prior = 1)
+                     test = spatial_blocks[[i]]$test)
   ),
   list(
     list(experiment = "spatial_interpolation",
          fold = "all",
          training = spatial_interpolation$training,
-         test = spatial_interpolation$test,
-         n_years_prior = 1)
+         test = spatial_interpolation$test)
   ),
-  # The rolling forecast origins. `n_years_prior` is the window length, not the
-  # three it was: the null looks back from each held-out year, so with a
-  # five-year window the last lead year needs to reach five years back to see
-  # any training data at all. At three it would see none, and
-  # predict_null_fixed_nn_counts() now stops rather than quietly pooling the
-  # whole training set.
+  # The rolling forecast origins. The nulls need no special handling for the
+  # horizon any more: their year window is anchored at prediction time, so a
+  # forecasting fold reads the last two training years for every held-out
+  # record, however far ahead it sits.
   lapply(
     seq_along(temporal_forecasting_folds),
     function(i) {
@@ -112,8 +105,7 @@ folds <- c(
            label = paste0("temporal_forecasting_", fold$cut_year),
            fold = names(temporal_forecasting_folds)[i],
            training = fold$training,
-           test = fold$test,
-           n_years_prior = fold$window)
+           test = fold$test)
     }
   )
 )
@@ -145,15 +137,31 @@ for (fold in folds) {
     )
   }
 
-  if (file.exists(null_file("nearest_neighbour"))) next
+  if (!file.exists(null_file("nearest_neighbour"))) {
+    save_fold(
+      nn_null_draws(fold$training,
+                    fold$test,
+                    n_neighbours = 1,
+                    n_years_prior = 1,
+                    n_draws = n_draws),
+      model = "nearest_neighbour",
+      experiment = fold$experiment,
+      fold = fold$fold,
+      label = fold$label
+    )
+  }
 
+  if (file.exists(null_file("nearest_neighbour_oracle"))) next
+
+  oracle <- nn_oracle_draws(fold$training,
+                            fold$test,
+                            n_years_prior = 1,
+                            n_draws = n_draws)
+  cat(sprintf("  oracle neighbour count for %s / %s: %i\n",
+              fold$experiment, fold$fold, oracle$n_neighbours))
   save_fold(
-    nn_null_draws(fold$training,
-                  fold$test,
-                  n_neighbours = neighbours_for(fold$experiment),
-                  n_years_prior = fold$n_years_prior,
-                  n_draws = n_draws),
-    model = "nearest_neighbour",
+    oracle,
+    model = "nearest_neighbour_oracle",
     experiment = fold$experiment,
     fold = fold$fold,
     label = fold$label

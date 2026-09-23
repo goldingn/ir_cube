@@ -7,6 +7,99 @@ source("R/validation_folds.R")
 source("R/null_models.R")
 
 
+# Grid search over the number of nearest neighbours, and the neighbour count it
+# chose. Moved here from null_models.R, which is on the live validation path:
+# the nearest neighbour null is no longer tuned there, because tuning it per
+# experiment built a series of new models to compare against the one model under
+# analysis, and because the internal test set it tuned on - 100 records sampled
+# at random from training, a median 0 km from their nearest usable neighbour -
+# posed none of the problems the held-out records pose (#12). This is kept only
+# so that this superseded script, and dynamic_predictive_validation.R which
+# sources it, still run. Nothing on the live path reads outputs/optimal_nn.csv.
+
+# given tibbles of test and training data, return the test data tibble augmented
+# with observed and predicted values of the susceptibility fraction from a
+# weighted average of the nearest points in the training data of that
+# insecticide type, and in the same year or up to `n_years_prior` earlier years,
+# for multiple values of the number of neighbours, across a grid search between
+# the values in `n_nearest_neighbour_range`, evaluating integers
+# `n_nearest_neighbour_delta` apart. If plot = TRUE, plot RMSE against the
+# numbers of neighbours for visual assessment of convexity. The number of
+# neighbours yielding the minimal RMSE is identified by the column
+# `nn_is_optimal`; filtering on this column will yield the optimal predictions
+predict_null_optimal_nn <- function(test_data,
+                                    training_data,
+                                    n_nearest_neighbour_range = c(1, 20),
+                                    n_nearest_neighbour_delta = 1,
+                                    n_years_prior = 1,
+                                    plot = TRUE) {
+  
+  # Do grid search to find the optimal number of nearest neighbours for spatial
+  # interpolation
+  
+  # nearest neighbour values to try
+  nn_values <- seq(from = n_nearest_neighbour_range[1],
+                   to = n_nearest_neighbour_range[2],
+                   by = n_nearest_neighbour_delta)
+  
+  # test data
+  grid_search <- test_data %>%
+    mutate(
+      observed = prop(died, mosquito_number)
+    ) %>%
+    # add on nearest neighbour values to try (enforce integers)
+    expand_grid(
+      n_neighbours = round(nn_values)
+    ) %>%
+    # batch predictions by each value of the neighbour parameter
+    group_by(
+      n_neighbours
+    ) %>%
+    # compute predictions and observed fractions
+    mutate(
+      predicted = predict_null_fixed_nn(longitude = longitude,
+                                        latitude = latitude,
+                                        year = year_start,
+                                        insecticide_type = insecticide_type,
+                                        training = training_data,
+                                        n_nearest_neighbours = n_neighbours)
+    ) %>%
+    ungroup()
+  
+  # compute rmse for this grid search on numbers of neighbours to find the optimum
+  pred_errors <- grid_search %>%
+    group_by(
+      n_neighbours
+    ) %>%
+    summarise(
+      pred_error = betabinom_dev(died = died,
+                                 mosquito_number = mosquito_number,
+                                 predicted = predicted)
+    )
+  
+  # maybe plot the relationship to check for convexity
+  if (plot) {
+    plot(pred_error ~ n_neighbours,
+         data = pred_errors,
+         type = "b")
+  }
+  
+  # pull out the optimal value
+  optimal_nn <- pred_errors %>%
+    filter(pred_error == min(pred_error)) %>%
+    slice(1) %>%
+    pull(n_neighbours)
+  
+  # add a flag for optimality and return
+  grid_search %>%
+    mutate(
+      nn_is_optimal = n_neighbours == optimal_nn
+    )
+  
+}
+
+
+
 # binomial deviance
 betabinom_dev <- function(died, mosquito_number, predicted, rho = 0.14) {
   

@@ -49,88 +49,6 @@ predict_null_fixed_nn <- function(latitude,
 
 }
 
-# given tibbles of test and training data, return the test data tibble augmented
-# with observed and predicted values of the susceptibility fraction from a
-# weighted average of the nearest points in the training data of that
-# insecticide type, and in the same year or up to `n_years_prior` earlier years,
-# for multiple values of the number of neighbours, across a grid search between
-# the values in `n_nearest_neighbour_range`, evaluating integers
-# `n_nearest_neighbour_delta` apart. If plot = TRUE, plot RMSE against the
-# numbers of neighbours for visual assessment of convexity. The number of
-# neighbours yielding the minimal RMSE is identified by the column
-# `nn_is_optimal`; filtering on this column will yield the optimal predictions
-predict_null_optimal_nn <- function(test_data,
-                                    training_data,
-                                    n_nearest_neighbour_range = c(1, 20),
-                                    n_nearest_neighbour_delta = 1,
-                                    n_years_prior = 1,
-                                    plot = TRUE) {
-  
-  # Do grid search to find the optimal number of nearest neighbours for spatial
-  # interpolation
-  
-  # nearest neighbour values to try
-  nn_values <- seq(from = n_nearest_neighbour_range[1],
-                   to = n_nearest_neighbour_range[2],
-                   by = n_nearest_neighbour_delta)
-  
-  # test data
-  grid_search <- test_data %>%
-    mutate(
-      observed = prop(died, mosquito_number)
-    ) %>%
-    # add on nearest neighbour values to try (enforce integers)
-    expand_grid(
-      n_neighbours = round(nn_values)
-    ) %>%
-    # batch predictions by each value of the neighbour parameter
-    group_by(
-      n_neighbours
-    ) %>%
-    # compute predictions and observed fractions
-    mutate(
-      predicted = predict_null_fixed_nn(longitude = longitude,
-                                        latitude = latitude,
-                                        year = year_start,
-                                        insecticide_type = insecticide_type,
-                                        training = training_data,
-                                        n_nearest_neighbours = n_neighbours)
-    ) %>%
-    ungroup()
-  
-  # compute rmse for this grid search on numbers of neighbours to find the optimum
-  pred_errors <- grid_search %>%
-    group_by(
-      n_neighbours
-    ) %>%
-    summarise(
-      pred_error = betabinom_dev(died = died,
-                                 mosquito_number = mosquito_number,
-                                 predicted = predicted)
-    )
-  
-  # maybe plot the relationship to check for convexity
-  if (plot) {
-    plot(pred_error ~ n_neighbours,
-         data = pred_errors,
-         type = "b")
-  }
-  
-  # pull out the optimal value
-  optimal_nn <- pred_errors %>%
-    filter(pred_error == min(pred_error)) %>%
-    slice(1) %>%
-    pull(n_neighbours)
-  
-  # add a flag for optimality and return
-  grid_search %>%
-    mutate(
-      nn_is_optimal = n_neighbours == optimal_nn
-    )
-  
-}
-
-
 # predictive distributions for the null models ------------------------------
 
 # maximum likelihood estimate of the observation overdispersion implied by a
@@ -183,6 +101,21 @@ predict_null_fixed_nn_counts <- function(latitude,
 
   dists <- fields::rdist.earth(test_coords, training_coords,
                                miles = FALSE)
+
+  # The year window is anchored at prediction time, not at the record's own
+  # year: the most recent `n_years_prior` + 1 years of data that exist when the
+  # prediction is made. For the spatial experiments training spans every year,
+  # so the anchor is the record's own year and this is the familiar
+  # {year, year - 1}. For a forecast the training data stop at the cut, so the
+  # anchor is the last training year and every held-out record draws on the same
+  # window — which is the situation a person forecasting from that cut is
+  # actually in.
+  #
+  # Anchoring on the record's own year instead made the null weaker the further
+  # ahead it had to predict, for an indexing reason rather than an information
+  # one: a record one year past the cut saw the whole window, one five years past
+  # saw a single year of it, or none at all.
+  anchor <- pmin(year, max(training_data$year_start))
   year_diff <- -1 * seq(0, n_years_prior)
 
   n_test <- nrow(test_coords)
@@ -192,7 +125,7 @@ predict_null_fixed_nn_counts <- function(latitude,
   for (i in seq_len(n_test)) {
 
     distance_vec <- dists[i, ]
-    valid_years <- year[i] + year_diff
+    valid_years <- anchor[i] + year_diff
     valid <- training_data$year_start %in% valid_years &
       training_data$insecticide_type == insecticide_type[i]
     masked_distance_vec <- ifelse(valid, distance_vec, Inf)
@@ -207,10 +140,9 @@ predict_null_fixed_nn_counts <- function(latitude,
     # training year at all. Fail here instead, so the caller has to set
     # `n_years_prior` to at least the window length.
     if (!any(valid)) {
-      stop("no training records within ", n_years_prior,
-           " years before ", year[i], " for ", insecticide_type[i],
-           ": the nearest neighbour null has nothing to predict from. ",
-           "n_years_prior must reach back past the cut for every held-out year")
+      stop("no training records in ", paste(range(valid_years), collapse = "-"),
+           " for ", insecticide_type[i], ": the nearest neighbour null has ",
+           "nothing to predict from")
     }
 
     threshold_distance <- sort(masked_distance_vec,
@@ -273,7 +205,34 @@ intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
 # value already selected by grid search on an internal holdout, and
 # `rho_implied` - a diagnostic only, as for the intercept null - is fitted on a
 # further internal holdout, so neither quantity is tuned on the test fold
-nn_null_draws <- function(training_data, test_data, n_neighbours,
+# Predictive distribution of the nearest neighbour null.
+#
+# This is not a competitor model to be optimised, it is a stand-in for what a
+# person would do without a model: read a site's value off the nearby recent
+# surveys. Tuning it separately for each experiment would build a series of new
+# models to compare against the one model under analysis, so it is not tuned at
+# all. Two specifications are reported instead, and neither involves a chosen
+# value:
+#
+#   the practice baseline - `n_neighbours = 1`, `n_years_prior = 1`: the single
+#     nearest record in the most recent two years available at prediction time.
+#     Short recency is justified a priori, since anyone running this
+#     surveillance knows resistance is moving fast, and the k-curves agree.
+#
+#   the oracle bound - nn_oracle_draws() below: the same method at whichever
+#     number of neighbours minimises its own error on the held-out records. It
+#     answers a different question, how well any such rule could have done in
+#     this test, and a bound is properly per-test.
+#
+# This replaces a tuned `n_neighbours` read from outputs/optimal_nn.csv. That
+# was chosen on an internal test set of 100 records sampled at random from the
+# training data, which sat a median of 0 km from their nearest usable neighbour
+# - 26% of them at the same site - while the held-out records sit at 36 km
+# (interpolation), 139 km (blocks) and 194 km (countries). Optimal k rises with
+# the distance that has to be reached, so tuning at 0 km chose it too small and
+# handicapped the baseline. The lookup also had no row for the block folds,
+# which silently reduced the null there to its prior (#12).
+nn_null_draws <- function(training_data, test_data, n_neighbours = 1,
                           n_years_prior = 1, n_draws = 1000,
                           holdout_size = 100, seed = 111) {
 
@@ -322,5 +281,61 @@ nn_null_draws <- function(training_data, test_data, n_neighbours,
   list(p_draws = p_draws,
        rho_implied = rho_implied,
        test_df = test_data)
+
+}
+
+
+# The oracle bound: the nearest neighbour null at whichever number of
+# neighbours minimises its own mean squared error on the held-out records.
+#
+# This is deliberately given hindsight the dynamical model is not given, so that
+# no choice of neighbour count can be said to have handicapped the baseline. The
+# selection is one scalar over thousands of records, so the optimism it buys is
+# small, and it runs in the conservative direction for any claim that the
+# dynamical model beats the null.
+#
+# Minimised on mean squared error because that is what the comparison is
+# reported on - excess MSE and variance explained - so the bound is a bound on
+# the statistic actually quoted. The coverage and CRPS of the returned fold are
+# therefore at the MSE-optimal k, not at their own optima.
+nn_oracle_draws <- function(training_data, test_data,
+                            n_years_prior = 1, n_draws = 1000,
+                            k_grid = c(1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120,
+                                       200),
+                            holdout_size = 100, seed = 111) {
+
+  observed <- test_data$died / test_data$mosquito_number
+
+  mse <- vapply(k_grid, function(k) {
+    counts <- predict_null_fixed_nn_counts(
+      latitude = test_data$latitude,
+      longitude = test_data$longitude,
+      year = test_data$year_start,
+      insecticide_type = test_data$insecticide_type,
+      training_data = training_data,
+      n_nearest_neighbours = k,
+      n_years_prior = n_years_prior
+    )
+    mean((observed - emplog_prop(counts$total_died,
+                                 counts$total_tested)) ^ 2)
+  }, numeric(1))
+
+  best <- k_grid[which.min(mse)]
+  if (best == max(k_grid)) {
+    warning("the oracle neighbour count is at the top of the grid (", best,
+            "); widen k_grid so the minimum is interior")
+  }
+
+  fit <- nn_null_draws(training_data, test_data,
+                       n_neighbours = best,
+                       n_years_prior = n_years_prior,
+                       n_draws = n_draws,
+                       holdout_size = holdout_size,
+                       seed = seed)
+
+  fit$n_neighbours <- best
+  fit$k_grid <- k_grid
+  fit$k_mse <- mse
+  fit
 
 }
