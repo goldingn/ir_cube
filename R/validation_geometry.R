@@ -22,6 +22,7 @@
 
 source("R/validation_functions.R")
 source("R/validation_folds.R")
+source("R/validation_blocks.R")
 
 suppressMessages({
   library(dplyr)
@@ -92,6 +93,14 @@ geometry <- bind_rows(
                     spatial_extrapolation$test[[index]],
                     "spatial_extrapolation",
                     countries_to_validate[index])
+    })
+  ),
+  bind_rows(
+    lapply(seq_along(spatial_blocks), function(index) {
+      fold_geometry(spatial_blocks[[index]]$training,
+                    spatial_blocks[[index]]$test,
+                    "spatial_blocks",
+                    as.character(index))
     })
   ),
   fold_geometry(spatial_interpolation$training,
