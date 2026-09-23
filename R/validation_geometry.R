@@ -107,10 +107,15 @@ geometry <- bind_rows(
                 spatial_interpolation$test,
                 "spatial_interpolation",
                 "all"),
-  fold_geometry(temporal_forecasting$training,
-                temporal_forecasting$test,
-                "temporal_forecasting",
-                "all")
+  bind_rows(
+    lapply(seq_along(temporal_forecasting_folds), function(index) {
+      fold <- temporal_forecasting_folds[[index]]
+      fold_geometry(fold$training,
+                    fold$test,
+                    paste0("temporal_forecasting_", fold$cut_year),
+                    names(temporal_forecasting_folds)[index])
+    })
+  )
 )
 
 write.csv(geometry, "outputs/cv_geometry.csv", row.names = FALSE)

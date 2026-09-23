@@ -392,47 +392,99 @@ pop_final_year <- pop_cube %>%
   str_remove("pop_") %>%
   as.numeric()
 final_year <- min(nets_final_year, irs_final_year, pop_final_year)
-validation_years <- final_year + -2:0
 
-# Split into a training set strictly before those years and a test set.
+# Build one forecasting fold from a cut year and a window length.
 #
-# This must be `<  min(validation_years)`, not "not in validation_years". The
+# `training` must be `year_start < cut_year`, not "not in the test years". The
 # data run to 2024 while the covariates stop in 2022, so excluding only the
-# three validation years left 888 records from 2023 and 2024 in the training
-# set: the model was fitted on both sides of the window it was asked to
-# forecast, which is temporal interpolation with both endpoints pinned. A
-# quarter of the held-out records were at cells that also carried post-horizon
-# training data. The leak was asymmetric, because the nearest neighbour null
-# masks on `year + (0, -1, -2, -3)` and so could never see them, and it
-# therefore favoured the dynamical model. Inherited from
-# predictive_validation.R, so results from before this fix are affected
-# (#12 review).
-temporal_forecasting <- list(
-  training = df %>%
-    filter(year_start < min(validation_years)),
-  test = df %>%
-    filter(year_start %in% validation_years)
-)
+# three test years left 888 records from 2023 and 2024 in the training set: the
+# model was fitted on both sides of the window it was asked to forecast, which
+# is temporal interpolation with both endpoints pinned. A quarter of the
+# held-out records were at cells that also carried post-horizon training data.
+# The leak was asymmetric, because the nearest neighbour null masks on
+# `year + (0, -1, -2, -3)` and so could never see them, and it therefore
+# favoured the dynamical model. Inherited from predictive_validation.R, so
+# results from before this fix are affected (#12 review).
+#
+# `before` is the window of equal length immediately before the cut. The
+# forecasting experiment is scored on the change in mortality between that
+# window and the holdout window, which differences the site level out and leaves
+# the local slope — otherwise the test is largely spatial, since most held-out
+# site-years have training data a few years earlier (#12 review 5.1). Those
+# records are part of the training set; they are named here so the model's
+# predictions at them can be requested at fitting time, which is the only time
+# they can be: `extra_samples()` cannot resume a saved `draws` object, so every
+# prediction target must be asked for up front.
+forecasting_fold <- function(cut_year, window, data = df) {
 
-# The three years before the cut. The forecasting experiment is scored on the
-# change in mortality between this window and the holdout window, which
-# differences the site level out and leaves the local slope — otherwise the test
-# is largely spatial, since most held-out site-years have training data one to
-# three years earlier (#12 review 5.1). These records are part of the training
-# set; they are named here so the model's predictions at them can be requested
-# at fitting time, which is the only time they can be.
-before_years <- min(validation_years) - 3:1
-temporal_forecasting$before <- temporal_forecasting$training %>%
-  filter(year_start %in% before_years)
+  test_years <- cut_year + seq_len(window) - 1
+  before_years <- cut_year - rev(seq_len(window))
 
-stopifnot(
-  max(temporal_forecasting$training$year_start) < min(validation_years),
-  all(temporal_forecasting$test$year_start %in% validation_years),
-  all(temporal_forecasting$before$year_start %in% before_years)
+  training <- data %>%
+    filter(year_start < cut_year)
+
+  fold <- list(
+    cut_year = cut_year,
+    window = window,
+    test_years = test_years,
+    before_years = before_years,
+    training = training,
+    test = data %>%
+      filter(year_start %in% test_years),
+    before = training %>%
+      filter(year_start %in% before_years)
+  )
+
+  stopifnot(
+    max(fold$training$year_start) < cut_year,
+    all(fold$test$year_start %in% test_years),
+    all(fold$before$year_start %in% before_years),
+    nrow(fold$test) > 0,
+    nrow(fold$before) > 0
+  )
+
+  fold
+}
+
+# The rolling origin. Five-year windows, cut at 2014 and 2018.
+#
+# The original design used a single three-year holdout starting at 2020, the
+# latest the covariates allow. That is the worst available window on both
+# counts: it is the one pause in the record — observed change at pixels assayed
+# in both windows is decisively negative at every origin from 2005 to 2017 and
+# flat at 2018-2020 — and it is the thinnest, 280 paired (pixel, insecticide)
+# groups against 1,436 at a 2013 origin. Five-year windows give 30-50% more
+# paired pixels and a signal roughly 5/3 larger, because the gap between window
+# midpoints is the window length, and a five-year window spans the pause as well
+# as the decline either side of it. See R/fig_change_power.R, which measures
+# this, and the PR #12 discussion.
+#
+# The two cuts train on 52% and 82% of the data and hold out windows whose true
+# rates of decline differ by a factor of two, which is the test: does the model
+# track a slowing rate, or carry a fixed slope forward? Earlier origins have a
+# stronger signal still but train on too little data to be the model being
+# deployed. Covariates end in 2022, so 2018 is the latest feasible five-year
+# origin.
+forecast_window <- 5
+forecast_cuts <- c(2014, 2018)
+
+# The superseded 2020 three-year fold. Already fitted and scored, kept as a
+# supplementary observation — "the most recent window shows no decline" — rather
+# than as the headline forecast test.
+legacy_cut <- final_year - 2
+legacy_window <- 3
+
+temporal_forecasting_folds <- c(
+  lapply(forecast_cuts, forecasting_fold, window = forecast_window),
+  list(forecasting_fold(legacy_cut, legacy_window))
 )
+names(temporal_forecasting_folds) <- as.character(c(forecast_cuts, legacy_cut))
+
+# Kept so that scripts written against the single-fold design still resolve.
+temporal_forecasting <- temporal_forecasting_folds[[as.character(legacy_cut)]]
 
 # these are the train and test sets
 spatial_extrapolation
 spatial_interpolation
-temporal_forecasting
+temporal_forecasting_folds
 

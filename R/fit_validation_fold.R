@@ -38,6 +38,7 @@ fit_fold <- function(train_df,
                      n_chains = 4,
                      warmup = 2000,
                      n_samples = 5000,
+                     stored_draws = 2000,
                      Lmax = 30,
                      inits_file = "temporary/inits.RDS") {
 
@@ -228,19 +229,14 @@ fit_fold <- function(train_df,
   # well as the holdout one. It has to be asked for here, because sampling
   # cannot be resumed in a later session, so a quantity not requested at fitting
   # time cannot be added to a finished fold without refitting (#12 review 5.1).
-  targets <- list(population_mortality_vec_test, rho_classes)
-  names(targets) <- c("population_mortality_vec_test", "rho_classes")
-  if (!is.null(before_df) && nrow(before_df) > 0) {
-    index_before <- cbind(before_df$cell_id, before_df$type_id,
-                          before_df$year_id)
-    targets$population_mortality_vec_before <-
-      dynamic_cells$all_states[index_before]
-  }
-
   report("computing predictions at %d held-out assays%s", nrow(test_df),
          if (is.null(before_df)) "" else
            sprintf(" and %d before-window records", nrow(before_df)))
-  prediction_draws <- do.call(calculate, c(targets, list(values = draws)))
+  prediction_draws <- calculate(
+    population_mortality_vec_test = population_mortality_vec_test,
+    rho_classes = rho_classes,
+    values = draws
+  )
 
   # effective sample size of the quantities the validation metrics actually
   # consume, rather than of the raw model parameters
@@ -260,12 +256,50 @@ fit_fold <- function(train_df,
   rho_columns <- grep("rho_classes", colnames(prediction_matrix))
   p_draws <- prediction_matrix[, p_columns, drop = FALSE]
   rho_class_draws <- prediction_matrix[, rho_columns, drop = FALSE]
-  before_columns <- grep("population_mortality_vec_before",
-                         colnames(prediction_matrix))
-  p_draws_before <- if (length(before_columns) > 0) {
-    prediction_matrix[, before_columns, drop = FALSE]
+  rm(prediction_matrix, prediction_draws)
+  invisible(gc())
+
+  # The before-window predictions come from a second calculate() on the same
+  # draws object. Splitting them off is purely a memory measure: the five-year
+  # folds ask for four times as many predictions as the three-year one, and
+  # holding the mcmc.list and its flattened matrix for both windows at once is
+  # the largest allocation in the whole fit. It costs nothing in correctness,
+  # because calculate(values = draws) with no `nsim` is a deterministic function
+  # of the draws — every target is a deterministic function of the sampled
+  # parameters — so draw i here is drawn from the same posterior sample as draw
+  # i above, and the pairing the change score needs is preserved. (The pairing
+  # that must not be broken is the one `nsim` breaks, by resampling.)
+  p_draws_before <- NULL
+  if (!is.null(before_df) && nrow(before_df) > 0) {
+    index_before <- cbind(before_df$cell_id, before_df$type_id,
+                          before_df$year_id)
+    population_mortality_vec_before <- dynamic_cells$all_states[index_before]
+    before_draws <- calculate(
+      population_mortality_vec_before = population_mortality_vec_before,
+      values = draws
+    )
+    p_draws_before <- as.matrix(before_draws)
+    rm(before_draws)
+    invisible(gc())
+  }
+
+  # Thin the prediction draws before they are stored, on a single set of indices
+  # so that p, rho and the before-window p stay drawn from the same posterior
+  # samples. The scoring thins to 2,000 draws anyway, and so does the change
+  # score, so nothing downstream sees a difference; what this avoids is holding
+  # and writing twenty thousand draws of a five-year holdout, which is four
+  # times the prediction volume of the three-year one and would put two
+  # concurrent folds into swap. Effective sample size is measured above, on the
+  # unthinned ordered draws, so the diagnostics are unaffected.
+  keep_draws <- if (nrow(p_draws) > stored_draws) {
+    round(seq(1, nrow(p_draws), length.out = stored_draws))
   } else {
-    NULL
+    seq_len(nrow(p_draws))
+  }
+  p_draws <- p_draws[keep_draws, , drop = FALSE]
+  rho_class_draws <- rho_class_draws[keep_draws, , drop = FALSE]
+  if (!is.null(p_draws_before)) {
+    p_draws_before <- p_draws_before[keep_draws, , drop = FALSE]
   }
 
   convergence <- coda::gelman.diag(draws,

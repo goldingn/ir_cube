@@ -7,8 +7,9 @@
 # trend. Scoring the change differences the site level out and leaves the local
 # slope, which is what the dynamical model claims to know (#12 review 5.1).
 #
-# For each group g with data in both windows — a before window B of the three
-# years preceding the cut, and the holdout window H:
+# For each group g with data in both windows — a before window B of the same
+# length as the holdout, immediately preceding the cut, and the holdout window
+# H:
 #
 #   delta_obs(g)  = sum_H died / sum_H tested  -  sum_B died / sum_B tested
 #   delta_pred(g) = mean over draws of ( weighted mean of p over H
@@ -35,9 +36,18 @@ suppressMessages({
   library(tidyr)
 })
 
-fold_file <- "outputs/cv_draws/dynamical__temporal_forecasting__all.rds"
-if (!file.exists(fold_file)) {
-  stop("no forecasting fold at ", fold_file)
+# Every forecasting origin on disk, scored separately. The design is a rolling
+# origin — five-year windows cut at 2014 and 2018, plus the superseded 2020
+# three-year fold kept as a supplementary observation — and the origins must not
+# be pooled: their holdout windows have true rates of decline differing by a
+# factor of two, which is the contrast the test is built on.
+fold_files <- sort(list.files(
+  "outputs/cv_draws",
+  pattern = "^dynamical__temporal_forecasting__.*\\.rds$",
+  full.names = TRUE
+))
+if (length(fold_files) == 0) {
+  stop("no forecasting folds in outputs/cv_draws")
 }
 
 rho_external <- read.csv("outputs/bioassay_rho.csv")
@@ -47,28 +57,9 @@ rho_for_class <- function(insecticide_class) {
   ifelse(is.na(index), pooled, rho_external$rho[index])
 }
 
-fold <- readRDS(fold_file)
-if (is.null(fold$p_draws_before)) {
-  stop("this fold carries no before-window predictions; it predates the ",
-       "change-based score and cannot be used for it without refitting")
-}
-
-holdout <- fold$test_df
-before <- fold$before_df
-p_holdout <- fold$p_draws
-p_before <- fold$p_draws_before
-stopifnot(ncol(p_holdout) == nrow(holdout),
-          ncol(p_before) == nrow(before),
-          nrow(p_holdout) == nrow(p_before))
-
 # thin to a common set of draws; the change is a smooth functional and does not
 # need twenty thousand of them
 max_draws <- 2000
-if (nrow(p_holdout) > max_draws) {
-  keep <- round(seq(1, nrow(p_holdout), length.out = max_draws))
-  p_holdout <- p_holdout[keep, , drop = FALSE]
-  p_before <- p_before[keep, , drop = FALSE]
-}
 
 # the pooled observed proportion and the size-weighted mean of p, per group and
 # per window
@@ -93,7 +84,7 @@ window_summary <- function(data, p_draws, group) {
   )
 }
 
-score_scale <- function(scale) {
+score_scale <- function(scale, holdout, before, p_holdout, p_before) {
 
   grouping <- function(data) {
     switch(
@@ -129,6 +120,7 @@ score_scale <- function(scale) {
   data.frame(
     scale = scale,
     group = shared,
+    stringsAsFactors = FALSE,
     insecticide_class = h$insecticide_class[hi],
     assays_before = b$assays[bi],
     assays_holdout = h$assays[hi],
@@ -141,14 +133,59 @@ score_scale <- function(scale) {
 
 }
 
-changes <- bind_rows(lapply(c("cell", "country"), score_scale))
+# score one fitted forecasting fold at both scales
+score_fold <- function(fold_file) {
+
+  fold <- readRDS(fold_file)
+  if (is.null(fold$p_draws_before)) {
+    warning(basename(fold_file), " carries no before-window predictions; it ",
+            "predates the change-based score and cannot be used for it ",
+            "without refitting. Skipping.")
+    return(NULL)
+  }
+
+  holdout <- fold$test_df
+  before <- fold$before_df
+  p_holdout <- fold$p_draws
+  p_before <- fold$p_draws_before
+  stopifnot(ncol(p_holdout) == nrow(holdout),
+            ncol(p_before) == nrow(before),
+            nrow(p_holdout) == nrow(p_before))
+
+  if (nrow(p_holdout) > max_draws) {
+    keep <- round(seq(1, nrow(p_holdout), length.out = max_draws))
+    p_holdout <- p_holdout[keep, , drop = FALSE]
+    p_before <- p_before[keep, , drop = FALSE]
+  }
+
+  out <- bind_rows(lapply(c("cell", "country"), score_scale,
+                          holdout = holdout, before = before,
+                          p_holdout = p_holdout, p_before = p_before))
+  if (is.null(out) || nrow(out) == 0) {
+    return(NULL)
+  }
+
+  out %>%
+    mutate(experiment = fold$experiment,
+           cut_year = as.integer(sub("^temporal_forecasting_", "",
+                                     fold$experiment)),
+           holdout_years = paste(range(holdout$year_start), collapse = "-"),
+           before_years = paste(range(before$year_start), collapse = "-"),
+           .before = everything())
+}
+
+changes <- bind_rows(lapply(fold_files, score_fold))
+if (nrow(changes) == 0) {
+  stop("no forecasting fold carries before-window predictions")
+}
+changes <- changes %>% arrange(cut_year, scale)
 write.csv(changes, "outputs/cv_change.csv", row.names = FALSE)
 
 # summarise: mean squared error of the predicted change against "no change",
 # both measured above the floor, and the sign test
 summary_table <- changes %>%
   filter(!is.na(floor_variance)) %>%
-  group_by(scale) %>%
+  group_by(cut_year, holdout_years, before_years, scale) %>%
   summarise(
     groups = n(),
     assays = sum(assays_before + assays_holdout),
@@ -170,7 +207,7 @@ summary_table <- changes %>%
 sign_table <- changes %>%
   filter(!is.na(floor_variance),
          abs(delta_observed) > sqrt(floor_variance)) %>%
-  group_by(scale) %>%
+  group_by(cut_year, scale) %>%
   summarise(
     groups = n(),
     correct_direction = mean(sign(delta_predicted) == sign(delta_observed)),
@@ -181,7 +218,7 @@ sign_table <- changes %>%
 write.csv(summary_table, "outputs/cv_change_summary.csv", row.names = FALSE)
 write.csv(sign_table, "outputs/cv_change_direction.csv", row.names = FALSE)
 
-cat("\nchange in mortality between", "the three years before the cut and the",
+cat("\nchange in mortality between the window before each cut and the",
     "holdout window:\n")
 print(as.data.frame(summary_table %>%
         mutate(across(where(is.numeric), ~ round(.x, 4)))))

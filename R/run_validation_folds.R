@@ -28,10 +28,13 @@ n_draws <- 1000
 
 # store one fold of one model in a consistent format: the draws, and the
 # held-out records they correspond to
-save_fold <- function(fit, model, experiment, fold) {
+save_fold <- function(fit, model, experiment, fold, label = experiment) {
   object <- list(
     model = model,
-    experiment = experiment,
+    # the experiment this fold is pooled under when scored, which for the
+    # forecasting folds is the origin rather than the bare experiment name; the
+    # file keeps the plain name so all the forecasting folds sit together
+    experiment = label,
     fold = fold,
     p_draws = fit$p_draws,
     # the overdispersion each null's own residuals imply, a diagnostic only:
@@ -84,14 +87,34 @@ folds <- c(
          fold = "all",
          training = spatial_interpolation$training,
          test = spatial_interpolation$test,
-         n_years_prior = 1),
-    list(experiment = "temporal_forecasting",
-         fold = "all",
-         training = temporal_forecasting$training,
-         test = temporal_forecasting$test,
-         n_years_prior = 3)
+         n_years_prior = 1)
+  ),
+  # The rolling forecast origins. `n_years_prior` is the window length, not the
+  # three it was: the null looks back from each held-out year, so with a
+  # five-year window the last lead year needs to reach five years back to see
+  # any training data at all. At three it would see none, and
+  # predict_null_fixed_nn_counts() now stops rather than quietly pooling the
+  # whole training set.
+  lapply(
+    seq_along(temporal_forecasting_folds),
+    function(i) {
+      fold <- temporal_forecasting_folds[[i]]
+      list(experiment = "temporal_forecasting",
+           label = paste0("temporal_forecasting_", fold$cut_year),
+           fold = names(temporal_forecasting_folds)[i],
+           training = fold$training,
+           test = fold$test,
+           n_years_prior = fold$window)
+    }
   )
 )
+
+# the 2020 three-year fold was fitted and scored before the origins were
+# labelled, under experiment "temporal_forecasting" and fold "all"
+folds <- lapply(folds, function(fold) {
+  if (is.null(fold$label)) fold$label <- fold$experiment
+  fold
+})
 
 
 # null models --------------------------------------------------------------
@@ -108,7 +131,8 @@ for (fold in folds) {
       intercept_null_draws(fold$training, fold$test, n_draws = n_draws),
       model = "intercept",
       experiment = fold$experiment,
-      fold = fold$fold
+      fold = fold$fold,
+      label = fold$label
     )
   }
 
@@ -122,7 +146,8 @@ for (fold in folds) {
                   n_draws = n_draws),
     model = "nearest_neighbour",
     experiment = fold$experiment,
-    fold = fold$fold
+    fold = fold$fold,
+    label = fold$label
   )
 
 }
@@ -142,16 +167,16 @@ for (fold in folds) {
 #
 # Folds whose draws are already on disk are skipped, so the run resumes.
 #
-# Three folds at a time rather than two. There are three left to fit, so running
-# them concurrently makes the run one batch of about 70-80 h rather than two of
-# about 124 h. Three threads each keeps the machine's 16 cores from being
-# oversubscribed once TensorFlow's own overhead is counted, and costs little,
-# since the op scales poorly past four threads anyway. Memory is the real
-# constraint, because each process holds the full dynamics graph; smoke test one
-# fold and check its resident size before committing.
-n_concurrent <- 3
+# Two folds at a time, four threads each. Measured on this machine: two
+# concurrent at four threads is 62 h per fold, three at three threads is 95 h,
+# so with only the two forecast origins left to fit, two concurrent is the whole
+# run in about 62 h. Memory is the real constraint — three concurrent took
+# available memory down to 3 GB — and the five-year folds ask for four times as
+# many predictions as the three-year one did, which is why fit_fold() now thins
+# the stored draws and splits the calculate() in two.
+n_concurrent <- 2
 chains_per_fold <- 4
-threads_per_fold <- 3
+threads_per_fold <- 4
 
 log_dir <- "outputs/cv_logs"
 dir.create(log_dir, showWarnings = FALSE, recursive = TRUE)

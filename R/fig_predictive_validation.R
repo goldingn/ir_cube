@@ -35,16 +35,30 @@ model_colours <- c("dynamical model" = "#2166AC",
                    "nearest neighbour" = "#B2182B",
                    "insecticide mean" = grey(0.55))
 
+# The forecasting experiment is one per origin, since pooling a 2014 forecast
+# with a 2018 one would average over holdout windows whose true rates of decline
+# differ by a factor of two. Origins are labelled by their cut year and ordered
+# after the spatial experiments, earliest first.
 experiment_labels <- c(spatial_interpolation = "spatial interpolation",
-                       spatial_extrapolation = "spatial extrapolation",
-                       temporal_forecasting = "temporal forecasting")
+                       spatial_blocks = "spatial blocks",
+                       spatial_extrapolation = "spatial extrapolation")
+
+label_experiments <- function(experiment) {
+  cut_year <- sub("^temporal_forecasting_", "", experiment)
+  is_forecast <- cut_year != experiment
+  out <- ifelse(is_forecast,
+                paste("forecast from", cut_year),
+                experiment_labels[experiment])
+  forecast_levels <- unique(out[is_forecast])
+  forecast_levels <- forecast_levels[order(forecast_levels)]
+  factor(out, levels = c(unname(experiment_labels), forecast_levels))
+}
 
 tidy_labels <- function(data) {
   data %>%
     mutate(
       model = factor(model_labels[model], levels = model_labels),
-      experiment = factor(experiment_labels[experiment],
-                          levels = experiment_labels)
+      experiment = label_experiments(experiment)
     )
 }
 

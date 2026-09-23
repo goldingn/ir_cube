@@ -180,6 +180,22 @@ predict_null_fixed_nn_counts <- function(latitude,
       training_data$insecticide_type == insecticide_type[i]
     masked_distance_vec <- ifelse(valid, distance_vec, Inf)
 
+    # If no training record matches this record's insecticide and year window,
+    # every masked distance is Inf, the threshold is Inf, and `<= threshold`
+    # then selects the entire training set — every insecticide, every year. That
+    # is not a nearest neighbour prediction, it is a global mean wearing one,
+    # and it is silent. It bites when the holdout runs further past the cut than
+    # `n_years_prior` reaches back: with a five-year forecast window and
+    # `n_years_prior = 3`, the fourth and fifth lead years have no valid
+    # training year at all. Fail here instead, so the caller has to set
+    # `n_years_prior` to at least the window length.
+    if (!any(valid)) {
+      stop("no training records within ", n_years_prior,
+           " years before ", year[i], " for ", insecticide_type[i],
+           ": the nearest neighbour null has nothing to predict from. ",
+           "n_years_prior must reach back past the cut for every held-out year")
+    }
+
     threshold_distance <- sort(masked_distance_vec,
                                decreasing = FALSE)[n_nearest_neighbours]
     nearest <- which(masked_distance_vec <= threshold_distance)

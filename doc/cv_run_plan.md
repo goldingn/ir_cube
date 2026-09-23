@@ -95,20 +95,93 @@ The review of PR #12 found one blocking defect and one set of experiments that
 measures something other than what it claims to. Both force refits; the rest of
 the review is scoring and reporting, and has been done without refitting.
 
-### 4.1 The temporal forecasting fold leaked post-horizon data — refit
+### 4.1 The temporal forecasting design: a leak, then a window with no power — rebuilt as a rolling origin
 
-The training set was "every record whose year is not 2020–2022". The data run to
-2024 while the covariates stop in 2022, so 888 records from 2023 and 2024 stayed
-in training: the model was fitted on both sides of the window it was asked to
-forecast. 354 of the 1,461 held-out assays (24%) sat at pixels that also carried
-post-horizon training data, and on those pixels the dynamical model's MSE was
-0.060 against 0.086 elsewhere.
+Two separate faults, found in that order.
 
-Fixed in `validation_folds.R` (`year_start < min(validation_years)`, with a
-`stopifnot`). The old fit is in `outputs/cv_draws_leaky_forecast/` with a note;
-its scores are in the git history of `outputs/cv_summary.csv` at `6b1ba1b`. The
-nulls have been regenerated on the corrected split already, since they need no
-MCMC; the dynamical model waits for the refit.
+**The leak.** The training set was "every record whose year is not 2020–2022".
+The data run to 2024 while the covariates stop in 2022, so 888 records from 2023
+and 2024 stayed in training: the model was fitted on both sides of the window it
+was asked to forecast. 354 of the 1,461 held-out assays (24%) sat at pixels that
+also carried post-horizon training data, and on those pixels the dynamical
+model's MSE was 0.060 against 0.086 elsewhere. Fixed in `validation_folds.R`
+(`year_start < cut_year`, with a `stopifnot`). The old fit is in
+`outputs/cv_draws_leaky_forecast/` with a note; its scores are in the git
+history of `outputs/cv_summary.csv` at `6b1ba1b`.
+
+**The window.** The corrected 2020 three-year holdout turned out to be the worst
+window in the record on both counts that matter. Sliding a three-year holdout
+against the three years before it, the observed change at pixels assayed in both
+is decisively negative at every origin from 2005 to 2017 and flattens only at
+2018–2020: the 2020 origin reads +0.011 [−0.017, +0.040]. It is also the
+thinnest, at 280 paired (pixel, insecticide) groups and 1,127 assays against
+1,436 and 6,346 at a 2013 origin — enough to bound the mean change, nowhere near
+enough to score any single site, which is why the direction test came out at
+49%, a coin flip, and must not be reported as a finding.
+
+The model is not misbehaving on the trend. It predicts −0.093 over that window,
+and the slope fitted to the training years 2012–2019 implies −0.075 to −0.082.
+It extrapolates the historical rate faithfully; the rate stopped.
+
+**Five-year windows fix it.** At every origin they give 30–50% more paired
+pixels and a signal roughly 5/3 larger, because the gap between window midpoints
+is the window length, and a five-year window spans the 2018–2020 pause as well
+as the decline either side of it. The 2018 origin's signal-to-resolvable ratio
+goes from 0.2 at three years to 3.8 at five. `R/fig_change_power.R` measures
+this and draws `figures/CV_change_power.png` (five-year sliding origin) and
+`figures/CV_change_window_size.png` (the 1/2/3/5-year comparison).
+
+**Two origins, fitted:**
+
+| cut | training | % of data | holdout | paired pixels | observed change | ratio to resolvable |
+|---|---|---|---|---|---|---|
+| 2014 | 1995–2013, 14,285 | 52% | 2014–2018, 9,922 assays | 1,748 | −0.084 | 12.0 |
+| 2018 | 1995–2017, 22,377 | 82% | 2018–2022, 4,096 assays | 881 | −0.042 | 3.8 |
+
+Non-overlapping holdouts bar the shared endpoint, training at half and
+four-fifths of the data, and a factor of two between their true rates of
+decline. That contrast is the test: does the model track a slowing rate, or
+carry a fixed slope forward? Earlier origins have a stronger signal still — a
+2010 origin is the strongest in the record — but train on 17% of the data, so
+they are not the model being deployed and their skill would not transfer.
+Covariates end in 2022, so 2018 is the latest feasible five-year origin.
+
+The 2020 three-year fold is kept and reported as a supplementary observation —
+"the most recent window shows no decline" — not as the headline forecast test.
+It is already paid for.
+
+**How it is coded.** `validation_folds.R` exposes `forecasting_fold(cut_year,
+window)` and a named list `temporal_forecasting_folds`; `temporal_forecasting`
+still resolves, to the 2020 fold. Dispatch is `Rscript R/run_one_fold.R
+temporal_forecasting 2014 4 4`. Each origin is stored under
+`experiment = "temporal_forecasting_<cut>"` so that scoring never pools two
+holdout windows whose true rates of decline differ by a factor of two; the file
+name keeps the plain experiment name, so the origins sit together in
+`outputs/cv_draws/`. The already-fitted 2020 fold was relabelled in place, no
+refit.
+
+**Two changes the five-year window forced:**
+
+- *The nearest neighbour null's lookback.* It searches the same year and
+  `n_years_prior` earlier ones, intersected with training. With a five-year
+  window and `n_years_prior = 3`, held-out years at lead 4 and 5 have no valid
+  training year at all — and the old code then took `sort(...)[n]` of a vector
+  of `Inf`, giving a threshold of `Inf`, and selected the *entire* training set:
+  a global mean wearing a nearest-neighbour label, silently. `n_years_prior` is
+  now the window length, and `predict_null_fixed_nn_counts()` stops rather than
+  falling back. The three-year fold escaped this by one year, so its result is
+  unaffected. The number of neighbours is left at the tuned 5 for every origin,
+  which keeps the origins comparable — note that the tuning in
+  `predictive_validation.R` was itself run at the default `n_years_prior = 1`,
+  an inconsistency that predates this change.
+- *Prediction volume.* The 2014 fold asks for 20,522 predictions against the
+  three-year fold's 5,724. `fit_fold()` now thins the stored draws to 2,000 —
+  which is what the scoring and the change score thin to anyway, and ESS is
+  still measured on the unthinned ordered draws — and takes the before-window
+  predictions in a second `calculate()` call, so peak memory tracks the larger
+  window rather than both at once. `calculate(values = draws)` with no `nsim` is
+  a deterministic function of the draws, so the pairing the change score needs
+  survives the split.
 
 ### 4.2 Leave-one-country-out confounds spatial skill with an unidentified initial condition — retained, reported with the caveat
 
@@ -310,8 +383,8 @@ the site level out and leaves the local slope, which is what the model claims to
 know.
 
 For each group *g* — a (cell, insecticide) or (country, insecticide) pair with
-data in both windows — with before window *B* (the three years preceding the
-cut) and holdout window *H*:
+data in both windows — with before window *B* (the `window` years preceding the
+cut, the same length as the holdout) and holdout window *H*:
 
 ```
 delta_obs(g)  = sum_H died / sum_H tested  -  sum_B died / sum_B tested
@@ -352,9 +425,9 @@ the limitation should be stated.
 
 | fits | wall clock, two at a time |
 |---|---|
-| temporal forecasting, corrected split | ~62 h |
-| three sub-national block folds | ~124 h |
-| **total** | **~124 h, about five days** |
+| ~~temporal forecasting, corrected split~~ | done, 62 h |
+| ~~two sub-national block folds~~ | done |
+| forecast origins 2014 and 2018, five-year windows | ~62 h |
 
 Per-fold cost is set by the dynamics graph, which is solved over all unique
 cells × years × types regardless of how many rows enter the likelihood, so a

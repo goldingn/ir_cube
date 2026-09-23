@@ -3,6 +3,7 @@
 #   Rscript R/run_one_fold.R <experiment> <fold> [n_chains] [threads]
 #
 # e.g. Rscript R/run_one_fold.R spatial_extrapolation Kenya 4 4
+#      Rscript R/run_one_fold.R temporal_forecasting 2014 4 4
 #
 # One fold per process, so that greta's warmup and sampling progress goes to
 # this fold's own log rather than being buffered out of sight. Dispatched by
@@ -40,6 +41,7 @@ source("R/fit_validation_fold.R")
 
 # find the requested fold
 before <- NULL
+experiment_label <- experiment_name
 if (experiment_name == "spatial_extrapolation") {
   index <- match(fold_name, countries_to_validate)
   stopifnot(!is.na(index))
@@ -55,11 +57,22 @@ if (experiment_name == "spatial_extrapolation") {
   training <- spatial_blocks[[index]]$training
   test <- spatial_blocks[[index]]$test
 } else if (experiment_name == "temporal_forecasting") {
-  training <- temporal_forecasting$training
-  test <- temporal_forecasting$test
+  # `fold` is the cut year: training is everything strictly before it, the
+  # holdout is the window starting at it. The origins are defined in
+  # validation_folds.R.
+  stopifnot(fold_name %in% names(temporal_forecasting_folds))
+  fold <- temporal_forecasting_folds[[fold_name]]
+  training <- fold$training
+  test <- fold$test
   # predictions in the before window are needed for the change-based score, and
   # can only be requested at fitting time
-  before <- temporal_forecasting$before
+  before <- fold$before
+  # Each origin is scored as its own experiment, because pooling a 2014 forecast
+  # with a 2018 one would average over holdout windows whose true rates of
+  # decline differ by a factor of two. The file name keeps the plain experiment
+  # name and carries the origin in the fold field, so the two new folds sit
+  # alongside the others in outputs/cv_draws.
+  experiment_label <- paste0("temporal_forecasting_", fold$cut_year)
 } else {
   stop("unknown experiment: ", experiment_name)
 }
@@ -117,7 +130,7 @@ dir.create(draws_dir, showWarnings = FALSE, recursive = TRUE)
 
 saveRDS(
   list(model = "dynamical",
-       experiment = experiment_name,
+       experiment = experiment_label,
        fold = fold_name,
        # The draws object, and the greta arrays the predictions came from, so
        # that calculate() can be used on a reloaded fold to predict a quantity
