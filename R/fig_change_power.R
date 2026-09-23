@@ -104,10 +104,14 @@ single_year <- bind_rows(lapply(gaps, function(gap) {
 write.csv(single_year, "outputs/change_power_years.csv", row.names = FALSE)
 
 
-# view two: three-year windows, sliding the cut ----------------------------
+# view two: the main figure — five-year windows, sliding the cut -----------
 
-window <- 3
-cut_years <- 2005:2022
+# Five years rather than three. The gap between window midpoints is the window
+# length, so a five-year window carries a signal roughly 5/3 larger, and it
+# spans the 2018-2020 pause together with the decline either side of it rather
+# than sitting inside the pause.
+window <- 5
+cut_years <- 2005:2019
 
 sliding <- bind_rows(lapply(cut_years, function(cut) {
   out <- paired_change(seq(cut - window, cut - 1), seq(cut, cut + window - 1))
@@ -115,8 +119,13 @@ sliding <- bind_rows(lapply(cut_years, function(cut) {
   out %>% mutate(cut = cut, .before = everything())
 }))
 
-write.csv(sliding, "outputs/change_power_windows.csv", row.names = FALSE)
+# the latest origin whose holdout window is covered by the covariate layers
+latest_feasible <- final_year - window + 1
+chosen_cuts <- c(2014, 2018)
 
+write.csv(sliding %>% mutate(window = window,
+                             covariates_cover_holdout = cut <= latest_feasible),
+          "outputs/change_power_windows.csv", row.names = FALSE)
 
 # figures ------------------------------------------------------------------
 
@@ -127,6 +136,17 @@ base <- theme_minimal(base_size = 11) +
   theme(panel.grid.minor = element_blank(),
         panel.grid.major.x = element_blank(),
         legend.position = "bottom")
+
+# every figure is written twice: a 300 dpi raster to look at, and a vector PDF
+# for the manuscript. The ggplot objects are also saved, so a panel can be
+# restyled for the paper without recomputing anything
+save_figure <- function(plot, name, width, height) {
+  ggsave(file.path("figures", paste0(name, ".png")), plot, bg = "white",
+         width = width, height = height, dpi = 300)
+  ggsave(file.path("figures", paste0(name, ".pdf")), plot, bg = "white",
+         width = width, height = height, device = cairo_pdf)
+  invisible(plot)
+}
 
 single_year <- single_year %>% mutate(gap = factor(gap, levels = gaps))
 
@@ -183,46 +203,74 @@ power_panel <- single_year %>%
                         "the solid one")) +
   base
 
-ggsave("figures/CV_change_power.png",
-       change_panel / count_panel / power_panel +
-         plot_layout(heights = c(1, 0.8, 0.9)),
-       bg = "white", width = 12, height = 10)
+window_size_figure <- change_panel / count_panel / power_panel +
+  plot_layout(heights = c(1, 0.8, 0.9))
 
-# and the sliding-window view, which is the experiment's own design
+save_figure(window_size_figure, "CV_change_window_size", width = 12, height = 10)
+saveRDS(list(combined = window_size_figure, data = single_year),
+        "outputs/figure_change_window_size.RDS")
+
+# The main figure. Where in the record can a forecast of change be validated,
+# and how much data is there to do it with.
+chosen <- sliding %>% filter(cut %in% chosen_cuts)
+
 sliding_panel <- sliding %>%
   ggplot(aes(x = cut)) +
+  annotate("rect", xmin = latest_feasible + 0.5, xmax = max(cut_years) + 0.5,
+           ymin = -Inf, ymax = Inf, fill = grey(0.92)) +
   geom_hline(yintercept = 0, linewidth = 0.4, colour = grey(0.45)) +
-  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.2, fill = "#3182BD") +
-  geom_line(aes(y = mean_change), linewidth = 0.8, colour = "#08519C") +
-  geom_line(aes(y = detectable), linewidth = 0.6, colour = "#B2182B") +
-  geom_line(aes(y = -detectable), linewidth = 0.6, colour = "#B2182B") +
-  scale_x_continuous(breaks = cut_years[cut_years %% 2 == 1]) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), alpha = 0.22, fill = "#3182BD") +
+  geom_line(aes(y = detectable), linewidth = 0.5, colour = "#B2182B") +
+  geom_line(aes(y = -detectable), linewidth = 0.5, colour = "#B2182B") +
+  geom_line(aes(y = mean_change), linewidth = 0.9, colour = "#08519C") +
+  geom_point(data = chosen, aes(y = mean_change), size = 3,
+             colour = "#08519C") +
+  geom_point(data = chosen, aes(y = mean_change), size = 1.4, colour = "white") +
+  scale_x_continuous(breaks = cut_years[cut_years %% 2 == 1],
+                     expand = expansion(add = 0.6)) +
   labs(x = NULL, y = "change in mortality",
-       title = "Sliding the forecast origin: a three-year window against the three before it",
-       subtitle = paste("blue: observed mean change with a 95% bootstrap",
-                        "interval. red: what assay noise alone allows to be",
-                        "resolved")) +
+       title = sprintf("Change in bioassay mortality over a %i-year forecast horizon", window),
+       subtitle = paste0("blue: mean change at pixels assayed in both the ",
+                         window, "-year holdout window and the ", window,
+                         " years before it,\nwith a 95% bootstrap interval. ",
+                         "red: what bioassay noise alone allows to be resolved.",
+                         "\nringed points are the two origins chosen for ",
+                         "validation; shading marks origins whose holdout ",
+                         "window runs past the covariate layers")) +
   base
 
 sliding_counts <- sliding %>%
   ggplot(aes(x = cut, y = groups)) +
-  geom_col(fill = "#6BAED6", width = 0.7) +
-  geom_text(aes(label = groups), vjust = -0.4, size = 2.9,
+  annotate("rect", xmin = latest_feasible + 0.5, xmax = max(cut_years) + 0.5,
+           ymin = -Inf, ymax = Inf, fill = grey(0.92)) +
+  geom_col(fill = "#6BAED6", width = 0.72) +
+  geom_col(data = chosen, fill = "#08519C", width = 0.72) +
+  geom_text(aes(label = groups), vjust = -0.45, size = 2.9,
             colour = grey(0.35)) +
-  scale_x_continuous(breaks = cut_years[cut_years %% 2 == 1]) +
-  labs(x = "first year of the holdout window", y = "pixel-insecticide pairs",
-       subtitle = "pixels assayed in both windows") +
+  scale_x_continuous(breaks = cut_years[cut_years %% 2 == 1],
+                     expand = expansion(add = 0.6)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(x = "first year of the holdout window",
+       y = "pixel-insecticide pairs",
+       subtitle = "pixels carrying an assay in both windows") +
   base
 
-ggsave("figures/CV_change_power_windows.png",
-       sliding_panel / sliding_counts + plot_layout(heights = c(1.2, 0.8)),
-       bg = "white", width = 10, height = 8)
+change_power_figure <- sliding_panel / sliding_counts +
+  plot_layout(heights = c(1.25, 0.75))
 
-cat("\nthree-year windows, sliding the cut:\n")
+save_figure(change_power_figure, "CV_change_power", width = 9, height = 7.5)
+saveRDS(list(combined = change_power_figure,
+             change = sliding_panel,
+             counts = sliding_counts,
+             data = sliding),
+        "outputs/figure_change_power.RDS")
+
+cat(sprintf("\n%i-year windows, sliding the cut:\n", window))
 print(as.data.frame(sliding %>%
         transmute(cut, groups, assays,
                   per_group = round(assays_per_group, 1),
                   mean_change = round(mean_change, 3),
                   ci = sprintf("[%+.3f, %+.3f]", lower, upper),
                   detectable = round(detectable, 3),
-                  usable = detectable < 0.075)))
+                  ratio = round(abs(mean_change) / detectable, 1),
+                  covariates = cut <= latest_feasible)))
