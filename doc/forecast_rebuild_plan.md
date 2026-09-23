@@ -10,6 +10,45 @@
 
 ---
 
+## 0. Progress, 23 September
+
+- **4.1 done.** `validation_folds.R` exposes `forecasting_fold(cut_year,
+  window)` and `temporal_forecasting_folds` (2014 and 2018 at five years, 2020
+  at three); `run_one_fold.R` takes the cut year as its fold argument;
+  `run_validation_folds.R` is at `n_concurrent = 2`, `threads_per_fold = 4`.
+  Each origin is stored as its own experiment, so scoring never pools windows
+  whose true rates of decline differ by a factor of two. The 2020 fold was
+  relabelled in place (`__all` → `__2020`, fields rewritten), no refit.
+- **4.2 done.** Nulls built for 2014 and 2018. `n_years_prior` is now the window
+  length: at three, held-out years at lead 4 and 5 had no valid training year,
+  and the null silently returned the mean of the whole training set.
+  `predict_null_fixed_nn_counts()` now stops instead. The three-year fold missed
+  this by one year, so its result stands. Number of neighbours left at 5 for
+  every origin, for comparability — **open question for Nick:** the tuning in
+  `predictive_validation.R` was itself run at the default `n_years_prior = 1`,
+  which predates all of this.
+- **4.3 done.** Smoke-tested both origins; `p_draws_before` comes back aligned
+  with `before_df`. Launched 10:42 on 23 September from the frozen copy, two
+  concurrent at four threads, ETA about 62 h — **around 00:40 on 26 September**.
+  Logs in `outputs/cv_logs/temporal_forecasting__{2014,2018}.log`.
+- **4.4 partly done.** `validation_change.R` loops over origins and emits one
+  row per cut; it reproduces the 2020 numbers exactly (280 groups, 1,127 assays,
+  +0.0115, 49% direction). `validation_metrics.R` and `validation_geometry.R`
+  are generalised but cannot run until the fits land.
+- **4.5 mostly done.** Both power figures are already five-year;
+  `fig_predictive_validation.R` needed no per-origin panels, only a label
+  function, which it now has. Remaining: rerun it once the fits are scored.
+- **4.6 done.** `doc/cv_run_plan.md` §4.1 rewritten.
+
+Two changes the longer window forced, beyond the plan below. The 2014 fold asks
+for 20,522 predictions against the three-year fold's 5,724, so `fit_fold()` now
+thins the stored draws to the 2,000 the scoring uses anyway — ESS is still
+measured on the unthinned ordered draws — and takes the before-window
+predictions in a second `calculate()`, checked to return identical draws in
+identical order.
+
+---
+
 ## 1. Where things stand
 
 Branch `posterior-predictive-validation`, PR #12. All scoring machinery is
