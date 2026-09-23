@@ -421,6 +421,56 @@ A single temporal origin means the conclusion rests on one realisation of the
 recent trend. A rolling origin would cost another full run and is not worth it;
 the limitation should be stated.
 
+## 6b. Skill against distance: a negative result
+
+`R/validation_distance.R`, writing `outputs/cv_distance.csv`.
+
+The raw distance-stratified skill table on the block folds looks structured — a
+dip at short range, a peak near 200 km — but the strata are confounded. Records
+within 50 km are 48% Kenya, records beyond 400 km are 60% Tanzania, and how far
+a held-out record sits from training data is largely a function of which country
+it is in and how large that country's blocks are. The denominator moves too, by
+a factor of 2.4 across bins.
+
+**The conclusion is that these folds cannot resolve a distance effect.** Under a
+binned weighted least squares with country, insecticide class, fold and year as
+fixed effects, and a pixel-cluster bootstrap over 905 pixels, the joint test
+that skill differs across distance bins gives p = 0.058 for the dynamical model
+and p = 0.264 for the one-neighbour null. (That first figure sits near the
+conventional threshold and moves between 0.06 and 0.08 with the bootstrap seed,
+which is itself a reason not to lean on it.) The dynamical model's 100–200 km bin
+is individually clear of zero at +19.0 [5.8, 30.7] % of the intercept null's
+excess MSE, and reappears under every estimator tried, but one bin of five is
+not a finding and it does not survive the joint test. A one-degree-of-freedom
+slope in log distance is also indistinguishable from zero: +7.2 [−1.25, +15.7] %
+per e-fold, so the direction favours the mechanistic model doing relatively
+better further from data, but it cannot be claimed.
+
+Findings should therefore be reported at the level of the folds themselves —
+interpolation, and sub-national blocks — not stratified by distance.
+
+Three things worth not repeating, all established the hard way:
+
+- **The noise floor cancels in a paired difference.** The response is the
+  per-record difference in squared error against the intercept null; writing
+  `y = p + e`, the `e²` terms are identical in the two squared errors and
+  subtract out. No floor estimate is needed and assay size stops being a
+  confounder.
+- **Aggregation to (cell, insecticide, year) is exact.** The difference is
+  affine in the observed proportion, so the group mean is an exact function of
+  `(n, mean(y))`. 8,690 records become 6,987 strata with no loss, and the
+  replicate structure that a smoother would otherwise read as a distance trend
+  goes with it.
+- **A pixel term cannot go in the mean model.** Distance is very nearly a
+  pixel-level covariate (ICC 0.91), so a random intercept per pixel absorbs the
+  between-pixel contrast that identifies it — the effect collapses, and so does
+  an explicitly between-pixel Mundlak term. Clustering has to be handled in the
+  inference instead. This was reached first with a penalised spline, whose
+  effective degrees of freedom tracked the basis dimension (5.6, 9.6, 13.0 at
+  k = 8, 20, 30) because a flexible smooth of a covariate near-collinear with
+  pixel is partly smoothing pixel; the binned model reaches the same place with
+  nothing to tune.
+
 ## 7. Cost
 
 | fits | wall clock, two at a time |
