@@ -36,6 +36,15 @@ Leave-one-country-out and the legacy 2020 forecasting fold are defunct and are n
    - Skill gain by forecast horizon.
    - Large-scale structure in the fitted fields, and their correlation with covariates.
 
+## Further steps
+
+8. **Maps** (`R/two_stage_maps.R`). Fit `omega_xi_u` per type to all the data, on top of the full dynamical fit. Map, in the layout of the dynamical-model figures:
+   - two-stage predicted mortality;
+   - the second-stage correction (ω + ξ, logit scale);
+   - the difference from the dynamical model (percentage points);
+   - the correction SD.
+9. **Mesh resolution.** Refine the ξ mesh (and the ω mesh) beyond the defaults, and keep the finer mesh if the cross-validation scores improve.
+
 ## Implementation notes
 
 - **Meshes.** The ω mesh has a node at every site, merged within a cutoff that grows until there are at most 2500 nodes, with edges of at most 250 km between sites. ξ uses a separate, coarser mesh with at most 600 nodes. Putting ξ on the ω mesh gives a Cholesky factor with about 29M non-zeros, which is too slow at 2500 nodes × 30 years. Pass `mesh_xi = mesh` to use one mesh. The ξ mesh cutoff is about 190 km, so revisit its size if the fitted η range is short.
