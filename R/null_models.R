@@ -301,7 +301,7 @@ nn_null_draws <- function(training_data, test_data, n_neighbours = 1,
 nn_oracle_draws <- function(training_data, test_data,
                             n_years_prior = 1, n_draws = 1000,
                             k_grid = c(1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120,
-                                       200),
+                                       200, 300, 500, 800),
                             holdout_size = 100, seed = 111) {
 
   observed <- test_data$died / test_data$mosquito_number
