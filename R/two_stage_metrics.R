@@ -121,8 +121,17 @@ model_colours <- c(
   nearest_neighbour = "#1B7837",
   intercept = grey(0.45)
 )
+# models run on a non-default mesh configuration (R/run_two_stage_folds.R
+# mesh=<tag>) carry a _mesh-<tag> suffix, and are labelled as their base model
+# plus the tag
+mesh_tag_pattern <- "_mesh-([A-Za-z0-9_]+)$"
 label_for <- function(model) {
-  ifelse(model %in% names(model_labels), model_labels[model], model)
+  base <- sub(mesh_tag_pattern, "", model)
+  tag <- ifelse(grepl(mesh_tag_pattern, model),
+                sub(paste0("^.*", mesh_tag_pattern), " [mesh \\1]", model),
+                "")
+  ifelse(base %in% names(model_labels),
+         paste0(model_labels[base], tag), model)
 }
 
 theme_two_stage <- theme_minimal(base_size = 10) +
@@ -714,7 +723,9 @@ present_models <- c(present_models,
                     setdiff(unique(all_scores$model), present_models))
 colour_scale <- function(aesthetic = "colour") {
   values <- model_colours[present_models]
-  values[is.na(values)] <- "black"
+  # models without a fixed colour (e.g. the mesh-resolution runs)
+  extra <- c("#35978F", "#762A83", "#C51B7D", "#4D9221", "#8C510A", "black")
+  values[is.na(values)] <- rep_len(extra, sum(is.na(values)))
   names(values) <- label_for(present_models)
   scale_discrete_manual(aesthetic, values = values,
                         breaks = label_for(present_models), name = NULL)
@@ -1152,6 +1163,9 @@ residual_files <- list.files(output_dir, pattern = "^train_residuals__.*\\.rds$"
 residual_files <- residual_files[grepl(
   paste0("__(", paste(paste(fold_specs$experiment, fold_specs$fold, sep = "__"),
                       collapse = "|"), ")\\.rds$"), residual_files)]
+# the mesh-resolution runs are compared by their scores; the residual
+# diagnostics stay on the base meshes
+residual_files <- residual_files[!grepl("_mesh-", basename(residual_files))]
 
 set.seed(2026 - 9 - 26)
 if (length(residual_files) == 0) {

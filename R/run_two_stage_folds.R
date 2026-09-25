@@ -3,11 +3,19 @@
 # the same format as the #12 folds, so they are scored by the same code.
 #
 #   Rscript R/run_two_stage_folds.R <experiment> <fold> [m_ref=mean|loo]
+#     [mesh=<tag>] [variants=omega_u,omega_xi_u]
 #
 # e.g. Rscript R/run_two_stage_folds.R spatial_interpolation all
 #      Rscript R/run_two_stage_folds.R spatial_blocks 1
 #      Rscript R/run_two_stage_folds.R spatial_blocks 1 loo
 #      Rscript R/run_two_stage_folds.R temporal_forecasting 2014
+#      Rscript R/run_two_stage_folds.R spatial_interpolation all mesh=xi1200 \
+#        variants=omega_xi_u
+#
+# mesh picks one of the named mesh configurations in mesh_configs below
+# (default "base", the meshes of all the runs so far). Any other tag is
+# appended to the model name, e.g. two_stage_omega_xi_u_mesh-xi1200, so its
+# draws, residuals and fit-summary rows sit alongside the base ones.
 #
 # Run with OpenBLAS for CHOLMOD's supernodal factorisation (reference BLAS is
 # ~10x slower), e.g.
@@ -34,10 +42,22 @@
 arguments <- commandArgs(trailingOnly = TRUE)
 experiment_name <- arguments[1]
 fold_name <- arguments[2]
-m_ref_type <- if (length(arguments) >= 3) arguments[3] else "mean"
-m_ref_type <- sub("^m_ref=", "", m_ref_type)
+# optional arguments are key=value; a bare third argument is m_ref, as before
+options <- list(m_ref = "mean", mesh = "base",
+                variants = "omega_u,omega_xi_u")
+for (argument in arguments[-(1:2)]) {
+  if (!grepl("=", argument)) argument <- paste0("m_ref=", argument)
+  key <- sub("=.*$", "", argument)
+  if (!key %in% names(options)) stop("unknown argument: ", argument)
+  options[[key]] <- sub("^[^=]*=", "", argument)
+}
+m_ref_type <- options$m_ref
+mesh_tag <- options$mesh
+variants <- strsplit(options$variants, ",")[[1]]
 stopifnot(!is.na(experiment_name), !is.na(fold_name),
-          m_ref_type %in% c("mean", "loo"))
+          m_ref_type %in% c("mean", "loo"),
+          length(variants) > 0,
+          all(variants %in% c("omega_u", "omega_xi_u")))
 
 report <- function(...) {
   cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "|", sprintf(...), "\n")
@@ -59,8 +79,35 @@ output_dir <- "outputs/two_stage"
 dir.create(output_draws_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
-variants <- c("omega_u", "omega_xi_u")
-model_suffix <- if (m_ref_type == "loo") "_loo" else ""
+# Mesh configurations (doc/two_stage_plan.md, "Mesh resolution results").
+# omega and xi give the arguments to build_correction_mesh() for each field;
+# xi = "omega" puts xi on the omega mesh. "base" is the configuration of all
+# the runs before the mesh experiment
+mesh_configs <- list(
+  base = list(omega = list(), xi = list(max_nodes = 600)),
+  # xi mesh of at most 1200 nodes: roughly halves its data-triangle edges
+  xi1200 = list(omega = list(), xi = list(max_nodes = 1200)),
+  # xi on the omega mesh
+  xifull = list(omega = list(), xi = "omega"),
+  # finer omega mesh (15 km cutoff, inner edges of at most 150 km, at most
+  # 5000 nodes), with xi on the 1200-node mesh
+  omega5000 = list(omega = list(cutoff = 15, max_edge_inner = 150,
+                                max_nodes = 5000),
+                   xi = list(max_nodes = 1200)),
+  # the finer omega mesh, with xi on the base omega mesh (as in xifull)
+  omega5000_xi2500 = list(omega = list(cutoff = 15, max_edge_inner = 150,
+                                       max_nodes = 5000),
+                          xi = list(max_nodes = 2500))
+)
+if (!mesh_tag %in% names(mesh_configs)) {
+  stop("unknown mesh configuration: ", mesh_tag, "; one of ",
+       paste(names(mesh_configs), collapse = ", "))
+}
+mesh_config <- mesh_configs[[mesh_tag]]
+
+model_suffix <- paste0(if (m_ref_type == "loo") "_loo" else "",
+                       if (mesh_tag == "base") "" else
+                         paste0("_mesh-", mesh_tag))
 
 # xi(., t0) = 0 at the dynamical model's start year: the correction to the
 # initial condition is omega, and xi accumulates selection anomalies after it
@@ -123,8 +170,9 @@ if (experiment_name == "spatial_interpolation") {
   stop("unknown experiment: ", experiment_name)
 }
 
-report("%s / %s, m_ref = %s: %i training, %i held-out assays",
-       experiment_name, fold_name, m_ref_type, nrow(training), nrow(test))
+report("%s / %s, m_ref = %s, mesh = %s, variants = %s: %i training, %i held-out assays",
+       experiment_name, fold_name, m_ref_type, mesh_tag,
+       paste(variants, collapse = ","), nrow(training), nrow(test))
 
 
 # 2. paired dynamical draws at the training and test assays ----------------
@@ -292,7 +340,7 @@ for (k in seq_along(types)) {
         experiment = experiment_name, fold = fold_name,
         model = paste0("two_stage_", variant, model_suffix),
         variant = variant, m_ref = if (loo_used) "loo" else "mean",
-        insecticide_type = type, rho = rho, n_train = 0L,
+        mesh_config = mesh_tag, insecticide_type = type, rho = rho, n_train = 0L,
         n_test = length(test_rows), error = "no training assays",
         fallback_dynamical = length(test_rows) > 0)
     }
@@ -342,9 +390,13 @@ for (k in seq_along(types)) {
   # the xi term
   time_mesh <- system.time({
     coords <- coords_km(train_k)
-    mesh <- suppressMessages(build_correction_mesh(coords, verbose = FALSE))
-    mesh_xi <- suppressMessages(build_correction_mesh(coords, max_nodes = 600,
-                                                      verbose = FALSE))
+    mesh <- suppressMessages(do.call(build_correction_mesh,
+                                     c(list(coords), mesh_config$omega,
+                                       verbose = FALSE)))
+    mesh_xi <- if (identical(mesh_config$xi, "omega")) mesh else
+      suppressMessages(do.call(build_correction_mesh,
+                               c(list(coords), mesh_config$xi,
+                                 verbose = FALSE)))
     edge_km <- median_data_edge_km(mesh, coords)
     edge_xi_km <- median_data_edge_km(mesh_xi, coords)
   })
@@ -419,6 +471,7 @@ for (k in seq_along(types)) {
       model = paste0("two_stage_", variant, model_suffix),
       variant = variant,
       m_ref = if (loo_used) "loo" else "mean",
+      mesh_config = mesh_tag,
       insecticide_type = type,
       rho = rho,
       n_train = nrow(train_k),
@@ -565,18 +618,25 @@ for (variant in variants) {
   report("saved %s", residual_file)
 }
 
-# one row per experiment x fold x variant x type x m_ref; a rerun replaces its
-# own rows rather than duplicating them
+# one row per experiment x fold x variant x type x m_ref x mesh; a rerun
+# replaces its own rows rather than duplicating them. Rows written before the
+# mesh_config column existed are the base meshes
 summary_file <- file.path(output_dir, "fit_summary.csv")
 if (file.exists(summary_file)) {
   previous <- read.csv(summary_file, stringsAsFactors = FALSE) %>%
     mutate(across(any_of(c("fold", "nlminb_message", "error",
                            "flag_range_omega", "flag_range_eta",
                            "flag_phi")),
-                  ~ ifelse(is.na(.x), NA_character_, as.character(.x)))) %>%
+                  ~ ifelse(is.na(.x), NA_character_, as.character(.x))))
+  if (!"mesh_config" %in% names(previous)) {
+    previous$mesh_config <- NA_character_
+  }
+  previous <- previous %>%
+    mutate(mesh_config = ifelse(is.na(mesh_config), "base", mesh_config),
+           .after = m_ref) %>%
     anti_join(summary_table %>% select(experiment, fold, variant, m_ref,
-                                       insecticide_type),
-              by = c("experiment", "fold", "variant", "m_ref",
+                                       mesh_config, insecticide_type),
+              by = c("experiment", "fold", "variant", "m_ref", "mesh_config",
                      "insecticide_type"))
   summary_table <- bind_rows(previous, summary_table)
 }
