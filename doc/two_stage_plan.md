@@ -36,6 +36,15 @@ Leave-one-country-out and the legacy 2020 forecasting fold are defunct and are n
    - Skill gain by forecast horizon.
    - Large-scale structure in the fitted fields, and their correlation with covariates.
 
+## Implementation notes
+
+- **Meshes.** The ω mesh has a node at every site, merged within a cutoff that grows until there are at most 2500 nodes, with edges of at most 250 km between sites. ξ uses a separate, coarser mesh with at most 600 nodes. Putting ξ on the ω mesh gives a Cholesky factor with about 29M non-zeros, which is too slow at 2500 nodes × 30 years. Pass `mesh_xi = mesh` to use one mesh. The ξ mesh cutoff is about 190 km, so revisit its size if the fitted η range is short.
+- **Compilation and BLAS.** The template must be compiled with TMBad; CppAD is about 100× slower. Runs use OpenBLAS via `LD_PRELOAD`, because the reference BLAS is about 10× slower for the Cholesky.
+- **Simulation check** (`R/check_two_stage_correction.R`):
+  - Hyperparameters are recovered.
+  - The cut-posterior shift matches a refit to about 1e-15.
+  - 95% coverage for `omega_xi_u` is 0.93 for interpolation and 0.91 for forecasting. The central intervals are slightly narrow, which is consistent with plugging in the hyperparameters.
+
 ## Term inclusion
 
 Keep `xi` only if `omega_xi_u` improves the interpolation or forecasting scores over `omega_u`.
