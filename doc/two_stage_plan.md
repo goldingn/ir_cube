@@ -45,6 +45,32 @@ Leave-one-country-out and the legacy 2020 forecasting fold are defunct and are n
   - The cut-posterior shift matches a refit to about 1e-15.
   - 95% coverage for `omega_xi_u` is 0.93 for interpolation and 0.91 for forecasting. The central intervals are slightly narrow, which is consistent with plugging in the hyperparameters.
 
+## Stage-one results (`R/stage_one_effective_parameters.R`)
+
+Effective number of parameters of the dynamical model on each fold's training assays. The nominal count is 698.
+
+| fold | assays | pixel-years | pD (mean p) | pV | p_WAIC | p_loo |
+|---|---|---|---|---|---|---|
+| interpolation | 24318 | 19453 | 287 | 442 | 340 | 342 |
+| blocks 1 | 21321 | 16861 | 285 | 480 | 338 | 340 |
+| blocks 2 | 23628 | 18530 | 288 | 462 | 346 | 352 |
+
+- Per type, p_WAIC and p_loo are 23–53.
+- pD with the plug-in at the posterior mean of the *parameters* is unreliable: it is negative for Alpha-cypermethrin on interpolation. The averaged non-centred parameters, pushed through exp(beta) and the recursion, are far from the posterior mode. So use pD at the posterior mean of p, or p_loo.
+
+Grouped PSIS, leaving out a pixel-year (and, in brackets, a whole pixel):
+
+| fold | groups with k > 0.7 | residual SD | posterior SD / residual SD | RMS leave-out shift / residual SD | leave-out / in-sample residual SD |
+|---|---|---|---|---|---|
+| interpolation | 0.10% (0.32%) | 1.94 | 0.12 | 0.036 (0.052) | 1.010 |
+| blocks 1 | 0.13% (0.49%) | 1.90 | 0.13 | 0.041 (0.059) | 1.012 |
+| blocks 2 | 0.15% (0.55%) | 1.89 | 0.13 | 0.039 (0.059) | 1.011 |
+
+- **Double counting is negligible.** Fitting stage A to in-sample residuals understates the residual SD by 1–4%.
+- **The organophosphates are affected most, and still only slightly:** RMS shift 0.07–0.11 of the residual SD, and posterior SD 0.26–0.41 of the residual SD.
+- **Decision:** keep `m_ref` as the posterior mean. `m_ref=loo` stays available in the runner as a sensitivity check.
+- **Caveat on the saved draws:** 282 of the interpolation fold's 2000 paired draws are exact repeats (81 in blocks 1, 311 in blocks 2), where HMC stuck. PSIS is run on the distinct draws only; the repeats give spurious k = Inf.
+
 ## Term inclusion
 
 Keep `xi` only if `omega_xi_u` improves the interpolation or forecasting scores over `omega_u`.
