@@ -21,8 +21,8 @@
 #      (a greta subassignment in predict.R, see map_logit_init()), so the check
 #      emulates that to confirm the draws and covariates are the ones behind
 #      them, and the maps here use the correct initial conditions;
-#   3. per type, fit stage A (omega_xi_u, default meshes, per-type rho,
-#      t0 = 1995, T = the type's last data year) to all its assays;
+#   3. per type, fit stage A (omega_xi_u, the omega5000_xi2500 meshes,
+#      per-type rho, t0 = 1995, T = the type's last data year) to all its assays;
 #   4. per type, on every mask cell and map year, compute
 #        - the correction's posterior mean (omega + xi, logit scale): the
 #          latent mode projected to the cells. u is left out: its mean is 0 away
@@ -45,10 +45,16 @@
 # AR(1) forecast: its mean is xi_T + eta_T phi (1 - phi^h) / (1 - phi), which
 # plateaus at a rate set by phi, and its SD grows with the horizon h.
 #
-# Steps 3-4 skip a type whose rasters already exist unless `overwrite` is TRUE,
-# so the figures can be redrawn without refitting.
+# Steps 3-4 skip a type whose rasters already exist and were made with the
+# current mesh_config, unless `overwrite` is TRUE, so the figures can be
+# redrawn without refitting.
 
 overwrite <- FALSE
+
+# the correction meshes: a named configuration of correction_mesh_configs() in
+# R/two_stage_correction.R. Cross-validation (doc/two_stage_plan.md, "Mesh
+# resolution results") chose omega5000_xi2500
+mesh_config <- "omega5000_xi2500"
 
 report <- function(...) {
   cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "|", sprintf(...), "\n")
@@ -101,8 +107,11 @@ quantities <- c("two_stage_mortality", "two_stage_mortality_plugin",
 raster_file <- function(type, quantity) {
   file.path(output_dir, type, sprintf("%s.tif", quantity))
 }
+# done = all the rasters exist and were made with the current mesh config
 types_done <- types[vapply(types, function(type) {
-  all(file.exists(raster_file(type, quantities)))
+  hyper_file <- file.path(output_dir, type, "hyperparameters.csv")
+  all(file.exists(c(raster_file(type, quantities), hyper_file))) &&
+    identical(read.csv(hyper_file)$mesh_config, mesh_config)
 }, logical(1))]
 types_to_fit <- if (overwrite) types else setdiff(types, types_done)
 
@@ -335,11 +344,12 @@ if (length(types_to_fit) > 0) {
     train_k$v <- stage_a$v
     T_k <- max(train_k$year)
 
-    # the default meshes of the CV runner
+    # the mesh configuration cross-validation chose (mesh_config above)
     coords <- coords_km(train_k)
-    mesh <- suppressMessages(build_correction_mesh(coords, verbose = FALSE))
-    mesh_xi <- suppressMessages(build_correction_mesh(coords, max_nodes = 600,
-                                                      verbose = FALSE))
+    meshes <- suppressMessages(build_correction_meshes(coords, mesh_config))
+    mesh <- meshes$omega
+    mesh_xi <- meshes$xi
+    rm(meshes)
 
     set.seed(2026 + k)
     time_fit <- system.time(
@@ -462,7 +472,8 @@ if (length(types_to_fit) > 0) {
     hyper_row <- tibble(
       insecticide_type = type, rho = rho, n_assays = nrow(train_k),
       n_pixel_years = nrow(fit$pixel_years), T = T_k,
-      mesh_nodes = mesh$n, mesh_xi_nodes = mesh_xi$n,
+      mesh_config = mesh_config,
+    mesh_nodes = mesh$n, mesh_xi_nodes = mesh_xi$n,
       range_omega_km = fit$hyper$range_omega,
       sigma_omega = fit$hyper$sigma_omega,
       range_eta_km = fit$hyper$range_eta,
@@ -573,7 +584,9 @@ year_panels <- function(raster, fill_scale, title, subtitle, file) {
   })
   patchwork::wrap_plots(c(years_list, list(patchwork::guide_area()))) +
     patchwork::plot_layout(guides = "collect", nrow = 2) +
-    patchwork::plot_annotation(title = title, subtitle = subtitle)
+    patchwork::plot_annotation(
+      title = title,
+      subtitle = paste(strwrap(subtitle, width = 110), collapse = "\n"))
   ggsave(file, bg = "white", width = 13, height = 8, scale = 0.8, dpi = 300)
 }
 
@@ -704,7 +717,8 @@ ggplot() +
   facet_wrap(~lyr, ncol = 3) +
   diverging_scale("Correction<br>(logit)", correction_limit) +
   theme_ir_maps() +
-  theme(plot.margin = unit(rep(0, 4), "cm"),
+  # a top margin, or the title is clipped
+  theme(plot.margin = unit(c(0.3, 0, 0, 0), "cm"),
         legend.ticks = element_blank()) +
   labs(title = sprintf("Second-stage correction in %i", compare_year),
        subtitle = "Posterior mean of omega + xi, logit scale")
