@@ -80,6 +80,8 @@ compare <- function(data, candidate, reference_model = base_model) {
 set.seed(2026 - 9 - 25)
 candidates <- setdiff(unique(scores$model), c(base_model, "dynamical"))
 comparison <- bind_rows(lapply(split(scores, scores$experiment), function(d) {
+  # the base meshes were only run on interpolation and blocks
+  if (!base_model %in% d$model) return(NULL)
   present <- intersect(candidates, unique(d$model))
   pairs <- tibble(candidate = present, reference = base_model)
   # the finer omega mesh on top of the finer xi mesh: omega's effect alone

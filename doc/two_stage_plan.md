@@ -11,8 +11,8 @@ Five outer folds, the same as #12, with no change to the fold design:
 | spatial_interpolation | all | available |
 | spatial_blocks | 1 | available |
 | spatial_blocks | 2 | available |
-| temporal_forecasting | 2014 | still running on #12 |
-| temporal_forecasting | 2018 | still running on #12 |
+| temporal_forecasting | 2014 | available |
+| temporal_forecasting | 2018 | available |
 
 Leave-one-country-out and the legacy 2020 forecasting fold are defunct and are not run.
 
@@ -63,8 +63,10 @@ Effective number of parameters of the dynamical model on each fold's training as
 | interpolation | 24318 | 19453 | 287 | 442 | 340 | 342 |
 | blocks 1 | 21321 | 16861 | 285 | 480 | 338 | 340 |
 | blocks 2 | 23628 | 18530 | 288 | 462 | 346 | 352 |
+| forecasting 2014 | 14285 | 10863 | 222 | 397 | 267 | 270 |
+| forecasting 2018 | 22377 | 17533 | 278 | 452 | 323 | 326 |
 
-- Per type, p_WAIC and p_loo are 23–53.
+- Per type, p_WAIC and p_loo are 23–53 (7–50 on the forecasting folds).
 - pD with the plug-in at the posterior mean of the *parameters* is unreliable: it is negative for Alpha-cypermethrin on interpolation. The averaged non-centred parameters, pushed through exp(beta) and the recursion, are far from the posterior mode. So use pD at the posterior mean of p, or p_loo.
 
 Grouped PSIS, leaving out a pixel-year (and, in brackets, a whole pixel):
@@ -74,11 +76,13 @@ Grouped PSIS, leaving out a pixel-year (and, in brackets, a whole pixel):
 | interpolation | 0.10% (0.32%) | 1.94 | 0.12 | 0.036 (0.052) | 1.010 |
 | blocks 1 | 0.13% (0.49%) | 1.90 | 0.13 | 0.041 (0.059) | 1.012 |
 | blocks 2 | 0.15% (0.55%) | 1.89 | 0.13 | 0.039 (0.059) | 1.011 |
+| forecasting 2014 | 0.12% (0.33%) | 1.83 | 0.17 | 0.053 (0.062) | 1.01 |
+| forecasting 2018 | 0.10% (0.33%) | 1.87 | 0.14 | 0.040 (0.056) | 1.01 |
 
 - **Double counting is negligible.** Fitting stage A to in-sample residuals understates the residual SD by 1–4%.
-- **The organophosphates are affected most, and still only slightly:** RMS shift 0.07–0.11 of the residual SD, and posterior SD 0.26–0.41 of the residual SD.
+- **The organophosphates are affected most, and still only slightly:** RMS shift 0.07–0.11 of the residual SD, and posterior SD 0.26–0.41 of the residual SD. Worst case: Pirimiphos-methyl on forecasting 2014 (151 training assays), RMS shift 0.20, posterior SD 0.80.
 - **Decision:** keep `m_ref` as the posterior mean. `m_ref=loo` stays available in the runner as a sensitivity check.
-- **Caveat on the saved draws:** 282 of the interpolation fold's 2000 paired draws are exact repeats (81 in blocks 1, 311 in blocks 2), where HMC stuck. PSIS is run on the distinct draws only; the repeats give spurious k = Inf.
+- **Caveat on the saved draws:** 282 of the interpolation fold's 2000 paired draws are exact repeats (81 in blocks 1, 311 in blocks 2, 47 in forecasting 2014, 107 in forecasting 2018), where HMC stuck. PSIS is run on the distinct draws only; the repeats give spurious k = Inf.
 
 ## Term inclusion
 
@@ -157,10 +161,87 @@ The blocks gain is in the pyrethroids, DDT and Bendiocarb, which have large ξ (
 - It costs about 30 min per fold without contention, and about 11 GB peak per process. That is affordable for one job at a time.
 - If memory is tight, omega5000 (ξ ≤ 1200 nodes, about 7 GB) keeps most of the gain: +0.048.
 
-The runner's default is still `base`, so earlier results reproduce. `fit_correction()`'s defaults are unchanged. The maps build their meshes explicitly, so the defaults would not reach them anyway.
+**Adopted.** omega5000_xi2500 is the reported configuration for both variants and the runner's default; `mesh=base` reproduces the earlier runs, whose files keep their unsuffixed names. `fit_correction()`'s defaults are unchanged. `R/two_stage_maps.R` uses it too (`mesh_config`).
 
-To adopt omega5000_xi2500:
+## Results
 
-- Run the remaining folds with `mesh=omega5000_xi2500`.
-- Rerun `omega_u` with the same ω mesh, so the term comparison stays paired.
-- Change the two `build_correction_mesh()` calls in `R/two_stage_maps.R` to `cutoff = 15, max_edge_inner = 150, max_nodes = 5000` for ω, and `max_nodes = 2500` for ξ. Fitted to all the data, ω may reach the 5000-node cap, and memory may be above 11 GB.
+Reported configuration: `m_ref` = posterior mean, meshes omega5000_xi2500, both variants. Scored by `R/two_stage_metrics.R`: `outputs/two_stage/cv_headline_two_stage.csv`, `term_inclusion_two_stage.csv`, `cv_horizon_two_stage.csv`; figures in `figures/two_stage/`. All models at the per-type rho. Intervals: 95% pixel bootstrap. Forecasting pooled stacks both origins' test sets (years from 2018 appear in both). NN oracle: nearest-neighbour null at the k that minimises its own held-out error.
+
+**Headline.** Log score: mean beta-binomial log predictive density. Variance explained ceilings (noise floor): 78–82%.
+
+| experiment | model | log score | CRPS | variance explained (%) | cover 50 / 95 |
+|---|---|---|---|---|---|
+| interpolation (n = 1045) | dynamical | −3.863 | 0.1355 | 37.0 [25.2, 45.5] | 0.298 / 0.786 |
+| | intercept | −4.235 | 0.1496 | 27.0 [22.2, 30.2] | 0.306 / 0.721 |
+| | nearest neighbour | −4.011 | 0.1356 | 33.7 [21.0, 43.8] | 0.342 / 0.776 |
+| | NN oracle | −3.614 | 0.1108 | 52.0 [42.8, 59.4] | 0.391 / 0.833 |
+| | two-stage ω+u | −3.614 | 0.1243 | 42.9 [31.6, 51.1] | 0.377 / 0.882 |
+| | two-stage ω+ξ+u | **−3.568** | 0.1135 | 52.1 [42.9, 59.2] | 0.364 / 0.859 |
+| blocks 1+2 (n = 8694) | dynamical | −4.329 | 0.1587 | 22.7 [18.0, 27.2] | 0.292 / 0.736 |
+| | intercept | −4.587 | 0.1640 | 19.3 [17.0, 21.2] | 0.304 / 0.709 |
+| | nearest neighbour | −4.679 | 0.1686 | 13.8 [7.1, 19.9] | 0.293 / 0.691 |
+| | NN oracle | −4.190 | 0.1415 | 34.1 [29.1, 38.6] | 0.323 / 0.752 |
+| | two-stage ω+u | −3.796 | 0.1423 | 31.3 [26.9, 35.6] | 0.371 / 0.859 |
+| | two-stage ω+ξ+u | **−3.724** | 0.1335 | 37.4 [32.8, 41.5] | 0.401 / 0.878 |
+| forecasting 2014+2018 (n = 14018) | dynamical | −4.361 | 0.1620 | 26.2 [20.9, 31.4] | 0.311 / 0.732 |
+| | intercept | −4.706 | 0.1847 | 13.4 [10.5, 15.7] | 0.268 / 0.663 |
+| | nearest neighbour | −4.323 | 0.1549 | 29.8 [26.0, 33.6] | 0.310 / 0.731 |
+| | NN oracle | −3.869 | 0.1281 | 48.3 [45.8, 50.8] | 0.331 / 0.788 |
+| | two-stage ω+u | −4.078 | 0.1610 | 25.1 [19.4, 30.7] | 0.349 / 0.782 |
+| | two-stage ω+ξ+u | **−3.744** | 0.1438 | 35.1 [30.6, 39.7] | 0.408 / 0.856 |
+| forecasting 2014 (n = 9922) | dynamical | −4.323 | 0.1588 | 21.6 [15.2, 27.3] | 0.319 / 0.737 |
+| | intercept | −4.623 | 0.1760 | 12.7 [9.6, 15.1] | 0.269 / 0.673 |
+| | nearest neighbour | −4.314 | 0.1529 | 25.0 [20.4, 29.3] | 0.315 / 0.728 |
+| | NN oracle | −3.874 | 0.1280 | 43.8 [40.8, 46.5] | 0.326 / 0.779 |
+| | two-stage ω+u | −4.020 | 0.1580 | 20.2 [13.1, 26.4] | 0.356 / 0.785 |
+| | two-stage ω+ξ+u | **−3.703** | 0.1432 | 29.5 [23.8, 34.5] | 0.407 / 0.855 |
+| forecasting 2018 (n = 4096) | dynamical | −4.453 | 0.1698 | 31.3 [23.0, 38.4] | 0.292 / 0.722 |
+| | intercept | −4.905 | 0.2058 | 10.4 [5.7, 14.5] | 0.265 / 0.639 |
+| | nearest neighbour | −4.344 | 0.1598 | 35.5 [28.0, 42.1] | 0.300 / 0.738 |
+| | NN oracle | −3.858 | 0.1284 | 54.5 [49.8, 58.6] | 0.345 / 0.810 |
+| | two-stage ω+u | −4.217 | 0.1682 | 31.0 [22.3, 38.8] | 0.334 / 0.773 |
+| | two-stage ω+ξ+u | **−3.843** | 0.1453 | 42.8 [35.1, 49.6] | 0.411 / 0.858 |
+
+Two-stage ω+ξ+u minus dynamical: log score +0.295 [+0.188, +0.397] (interpolation), +0.605 [+0.541, +0.670] (blocks), +0.617 [+0.554, +0.678] (forecasting); variance explained +15.1 [+9.6, +21.5], +14.7 [+12.4, +17.2], +8.9 [+6.9, +10.9] points.
+
+- ω+ξ+u has the best log score everywhere, including over the NN oracle.
+- On variance explained it ties the NN oracle on interpolation and trails it on forecasting (−13 points) and blocks (+3, intervals overlap).
+- 95% intervals of both two-stage variants undercover (0.86–0.88 on the spatial experiments, 0.86 forecasting), less than every other model (0.64–0.83).
+
+**Term inclusion.** ω+ξ+u minus ω+u, same meshes:
+
+| experiment | Δ log score | Δ CRPS (×10⁻³) | Δ variance explained (points) |
+|---|---|---|---|
+| interpolation | +0.046 [−0.023, +0.117] | −10.8 [−17.6, −3.9] | +9.2 [+4.3, +14.5] |
+| blocks 1+2 | +0.072 [+0.049, +0.094] | −8.8 [−11.2, −6.5] | +6.0 [+4.4, +7.7] |
+| forecasting 2014+2018 | +0.334 [+0.300, +0.371] | −17.1 [−19.7, −14.8] | +10.0 [+8.3, +11.8] |
+| forecasting 2014 | +0.317 [+0.278, +0.355] | −14.8 [−17.5, −12.3] | +9.3 [+7.4, +11.6] |
+| forecasting 2018 | +0.374 [+0.321, +0.428] | −22.9 [−26.9, −18.9] | +11.8 [+9.4, +14.4] |
+
+**Keep ξ.** It improves forecasting on every metric, and interpolation on CRPS and variance explained (log score interval spans 0). Without ξ, the correction does not improve forecast variance explained over the dynamical model (−1.0 [−2.8, +0.7]).
+
+**Skill by horizon** (`cv_horizon_two_stage.csv`, `figures/two_stage/skill_by_horizon.png`, `skill_gain_by_horizon.png`). Every test year of both origins is after every type's last training year (T = 2013 and 2017), so all forecasting predictions use the AR(1) forecast of ξ; horizons are 1–5 years at both origins. Both origins pooled:
+
+| horizon (years) | n | ω+ξ+u variance explained | Δ log score vs dynamical | Δ explained vs dynamical | ω+ξ+u cover 95 | NN oracle explained |
+|---|---|---|---|---|---|---|
+| 1 | 4228 | 47.3 [42.3, 51.8] | +0.53 [+0.46, +0.61] | +14.7 [+11.4, +18.2] | 0.886 | 49.0 |
+| 2 | 3176 | 45.3 [39.5, 50.9] | +0.50 [+0.41, +0.58] | +5.5 [+2.5, +8.5] | 0.873 | 55.5 |
+| 3 | 2247 | 33.2 [21.0, 43.3] | +0.45 [+0.36, +0.55] | +4.2 [+0.8, +7.6] | 0.852 | 47.0 |
+| 4 | 2222 | 17.7 [4.9, 28.1] | +0.85 [+0.70, +1.01] | +6.6 [+3.1, +9.9] | 0.825 | 45.0 |
+| 5 | 2145 | 18.8 [7.3, 29.2] | +0.89 [+0.76, +1.02] | +11.4 [+8.4, +14.4] | 0.806 | 40.8 |
+
+- Skill of all model-based forecasts falls with horizon; the two-stage gain over the dynamical model does not shrink (log score gain is largest at 4–5 years, where the dynamical model's own skill is near 0).
+- 95% coverage of ω+ξ+u falls from 0.89 to 0.81 with horizon: the AR(1) forecast of ξ is overconfident at long horizons.
+- The NN oracle's variance explained stays at 41–56% at every horizon.
+
+**Stage B diagnostic** (`train_residual_extremes.csv`, reported meshes, both variants, all 5 folds). Standardised training residuals, observed vs simulated from the stage-A fit:
+
+| mortality class | assays observed / implied by fit | mean residual observed / simulated | SD observed / simulated |
+|---|---|---|---|
+| 0% | 1.1–1.7× | −0.79 to −1.00 / −0.55 to −0.72 | 0.28–0.34 / 0.17–0.29 |
+| interior | 0.87–0.88× | +0.01 to +0.05 / −0.10 to −0.12 | 0.75–0.80 / 0.92–0.93 |
+| 100% | 1.47–1.61× | +0.34 to +0.40 / +0.24 to +0.29 | 0.26–0.32 / 0.23–0.28 |
+
+- The same pattern on every fold and both variants: 47–61% more 100%-mortality assays than the fit implies, and residuals at both extremes further out than the selection effect explains.
+- Interior residuals are narrower than v implies (SD 0.78 vs 0.93).
+- So the Gaussian empirical-logit response misfits the extremes: the fitted latent is not extreme enough where mortality saturates. Stage B (PQL on the beta-binomial) is indicated; its effect on the scores is untested.
