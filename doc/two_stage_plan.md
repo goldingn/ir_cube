@@ -1,5 +1,62 @@
 # Two-stage correction: run sheet
 
+## Final model and headline results
+
+**Final model.** Stage B (PQL on the beta-binomial counts, `R/two_stage_pql.R`) of `omega_xi_u` plus the static per-pixel effect p (`terms=p`); no survey effect s. Meshes omega5000_xi2500; `m_ref` = dynamical posterior mean logit; per-type ρ.
+- λ = m_ref + ω + ξ + u + p. Held-out draws: joint latent draw, p from its posterior at pixels with training data and fresh N(0, σ_p²) elsewhere. Model `two_stage_omega_xi_u_p_pql_mesh-omega5000_xi2500`.
+- Maps (`R/two_stage_maps.R`): the smooth correction ω + ξ only; u and p are left out of the mean and SD maps.
+- The survey-effect code stays as an option (`terms=p,s`); it is not in the final model.
+
+Headline (`outputs/two_stage/cv_headline_two_stage.csv`, `figures/two_stage/`). Log score: mean beta-binomial log predictive density; CRPS on the mortality scale; 95% pixel-bootstrap intervals. NN = nearest recent survey (k = 1); NN oracle = nearest surveys at the k minimising held-out error.
+
+**Interpolation** (n = 1045; ceiling 78.1%)
+
+| model | log score | CRPS | variance explained (%) | cover 50 / 95 |
+|---|---|---|---|---|
+| dynamical | −3.863 | 0.1355 | 37.0 [25.2, 45.5] | 0.298 / 0.786 |
+| intercept | −4.235 | 0.1496 | 27.0 [22.2, 30.2] | 0.306 / 0.721 |
+| NN (k = 1) | −4.011 | 0.1356 | 33.7 [21.0, 43.8] | 0.342 / 0.776 |
+| NN oracle | −3.614 | 0.1108 | 52.0 [42.8, 59.4] | 0.391 / 0.833 |
+| stage A ω+ξ+u | −3.568 | 0.1135 | 52.1 [42.9, 59.2] | 0.364 / 0.859 |
+| **final** | **−3.372** | **0.1026** | **57.2 [49.4, 63.6]** | 0.446 / 0.923 |
+
+**Blocks 1+2 pooled** (n = 8694; ceiling 79.3%)
+
+| model | log score | CRPS | variance explained (%) | cover 50 / 95 |
+|---|---|---|---|---|
+| dynamical | −4.329 | 0.1587 | 22.7 [18.0, 27.2] | 0.292 / 0.736 |
+| intercept | −4.587 | 0.1640 | 19.3 [17.0, 21.2] | 0.304 / 0.709 |
+| NN (k = 1) | −4.679 | 0.1686 | 13.8 [7.1, 19.9] | 0.293 / 0.691 |
+| NN oracle | −4.190 | 0.1415 | 34.1 [29.1, 38.6] | 0.323 / 0.752 |
+| stage A ω+ξ+u | −3.724 | 0.1335 | 37.4 [32.8, 41.5] | 0.401 / 0.878 |
+| **final** | **−3.661** | **0.1325** | 37.0 [32.6, 41.3] | 0.441 / 0.911 |
+
+**Forecasting 2014+2018 pooled** (n = 14018; ceiling 81.9%)
+
+| model | log score | CRPS | variance explained (%) | cover 50 / 95 |
+|---|---|---|---|---|
+| dynamical | −4.361 | 0.1620 | 26.2 [20.9, 31.4] | 0.311 / 0.732 |
+| intercept | −4.706 | 0.1847 | 13.4 [10.5, 15.7] | 0.268 / 0.663 |
+| NN (k = 1) | −4.323 | 0.1549 | 29.8 [26.0, 33.6] | 0.310 / 0.731 |
+| NN oracle | −3.869 | **0.1281** | **48.3 [45.8, 50.8]** | 0.331 / 0.788 |
+| stage A ω+ξ+u | −3.744 | 0.1438 | 35.1 [30.6, 39.7] | 0.408 / 0.856 |
+| **final** | **−3.615** | 0.1314 | 42.7 [38.7, 46.7] | 0.457 / 0.899 |
+
+**Final − dynamical**, 95% paired pixel bootstrap:
+
+| experiment | Δ log score | Δ CRPS (×10⁻³) | Δ variance explained (points) |
+|---|---|---|---|
+| interpolation | +0.492 [+0.369, +0.630] | −32.8 [−41.4, −23.9] | +20.2 [+13.8, +28.6] |
+| blocks 1+2 | +0.668 [+0.598, +0.738] | −26.3 [−30.4, −22.3] | +14.4 [+11.8, +17.1] |
+| forecasting 2014+2018 | +0.746 [+0.672, +0.819] | −30.6 [−34.4, −26.5] | +16.6 [+14.0, +19.1] |
+| forecasting 2014 | +0.773 [+0.690, +0.864] | −30.0 [−34.7, −25.4] | +17.6 [+14.6, +21.0] |
+| forecasting 2018 | +0.679 [+0.589, +0.781] | −32.2 [−38.1, −26.5] | +15.5 [+12.2, +19.0] |
+
+- Best log score on every experiment. Variance explained: above the NN oracle on interpolation (+5) and blocks (+3), below it on forecasting (−6).
+- 95% coverage 0.90–0.92; every other model 0.66–0.88.
+
+The rest of this document is the record of how the final model was reached.
+
 Issue idem-lab/ir_cube#21. Stacked on the #12 branch (`posterior-predictive-validation`).
 
 ## Folds
@@ -38,7 +95,7 @@ Leave-one-country-out and the legacy 2020 forecasting fold are defunct and are n
 
 ## Further steps
 
-8. **Maps** (`R/two_stage_maps.R`). Fit `omega_xi_u` per type to all the data, on top of the full dynamical fit. Map, in the layout of the dynamical-model figures:
+8. **Maps** (`R/two_stage_maps.R`). Fit the final model (stage B, `omega_xi_u` + p) per type to all the data, on top of the full dynamical fit. Map, in the layout of the dynamical-model figures (u and p left out):
    - two-stage predicted mortality;
    - the second-stage correction (ω + ξ, logit scale);
    - the difference from the dynamical model (percentage points);
@@ -163,9 +220,9 @@ The blocks gain is in the pyrethroids, DDT and Bendiocarb, which have large ξ (
 
 **Adopted.** omega5000_xi2500 is the reported configuration for both variants and the runner's default; `mesh=base` reproduces the earlier runs, whose files keep their unsuffixed names. `fit_correction()`'s defaults are unchanged. `R/two_stage_maps.R` uses it too (`mesh_config`).
 
-## Results
+## Results (stage A)
 
-Reported configuration: `m_ref` = posterior mean, meshes omega5000_xi2500, both variants. Scored by `R/two_stage_metrics.R`: `outputs/two_stage/cv_headline_two_stage.csv`, `term_inclusion_two_stage.csv`, `cv_horizon_two_stage.csv`; figures in `figures/two_stage/`. All models at the per-type rho. Intervals: 95% pixel bootstrap. Forecasting pooled stacks both origins' test sets (years from 2018 appear in both). NN oracle: nearest-neighbour null at the k that minimises its own held-out error.
+Stage-A configuration: `m_ref` = posterior mean, meshes omega5000_xi2500, both variants. Superseded as the headline by the final model (top); these tables are the stage-A record. Scored by `R/two_stage_metrics.R`: `outputs/two_stage/cv_summary_two_stage.csv` (the headline CSV now holds the final-model set), `term_inclusion_two_stage.csv`, `cv_horizon_two_stage.csv`; figures in `figures/two_stage/`. All models at the per-type rho. Intervals: 95% pixel bootstrap. Forecasting pooled stacks both origins' test sets (years from 2018 appear in both). NN oracle: nearest-neighbour null at the k that minimises its own held-out error.
 
 **Headline.** Log score: mean beta-binomial log predictive density. Variance explained ceilings (noise floor): 78–82%.
 
@@ -204,7 +261,7 @@ Reported configuration: `m_ref` = posterior mean, meshes omega5000_xi2500, both 
 
 Two-stage ω+ξ+u minus dynamical: log score +0.295 [+0.188, +0.397] (interpolation), +0.605 [+0.541, +0.670] (blocks), +0.617 [+0.554, +0.678] (forecasting); variance explained +15.1 [+9.6, +21.5], +14.7 [+12.4, +17.2], +8.9 [+6.9, +10.9] points.
 
-- ω+ξ+u has the best log score everywhere, including over the NN oracle.
+- Among these models, ω+ξ+u has the best log score everywhere, including over the NN oracle.
 - On variance explained it ties the NN oracle on interpolation and trails it on forecasting (−13 points) and blocks (+3, intervals overlap).
 - 95% intervals of both two-stage variants undercover (0.86–0.88 on the spatial experiments, 0.86 forecasting), less than every other model (0.64–0.83).
 
@@ -295,7 +352,7 @@ Two-stage ω+ξ+u minus dynamical: log score +0.295 [+0.188, +0.397] (interpolat
 - 0% assays are now over-implied, by 31–37% (about 60–150 assays per fold, against 6,000–7,000 at 100%).
 - Interior residuals are still narrower than v implies (SD 0.70 vs 0.95). v, i.e. the per-type ρ, looks too large for the interior assays.
 
-**Recommendation: adopt stage B.** CV shows a benefit on every experiment: log score +0.06 to +0.19, and 95% coverage closer to nominal. It costs about 40 min per fold on the spatial folds. Next: use it for the maps (`R/two_stage_maps.R`, not changed here), and check the interior overdispersion (ρ).
+**Recommendation: adopt stage B** (adopted; with p, it is the final model). CV shows a benefit on every experiment: log score +0.06 to +0.19, and 95% coverage closer to nominal. It costs about 40 min per fold on the spatial folds. The maps now use it (with p). Open: the interior overdispersion (ρ).
 
 ## Error structure
 
@@ -356,4 +413,6 @@ Motivation (`R/two_stage_hotspot_diagnostics.R`, `hotspot_{nugget,covariance}.cs
 
 - p removes about 30% of the hotspots above the fixed threshold and shrinks the peaks by 10–15%; s adds little on top. At the relative (top 2%) threshold the counts barely change (46–48 vs 49; 41 vs 43), so the hotspot pattern remains, less prominent. σ_p in these fits: 0.20 (Deltamethrin), 0.29 (Permethrin).
 
-**Recommendation.** Adopt +p for maps and scoring: it is cheap, never worse, reduces hotspot prominence, and represents a real persistent local deviation. Adopt s for scoring held-out assays (fresh draw per survey) and for the variance decomposition, but keep it out of maps; its CV gain is in the predictive width, not the map. Report map-level scores (`_snone`) alongside, since they are what a map user gets. Neither term changes ω's range materially, so ω's short range is not an artefact of the missing error terms.
+**Recommendation.** Adopt +p: it is cheap, never worse, reduces hotspot prominence, and represents a real persistent local deviation. s gains only in the width of the held-out predictive distribution, not in the map. Neither term changes ω's range materially, so ω's short range is not an artefact of the missing error terms.
+
+**Decision.** The final model is stage B + p, without s (top of this document). The s code stays as an option (`terms=p,s`).

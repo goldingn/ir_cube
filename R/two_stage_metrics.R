@@ -30,10 +30,10 @@
 # noise floor) are copied and adapted below; the primitives come from
 # R/validation_functions.R unchanged.
 #
-# The headline (cv_headline_two_stage.csv and the figures) is the reported
-# two-stage configuration, both variants on the omega5000_xi2500 meshes, beside
-# the dynamical model and the nulls; the other mesh configurations are in
-# cv_summary_two_stage.csv. term_inclusion_two_stage.csv is omega_xi_u against
+# The headline (cv_headline_two_stage.csv and the figures) is the final model
+# (stage B, omega_xi_u + p) and stage A omega_xi_u, both on the omega5000_xi2500
+# meshes, beside the dynamical model and the nulls; every other variant and
+# mesh configuration is in cv_summary_two_stage.csv. term_inclusion_two_stage.csv is omega_xi_u against
 # omega_u, stage_b_two_stage.csv stage B (PQL) against stage A for omega_xi_u,
 # and cv_horizon_two_stage.csv the scores by forecast horizon.
 #
@@ -105,30 +105,36 @@ allow_no_dynamical <- Sys.getenv("TWO_STAGE_ALLOW_NO_DYNAMICAL") == "1"
 
 null_models <- c("intercept", "nearest_neighbour", "nearest_neighbour_oracle")
 
-# The reported two-stage configuration is the omega5000_xi2500 meshes
-# (doc/two_stage_plan.md, "Mesh resolution results"), the runner's default:
-# the headline tables and figures show its two variants beside the dynamical
-# model and the nulls. The base-mesh runs (unsuffixed model names) and the
-# other mesh configurations are scored too, for R/two_stage_mesh_comparison.R,
-# and are in the full summary tables, labelled with their mesh.
+# The reported meshes are omega5000_xi2500 (doc/two_stage_plan.md, "Mesh
+# resolution results"), the runner's default. The final model is stage B (PQL)
+# of omega_xi_u with the static pixel effect p (doc/two_stage_plan.md, "Final
+# model and headline results"): the headline tables and figures show it and
+# stage A omega_xi_u beside the dynamical model and the nulls. The stage-A
+# omega_u variant, stage B without p, the survey-effect variants, the
+# base-mesh runs (unsuffixed model names) and the other mesh configurations
+# are scored too, and are in the full summary tables, labelled with their
+# variant and mesh.
 reported_mesh <- "omega5000_xi2500"
 reported_model <- function(variant) {
   paste0("two_stage_", variant, "_mesh-", reported_mesh)
 }
+# the two stage-A variants, for the term-inclusion comparison
 two_stage_reported <- reported_model(c("omega_u", "omega_xi_u"))
-headline_models <- c("dynamical", two_stage_reported,
-                     "nearest_neighbour_oracle", "nearest_neighbour",
-                     "intercept")
+final_model <- reported_model("omega_xi_u_p_pql")
+two_stage_headline <- c(reported_model("omega_xi_u"), final_model)
+headline_models <- c("dynamical", "intercept", "nearest_neighbour",
+                     "nearest_neighbour_oracle", two_stage_headline)
 
 # display names and colours, fixed per model so a colour never changes meaning
 # between figures. The #12 models keep the colours of fig_variance_bars.R; the
-# two-stage variants take warm hues
+# two-stage models take warm hues
 model_labels <- setNames(
-  c("dynamical model", "two-stage ω+u", "two-stage ω+ξ+u",
-    "nearest surveys, best k", "nearest recent survey", "insecticide mean"),
+  c("dynamical model", "insecticide mean", "nearest recent survey",
+    "nearest surveys, best k", "two-stage, stage A (ω+ξ+u)",
+    "two-stage (final): stage B, ω+ξ+u+p"),
   headline_models)
 model_colours <- setNames(
-  c("#2166AC", "#E08214", "#B2182B", "#8073AC", "#1B7837", grey(0.45)),
+  c("#2166AC", grey(0.45), "#1B7837", "#8073AC", "#E08214", "#B2182B"),
   headline_models)
 # every other two-stage model is labelled as its variant plus its mesh; the
 # model name is two_stage_<variant>[_loo][_mesh-<tag>], and no tag is base
@@ -1004,7 +1010,9 @@ explained_plot <- ggplot(headline_plot_data,
   geom_point(size = 2.2) +
   geom_text(aes(label = sprintf("%.0f", explained)), vjust = -0.9,
             size = 2.8, colour = grey(0.2), show.legend = FALSE) +
-  facet_wrap(~ experiment, nrow = 1, scales = "free_y") +
+  # wrapped, or the long experiment names are clipped at the panel edge
+  facet_wrap(~ experiment, nrow = 1, scales = "free_y",
+             labeller = label_wrap_gen(16)) +
   colour_scale() +
   scale_y_discrete(limits = rev) +
   labs(x = "held-out variance explained (%)", y = NULL,
@@ -1083,7 +1091,7 @@ if (is.data.frame(horizon_table) && nrow(horizon_table) > 0) {
   if ("dynamical" %in% horizon_table$model &&
       any(grepl("^two_stage", horizon_table$model))) {
     gain_plot <- ggplot(horizon_table %>%
-                          filter(model %in% two_stage_reported) %>%
+                          filter(model %in% two_stage_headline) %>%
                           mutate(model = as_model_factor(model),
                                  experiment = as_experiment_factor(experiment)),
                         aes(horizon, diff_explained, colour = model)) +
@@ -1351,7 +1359,7 @@ residual_files <- residual_files[grepl(
 # scores
 residual_files <- residual_files[
   vapply(strsplit(basename(residual_files), "__"), `[`, "", 2) %in%
-    c(two_stage_reported, stage_b_model)]
+    c(two_stage_reported, stage_b_model, final_model)]
 
 set.seed(2026 - 9 - 26)
 if (length(residual_files) == 0) {

@@ -1,5 +1,7 @@
-# Maps of the two-stage model (#21): the stage-A correction fitted per
-# insecticide type to ALL the bioassay data, on top of the full dynamical fit
+# Maps of the two-stage model (#21): the final correction model (stage B, PQL
+# on the beta-binomial counts, omega_xi_u plus the static pixel effect p; no
+# survey effect; doc/two_stage_plan.md, "Final model") fitted per insecticide
+# type to ALL the bioassay data, on top of the full dynamical fit
 # (R/fit_model.R), projected onto the full prediction grid for the years the
 # dynamical-model map figures show (R/fig_ir_maps.R).
 #
@@ -21,14 +23,19 @@
 #      (a greta subassignment in predict.R, see map_logit_init()), so the check
 #      emulates that to confirm the draws and covariates are the ones behind
 #      them, and the maps here use the correct initial conditions;
-#   3. per type, fit stage A (omega_xi_u, the omega5000_xi2500 meshes,
-#      per-type rho, t0 = 1995, T = the type's last data year) to all its assays;
+#   3. per type, fit stage A (omega_xi_u + p, the omega5000_xi2500 meshes,
+#      per-type rho, t0 = 1995, T = the type's last data year) to all its
+#      assays, then stage B from it (fit_correction_pql(), R/two_stage_pql.R);
 #   4. per type, on every mask cell and map year, compute
 #        - the correction's posterior mean (omega + xi, logit scale): the
-#          latent mode projected to the cells. u is left out: its mean is 0 away
-#          from sampled pixel-years, and a map of the smooth fields is the
-#          point; so all the mortality maps here are of the smooth part,
-#          m + omega + xi, not the pixel-year target m + omega + xi + u
+#          latent mode projected to the cells. u and p are left out: their
+#          mean is 0 away from sampled pixel-years and pixels, so adding them
+#          at the sampled pixels only would speckle the maps, and a map of the
+#          smooth fields is the point. So all the maps here (means and SDs) are
+#          of the smooth part, m + omega + xi, not the target
+#          m + omega + xi + u + p. The latent draws are joint (p is drawn with
+#          omega and xi and then dropped), so omega and xi keep their
+#          posterior correlation with p
 #        - its posterior SD, from 200 joint latent draws, conditional on m_ref
 #          (the second stage's own uncertainty)
 #        - the two-stage posterior mean mortality, E[ilogit(m + omega + xi)]
@@ -46,7 +53,7 @@
 # plateaus at a rate set by phi, and its SD grows with the horizon h.
 #
 # Steps 3-4 skip a type whose rasters already exist and were made with the
-# current mesh_config, unless `overwrite` is TRUE, so the figures can be
+# current mesh_config and model_config, unless `overwrite` is TRUE, so the figures can be
 # redrawn without refitting.
 
 overwrite <- FALSE
@@ -55,6 +62,11 @@ overwrite <- FALSE
 # R/two_stage_correction.R. Cross-validation (doc/two_stage_plan.md, "Mesh
 # resolution results") chose omega5000_xi2500
 mesh_config <- "omega5000_xi2500"
+
+# the final model: stage B (PQL) of omega_xi_u with the static pixel effect p
+# (doc/two_stage_plan.md, "Final model and headline results"). The survey
+# effect (fit_correction(survey_effect = TRUE)) is not in it
+model_config <- "omega_xi_u_p_pql"
 
 report <- function(...) {
   cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "|", sprintf(...), "\n")
@@ -69,6 +81,7 @@ suppressMessages({
 })
 source("R/dynamical_predictions.R")
 source("R/two_stage_correction.R")
+source("R/two_stage_pql.R")
 source("R/two_stage_map_functions.R")
 
 output_dir <- "outputs/two_stage/maps"
@@ -107,11 +120,15 @@ quantities <- c("two_stage_mortality", "two_stage_mortality_plugin",
 raster_file <- function(type, quantity) {
   file.path(output_dir, type, sprintf("%s.tif", quantity))
 }
-# done = all the rasters exist and were made with the current mesh config
+# done = all the rasters exist and were made with the current mesh and model
 types_done <- types[vapply(types, function(type) {
   hyper_file <- file.path(output_dir, type, "hyperparameters.csv")
-  all(file.exists(c(raster_file(type, quantities), hyper_file))) &&
-    identical(read.csv(hyper_file)$mesh_config, mesh_config)
+  if (!all(file.exists(c(raster_file(type, quantities), hyper_file)))) {
+    return(FALSE)
+  }
+  hyper_old <- read.csv(hyper_file)
+  identical(hyper_old$mesh_config, mesh_config) &&
+    identical(hyper_old$model_config, model_config)
 }, logical(1))]
 types_to_fit <- if (overwrite) types else setdiff(types, types_done)
 
@@ -351,22 +368,39 @@ if (length(types_to_fit) > 0) {
     mesh_xi <- meshes$xi
     rm(meshes)
 
+    # stage A with p, then stage B (PQL) from it: the final model
     set.seed(2026 + k)
-    time_fit <- system.time(
-      fit <- fit_correction(train_k, variant = "omega_xi_u", t0 = t0, T = T_k,
-                            mesh = mesh, mesh_xi = mesh_xi)
-    )
+    time_fit <- system.time({
+      fit_a <- fit_correction(train_k, variant = "omega_xi_u", t0 = t0,
+                              T = T_k, mesh = mesh, mesh_xi = mesh_xi,
+                              pixel_effect = TRUE)
+      stopifnot(fit_a$opt$convergence == 0)
+      fit <- fit_correction_pql(fit_a, train_k)
+    })
+    stage_a_objective <- fit_a$opt$objective
+    rm(fit_a)
+    invisible(gc())
+    # the hyperparameter optimum of the stage-B refit (or of stage A, if
+    # lambda did not move enough to re-estimate them)
     max_gradient <- max(abs(fit$obj$gr(fit$opt$par)))
+    stopifnot(fit$opt$convergence == 0,
+              isTRUE(fit$stage_b$converged_first),
+              !isFALSE(fit$stage_b$converged_second))
     report(paste("%-18s n=%5i T=%i nodes=%i/%i conv=%i |grad|=%.1e",
                  "range_omega=%.0f sigma_omega=%.2f range_eta=%.0f",
-                 "sigma_eta=%.3f phi=%.2f tau=%.3f fit %.0f s"),
+                 "sigma_eta=%.3f phi=%.2f tau=%.3f sigma_p=%.2f",
+                 "| PQL passes %i+%s, RMS move %.2f, refit %s | fit %.0f s"),
            type, nrow(train_k), T_k, mesh$n, mesh_xi$n, fit$opt$convergence,
            max_gradient, fit$hyper$range_omega, fit$hyper$sigma_omega,
            fit$hyper$range_eta, fit$hyper$sigma_eta, fit$hyper$phi,
-           fit$hyper$tau, time_fit[["elapsed"]])
+           fit$hyper$tau, fit$hyper$sigma_p, fit$stage_b$passes_first,
+           fit$stage_b$passes_second, fit$stage_b$rms_move,
+           fit$stage_b$refit, time_fit[["elapsed"]])
 
-    # latent draws at the mesh nodes: joint deviations from the mode (so omega
-    # and xi keep their posterior correlation), without and with the
+    # latent draws at the mesh nodes: joint deviations from the stage-B mode,
+    # from its Hessian at the final PQL weights (so omega and xi keep their
+    # posterior correlation, with u and p drawn and then dropped), without
+    # and with the
     # cut-posterior shift for each map draw's dynamical offset
     set.seed(3026 + k)
     time_predict <- system.time({
@@ -462,25 +496,40 @@ if (length(types_to_fit) > 0) {
     )
 
     # a light copy of the fit (no TMB object or Hessian) for later use
-    saveRDS(list(hyper = fit$hyper, mode = fit$mode, blocks = fit$blocks,
+    stage_b_light <- fit$stage_b[setdiff(names(fit$stage_b),
+                                         c("lambda_a", "lambda"))]
+    saveRDS(list(model_config = model_config, hyper = fit$hyper,
+                 mode = fit$mode, blocks = fit$blocks,
                  mesh = fit$mesh, mesh_xi = fit$mesh_xi, t0 = fit$t0,
                  T = fit$T, n_years = fit$n_years,
-                 pixel_years = fit$pixel_years, opt = fit$opt,
+                 pixel_years = fit$pixel_years, pixels = fit$pixels,
+                 opt = fit$opt, stage_b = stage_b_light,
                  covariate_correlation = covariate_correlation),
             file.path(output_dir, type, "fit.rds"))
 
     hyper_row <- tibble(
       insecticide_type = type, rho = rho, n_assays = nrow(train_k),
       n_pixel_years = nrow(fit$pixel_years), T = T_k,
-      mesh_config = mesh_config,
-    mesh_nodes = mesh$n, mesh_xi_nodes = mesh_xi$n,
+      mesh_config = mesh_config, model_config = model_config,
+      n_pixels = nrow(fit$pixels),
+      mesh_nodes = mesh$n, mesh_xi_nodes = mesh_xi$n,
       range_omega_km = fit$hyper$range_omega,
       sigma_omega = fit$hyper$sigma_omega,
       range_eta_km = fit$hyper$range_eta,
       sigma_eta = fit$hyper$sigma_eta,
       phi = fit$hyper$phi, persistence_years = fit$hyper$persistence,
-      tau = fit$hyper$tau, convergence = fit$opt$convergence,
+      tau = fit$hyper$tau, sigma_p = fit$hyper$sigma_p,
+      convergence = fit$opt$convergence,
       max_gradient = max_gradient,
+      stage_a_objective = stage_a_objective,
+      pql_passes_first = fit$stage_b$passes_first,
+      pql_passes_second = fit$stage_b$passes_second,
+      pql_rms_move = fit$stage_b$rms_move,
+      pql_refit = fit$stage_b$refit,
+      pql_damped = isTRUE(fit$stage_b$damped_first) ||
+        isTRUE(fit$stage_b$damped_second),
+      pql_n_clamped = fit$stage_b$n_clamped,
+      time_pql_s = fit$stage_b$timings[["total"]],
       time_fit_s = time_fit[["elapsed"]],
       time_map_s = time_predict[["elapsed"]]
     )
@@ -610,9 +659,13 @@ correction_limit <- ceiling(pooled_quantile("correction_mean") * 4) / 4
 difference_limit <- ceiling(pooled_quantile("difference_pp") / 5) * 5
 sd_limit <- ceiling(pooled_quantile("correction_sd", 1) * 10) / 10
 
+# every map is of the final model's smooth correction: the per-pixel-year u
+# and per-pixel p are left out of means and SDs alike (see the header)
 forecast_note <- function(type) {
   T_k <- hyperparameters$T[hyperparameters$insecticide_type == type]
-  sprintf("data to %i; later years are the AR(1) forecast of xi", T_k)
+  sprintf(paste("final model (stage B, omega + xi + u + p), mapped without",
+                "u and p; data to %i; later years are the AR(1) forecast of",
+                "xi"), T_k)
 }
 
 for (type in insecticides_plot) {
@@ -631,8 +684,7 @@ for (type in insecticides_plot) {
                              frame.linewidth = 0.1)),
     title = sprintf("%s: two-stage model", type),
     subtitle = paste("Susceptibility of An. gambiae (s.l./s.s.) in WHO",
-                     "bioassays; posterior mean of the smooth part (no",
-                     "pixel-year effect u);", forecast_note(type)),
+                     "bioassays; posterior mean;", forecast_note(type)),
     file = file.path(figure_dir, sprintf("%s_two_stage_ir_map.png", type)))
 
   # the plug-in counterpart, which shows only the correction's mean: the
@@ -653,8 +705,7 @@ for (type in insecticides_plot) {
                              frame.linewidth = 0.1)),
     title = sprintf("%s: two-stage model (plug-in)", type),
     subtitle = paste("ilogit(logit(dynamical posterior mean) + posterior mean",
-                     "correction), no pixel-year effect u;",
-                     forecast_note(type)),
+                     "correction);", forecast_note(type)),
     file = file.path(figure_dir,
                      sprintf("%s_two_stage_plugin_ir_map.png", type)))
 
@@ -721,7 +772,8 @@ ggplot() +
   theme(plot.margin = unit(c(0.3, 0, 0, 0), "cm"),
         legend.ticks = element_blank()) +
   labs(title = sprintf("Second-stage correction in %i", compare_year),
-       subtitle = "Posterior mean of omega + xi, logit scale")
+       subtitle = paste("Final model (stage B, +p): posterior mean of",
+                        "omega + xi, logit scale (u and p not mapped)"))
 ggsave(file.path(figure_dir,
                  sprintf("correction_all_types_%i.png", compare_year)),
        bg = "white", width = 10, height = 10, scale = 0.8, dpi = 300)
@@ -734,7 +786,8 @@ hyperparameters %>%
          `eta range (km)` = range_eta_km,
          `eta SD` = sigma_eta,
          `phi` = phi,
-         `tau` = tau) %>%
+         `tau` = tau,
+         `sigma_p` = sigma_p) %>%
   pivot_longer(-insecticide_type) %>%
   mutate(name = factor(name, levels = unique(name)),
          insecticide_type = factor(insecticide_type,
@@ -745,10 +798,11 @@ hyperparameters %>%
   facet_wrap(~name, scales = "free_x", nrow = 1) +
   scale_colour_manual(values = insecticides_col, guide = "none") +
   labs(x = NULL, y = NULL,
-       title = "Second-stage hyperparameters, fitted to all data") +
+       title = paste("Second-stage hyperparameters, final model (stage B,",
+                     "+p), fitted to all data")) +
   theme_minimal()
 ggsave(file.path(figure_dir, "map_hyperparameters.png"),
-       bg = "white", width = 12, height = 3.5, dpi = 200)
+       bg = "white", width = 14, height = 3.5, dpi = 200)
 
 report("done in %.0f min", as.numeric(difftime(Sys.time(), time_start,
                                                units = "mins")))
