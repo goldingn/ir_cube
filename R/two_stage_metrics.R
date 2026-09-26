@@ -30,6 +30,12 @@
 # noise floor) are copied and adapted below; the primitives come from
 # R/validation_functions.R unchanged.
 #
+# The headline (cv_headline_two_stage.csv and the figures) is the reported
+# two-stage configuration, both variants on the omega5000_xi2500 meshes, beside
+# the dynamical model and the nulls; the other mesh configurations are in
+# cv_summary_two_stage.csv. term_inclusion_two_stage.csv is omega_xi_u against
+# omega_u, and cv_horizon_two_stage.csv the scores by forecast horizon.
+#
 # Only the five #12 folds are scored: spatial_interpolation/all,
 # spatial_blocks/1 and 2, temporal_forecasting/2014 and 2018. Leave-one-country
 # -out and the legacy 2020 forecasting fold are defunct (doc/two_stage_plan.md).
@@ -98,40 +104,47 @@ allow_no_dynamical <- Sys.getenv("TWO_STAGE_ALLOW_NO_DYNAMICAL") == "1"
 
 null_models <- c("intercept", "nearest_neighbour", "nearest_neighbour_oracle")
 
+# The reported two-stage configuration is the omega5000_xi2500 meshes
+# (doc/two_stage_plan.md, "Mesh resolution results"), the runner's default:
+# the headline tables and figures show its two variants beside the dynamical
+# model and the nulls. The base-mesh runs (unsuffixed model names) and the
+# other mesh configurations are scored too, for R/two_stage_mesh_comparison.R,
+# and are in the full summary tables, labelled with their mesh.
+reported_mesh <- "omega5000_xi2500"
+reported_model <- function(variant) {
+  paste0("two_stage_", variant, "_mesh-", reported_mesh)
+}
+two_stage_reported <- reported_model(c("omega_u", "omega_xi_u"))
+headline_models <- c("dynamical", two_stage_reported,
+                     "nearest_neighbour_oracle", "nearest_neighbour",
+                     "intercept")
+
 # display names and colours, fixed per model so a colour never changes meaning
 # between figures. The #12 models keep the colours of fig_variance_bars.R; the
-# two-stage variants take warm hues, lighter for the leave-out-m_ref versions
-model_labels <- c(
-  dynamical = "dynamical model",
-  two_stage_omega_u = "two-stage: ω + u",
-  two_stage_omega_xi_u = "two-stage: ω + ξ + u",
-  two_stage_omega_u_loo = "two-stage: ω + u (leave-out m)",
-  two_stage_omega_xi_u_loo = "two-stage: ω + ξ + u (leave-out m)",
-  nearest_neighbour_oracle = "nearest surveys, best k",
-  nearest_neighbour = "nearest recent survey",
-  intercept = "insecticide mean"
+# two-stage variants take warm hues
+model_labels <- setNames(
+  c("dynamical model", "two-stage ω+u", "two-stage ω+ξ+u",
+    "nearest surveys, best k", "nearest recent survey", "insecticide mean"),
+  headline_models)
+model_colours <- setNames(
+  c("#2166AC", "#E08214", "#B2182B", "#8073AC", "#1B7837", grey(0.45)),
+  headline_models)
+# every other two-stage model is labelled as its variant plus its mesh; the
+# model name is two_stage_<variant>[_loo][_mesh-<tag>], and no tag is base
+variant_labels <- c(
+  two_stage_omega_u = "two-stage ω+u",
+  two_stage_omega_xi_u = "two-stage ω+ξ+u",
+  two_stage_omega_u_loo = "two-stage ω+u (leave-out m)",
+  two_stage_omega_xi_u_loo = "two-stage ω+ξ+u (leave-out m)"
 )
-model_colours <- c(
-  dynamical = "#2166AC",
-  two_stage_omega_u = "#E08214",
-  two_stage_omega_xi_u = "#B2182B",
-  two_stage_omega_u_loo = "#FDB863",
-  two_stage_omega_xi_u_loo = "#F4A582",
-  nearest_neighbour_oracle = "#8073AC",
-  nearest_neighbour = "#1B7837",
-  intercept = grey(0.45)
-)
-# models run on a non-default mesh configuration (R/run_two_stage_folds.R
-# mesh=<tag>) carry a _mesh-<tag> suffix, and are labelled as their base model
-# plus the tag
 mesh_tag_pattern <- "_mesh-([A-Za-z0-9_]+)$"
 label_for <- function(model) {
-  base <- sub(mesh_tag_pattern, "", model)
+  variant <- sub(mesh_tag_pattern, "", model)
   tag <- ifelse(grepl(mesh_tag_pattern, model),
-                sub(paste0("^.*", mesh_tag_pattern), " [mesh \\1]", model),
-                "")
-  ifelse(base %in% names(model_labels),
-         paste0(model_labels[base], tag), model)
+                sub(paste0("^.*", mesh_tag_pattern), "\\1", model), "base")
+  ifelse(model %in% names(model_labels), model_labels[model],
+         ifelse(variant %in% names(variant_labels),
+                paste0(variant_labels[variant], " [mesh ", tag, "]"), model))
 }
 
 theme_two_stage <- theme_minimal(base_size = 10) +
@@ -488,9 +501,10 @@ report("wrote cv_scores_two_stage.csv (%i rows)", nrow(all_scores))
 #   ceiling     100 (1 - floor / Var(y)), the most any model could explain
 #   skill       (mse_intercept - mse) / (mse_intercept - floor): 0 is the
 #               insecticide mean, 1 is the noise floor (#12)
-# and the difference of each from the dynamical model's, with 95% intervals and
-# the bootstrap probability that the model beats the dynamical model.
-summarise_group <- function(data, pit_list) {
+# and the difference of each from the reference model's (the dynamical model
+# unless stated), with 95% intervals and the bootstrap probability that the
+# model beats the reference.
+summarise_group <- function(data, pit_list, reference = "dynamical") {
 
   models <- sort(unique(data$model))
   reference_rows <- data %>% filter(model == models[1]) %>% arrange(row_id)
@@ -567,13 +581,13 @@ summarise_group <- function(data, pit_list) {
     result[[metric]] <- point[[metric]][1, ]
     result[[paste0(metric, "_lower")]] <- interval(replicates[[metric]], 0.025)
     result[[paste0(metric, "_upper")]] <- interval(replicates[[metric]], 0.975)
-    if ("dynamical" %in% models) {
-      difference <- replicates[[metric]] - replicates[[metric]][, "dynamical"]
+    if (reference %in% models) {
+      difference <- replicates[[metric]] - replicates[[metric]][, reference]
       # higher is better for all but crps and mse
       better <- if (metric %in% c("crps", "mse")) difference < 0 else
         difference > 0
       result[[paste0("diff_", metric)]] <-
-        point[[metric]][1, ] - point[[metric]][1, "dynamical"]
+        point[[metric]][1, ] - point[[metric]][1, reference]
       result[[paste0("diff_", metric, "_lower")]] <- interval(difference, 0.025)
       result[[paste0("diff_", metric, "_upper")]] <- interval(difference, 0.975)
       result[[paste0("prob_better_", metric)]] <- colMeans(better)
@@ -612,9 +626,20 @@ models_complete <- function(data) {
     ungroup()
 }
 
+# the two forecasting origins are also pooled, as experiment
+# temporal_forecasting. The origins' test sets overlap (every year from 2018 on
+# is in both), and the pixel bootstrap resamples a pixel's records from both
+# origins together
+pool_forecasting <- function(data) {
+  bind_rows(data,
+            data %>%
+              filter(startsWith(experiment, "temporal_forecasting_")) %>%
+              mutate(experiment = "temporal_forecasting"))
+}
+
 summarise_levels <- function(data, stratum_column = NULL) {
   groups <- bind_rows(
-    data %>% mutate(fold_level = "pooled"),
+    pool_forecasting(data) %>% mutate(fold_level = "pooled"),
     # separate folds only where an experiment has more than one
     data %>%
       group_by(experiment) %>%
@@ -654,22 +679,69 @@ write.csv(summary_table, file.path(output_dir, "cv_summary_two_stage.csv"),
           row.names = FALSE)
 report("wrote cv_summary_two_stage.csv (%i rows)", nrow(summary_table))
 
+# the headline: the reported two-stage configuration beside the dynamical
+# model and the nulls, per experiment pooled over its folds, and per
+# forecasting origin
 headline <- summary_table %>%
-  filter(fold == "pooled", stratum == "all")
+  filter(stratum == "all", model %in% headline_models,
+         fold == "pooled" | experiment == "spatial_blocks") %>%
+  mutate(model = factor(model, headline_models)) %>%
+  arrange(experiment, fold != "pooled", fold, model) %>%
+  mutate(model = as.character(model))
+write.csv(headline, file.path(output_dir, "cv_headline_two_stage.csv"),
+          row.names = FALSE)
 
-cat("\nheadline, pooled over folds (per-type rho):\n")
+cat("\nheadline (per-type rho):\n")
 print(as.data.frame(headline %>%
-  transmute(experiment, model, n, n_pixels,
+  transmute(experiment, fold, model = model_label, n, n_pixels,
             elpd = round(elpd, 3),
             crps = round(crps, 4),
             explained = sprintf("%.1f [%.1f, %.1f]", explained,
                                 explained_lower, explained_upper),
             ceiling = round(ceiling, 1),
             skill = round(skill, 2),
+            coverage_50 = round(coverage_50, 3),
             coverage_95 = round(coverage_95, 3),
             d_elpd = sprintf("%+.3f [%+.3f, %+.3f]", diff_elpd,
                              diff_elpd_lower, diff_elpd_upper))),
   row.names = FALSE)
+
+
+# term inclusion ---------------------------------------------------------------
+
+# Keep xi only if omega_xi_u improves on omega_u (doc/two_stage_plan.md, "Term
+# inclusion"): the difference of omega_xi_u from omega_u, both on the reported
+# meshes, paired by pixel as above; diff_* columns are omega_xi_u - omega_u
+term_inclusion <- all_scores %>%
+  filter(model %in% two_stage_reported) %>%
+  pool_forecasting() %>%
+  group_by(experiment) %>%
+  group_modify(function(d, key) {
+    d <- models_complete(d)
+    if (n_distinct(d$model) < 2) return(tibble())
+    summarise_group(d, pit_matrices, reference = reported_model("omega_u")) %>%
+      mutate(folds = paste(sort(unique(d$fold)), collapse = "+"))
+  }) %>%
+  ungroup() %>%
+  filter(model == reported_model("omega_xi_u")) %>%
+  select(experiment, folds, n, n_pixels, starts_with("diff_"),
+         starts_with("prob_better_"))
+if (nrow(term_inclusion) > 0) {
+  write.csv(term_inclusion, file.path(output_dir, "term_inclusion_two_stage.csv"),
+            row.names = FALSE)
+  cat("\nterm inclusion, omega_xi_u - omega_u (paired pixel bootstrap):\n")
+  print(as.data.frame(term_inclusion %>%
+    transmute(experiment, folds, n,
+              d_elpd = sprintf("%+.4f [%+.4f, %+.4f]", diff_elpd,
+                               diff_elpd_lower, diff_elpd_upper),
+              d_crps_1e3 = sprintf("%+.2f [%+.2f, %+.2f]", 1e3 * diff_crps,
+                                   1e3 * diff_crps_lower,
+                                   1e3 * diff_crps_upper),
+              d_explained = sprintf("%+.2f [%+.2f, %+.2f]", diff_explained,
+                                    diff_explained_lower,
+                                    diff_explained_upper))),
+    row.names = FALSE)
+}
 
 
 # coverage curves --------------------------------------------------------------------
@@ -696,14 +768,17 @@ write.csv(coverage_table, file.path(output_dir, "cv_coverage_two_stage.csv"),
 
 # skill by forecast horizon ------------------------------------------------------------
 
+# per origin, and pooled over the two origins at each horizon
 horizon_table <- all_scores %>%
   filter(!is.na(horizon))
 if (nrow(horizon_table) > 0) {
   report("bootstrapping by forecast horizon")
   horizon_table <- horizon_table %>%
+    pool_forecasting() %>%
     mutate(stratum = paste("horizon", horizon)) %>%
     group_by(experiment, horizon) %>%
     group_modify(function(d, key) {
+      d <- models_complete(d)
       reference <- d %>% filter(model == first(model))
       if (n_distinct(reference$cell) < 2) return(tibble())
       summarise_group(d, pit_matrices)
@@ -717,10 +792,8 @@ if (nrow(horizon_table) > 0) {
 
 # figures ------------------------------------------------------------------------------
 
-present_models <- names(model_labels)[names(model_labels) %in%
-                                        unique(all_scores$model)]
-present_models <- c(present_models,
-                    setdiff(unique(all_scores$model), present_models))
+# the figures show the headline models only
+present_models <- headline_models[headline_models %in% all_scores$model]
 colour_scale <- function(aesthetic = "colour") {
   values <- model_colours[present_models]
   # models without a fixed colour (e.g. the mesh-resolution runs)
@@ -736,6 +809,7 @@ as_model_factor <- function(model) {
 experiment_labels <- c(
   spatial_interpolation = "spatial interpolation",
   spatial_blocks = "spatial blocks",
+  temporal_forecasting = "forecasting, both origins",
   temporal_forecasting_2014 = "forecast from 2014",
   temporal_forecasting_2018 = "forecast from 2018"
 )
@@ -755,7 +829,8 @@ save_figure <- function(plot, name, width, height) {
 # a calibrated model is flat at 1. A U shape is too narrow, a hump too wide, and
 # a slope a bias
 pit_long <- bind_rows(lapply(
-  split(all_scores %>% distinct(model, experiment, fold, source),
+  split(all_scores %>% filter(model %in% present_models) %>%
+          distinct(model, experiment, fold, source),
         ~ model + experiment, drop = TRUE),
   function(entry) {
     pit <- as.vector(do.call(rbind, pit_matrices[entry$source]))
@@ -786,6 +861,7 @@ save_figure(pit_plot, "pit_histograms.png",
 
 # coverage, as the gap from nominal so that small miscalibration is visible
 coverage_plot <- ggplot(coverage_table %>%
+                          filter(model %in% present_models) %>%
                           mutate(model = as_model_factor(model),
                                  experiment = as_experiment_factor(experiment)),
                         aes(nominal, empirical - nominal, colour = model)) +
@@ -809,6 +885,7 @@ save_figure(coverage_plot, "coverage_curves.png",
 # variance explained and differences from the dynamical model, pooled per
 # experiment. Intervals are the paired pixel bootstrap
 headline_plot_data <- headline %>%
+  filter(fold == "pooled") %>%
   mutate(model = as_model_factor(model),
          experiment = as_experiment_factor(experiment))
 
@@ -831,7 +908,7 @@ explained_plot <- ggplot(headline_plot_data,
   theme(legend.position = "none")
 
 difference_data <- headline %>%
-  filter(model != "dynamical") %>%
+  filter(fold == "pooled", model != "dynamical") %>%
   select(experiment, model, starts_with("diff_")) %>%
   pivot_longer(starts_with("diff_"), names_to = "name") %>%
   mutate(metric = sub("^diff_([a-z]+).*$", "\\1", name),
@@ -875,6 +952,7 @@ save_figure(difference_plot, "difference_vs_dynamical.png",
 
 if (is.data.frame(horizon_table) && nrow(horizon_table) > 0) {
   horizon_plot <- ggplot(horizon_table %>%
+                           filter(model %in% present_models) %>%
                            mutate(model = as_model_factor(model),
                                   experiment = as_experiment_factor(experiment)),
                          aes(horizon, explained, colour = model)) +
@@ -899,7 +977,7 @@ if (is.data.frame(horizon_table) && nrow(horizon_table) > 0) {
   if ("dynamical" %in% horizon_table$model &&
       any(grepl("^two_stage", horizon_table$model))) {
     gain_plot <- ggplot(horizon_table %>%
-                          filter(grepl("^two_stage", model)) %>%
+                          filter(model %in% two_stage_reported) %>%
                           mutate(model = as_model_factor(model),
                                  experiment = as_experiment_factor(experiment)),
                         aes(horizon, diff_explained, colour = model)) +
@@ -1163,9 +1241,11 @@ residual_files <- list.files(output_dir, pattern = "^train_residuals__.*\\.rds$"
 residual_files <- residual_files[grepl(
   paste0("__(", paste(paste(fold_specs$experiment, fold_specs$fold, sep = "__"),
                       collapse = "|"), ")\\.rds$"), residual_files)]
-# the mesh-resolution runs are compared by their scores; the residual
-# diagnostics stay on the base meshes
-residual_files <- residual_files[!grepl("_mesh-", basename(residual_files))]
+# on the reported configuration; the other mesh runs are compared by their
+# scores
+residual_files <- residual_files[
+  vapply(strsplit(basename(residual_files), "__"), `[`, "", 2) %in%
+    two_stage_reported]
 
 set.seed(2026 - 9 - 26)
 if (length(residual_files) == 0) {
@@ -1184,11 +1264,13 @@ if (length(residual_files) == 0) {
       select(-grouping, -group) %>%
       mutate(across(where(is.numeric), ~ round(.x, 3)))), row.names = FALSE)
 
-    residual_plot <- plot_residual_diagnostics(diagnostics$table)
+    # the figure shows omega_xi_u only; omega_u's residuals are in the table
+    plot_table <- diagnostics$table %>%
+      filter(model == reported_model("omega_xi_u"))
+    residual_plot <- plot_residual_diagnostics(plot_table)
     save_figure(residual_plot, "train_residual_extremes.png",
-                width = 2.5 + 5 * n_distinct(paste(diagnostics$table$model,
-                                                   diagnostics$table$experiment,
-                                                   diagnostics$table$fold)),
+                width = 2.5 + 5 * n_distinct(paste(plot_table$experiment,
+                                                   plot_table$fold)),
                 height = 7)
   }
 }
