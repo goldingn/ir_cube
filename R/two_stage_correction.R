@@ -611,3 +611,40 @@ predict_correction <- function(fit,
 
   draws
 }
+
+# The named mesh configurations of the mesh-resolution experiment
+# (doc/two_stage_plan.md, "Mesh resolution results"), as arguments to
+# build_correction_mesh() for omega and xi; xi = "omega" puts xi on the omega
+# mesh. Mirrors mesh_configs in R/run_two_stage_folds.R. Cross-validation chose
+# omega5000_xi2500: omega on a finer mesh (15 km cutoff, inner edges of at most
+# 150 km, at most 5000 nodes) and xi on the base omega mesh
+correction_mesh_configs <- function() {
+  list(
+    base = list(omega = list(), xi = list(max_nodes = 600)),
+    xi1200 = list(omega = list(), xi = list(max_nodes = 1200)),
+    xifull = list(omega = list(), xi = "omega"),
+    omega5000 = list(omega = list(cutoff = 15, max_edge_inner = 150,
+                                  max_nodes = 5000),
+                     xi = list(max_nodes = 1200)),
+    omega5000_xi2500 = list(omega = list(cutoff = 15, max_edge_inner = 150,
+                                         max_nodes = 5000),
+                            xi = list(max_nodes = 2500))
+  )
+}
+
+# the omega and xi meshes of a named configuration, for coordinates in km
+build_correction_meshes <- function(coords_km, config = "omega5000_xi2500",
+                                    verbose = FALSE) {
+  configs <- correction_mesh_configs()
+  if (!config %in% names(configs)) {
+    stop("unknown mesh configuration: ", config, "; one of ",
+         paste(names(configs), collapse = ", "))
+  }
+  spec <- configs[[config]]
+  mesh <- do.call(build_correction_mesh,
+                  c(list(coords_km), spec$omega, verbose = verbose))
+  mesh_xi <- if (identical(spec$xi, "omega")) mesh else
+    do.call(build_correction_mesh, c(list(coords_km), spec$xi,
+                                     verbose = verbose))
+  list(omega = mesh, xi = mesh_xi)
+}
