@@ -3,7 +3,7 @@
 # the same format as the #12 folds, so they are scored by the same code.
 #
 #   Rscript R/run_two_stage_folds.R <experiment> <fold> [m_ref=mean|loo]
-#     [mesh=<tag>] [variants=omega_u,omega_xi_u] [stage=A|B]
+#     [mesh=<tag>] [variants=omega_u,omega_xi_u] [stage=A|B] [terms=p|p,s]
 #
 # e.g. Rscript R/run_two_stage_folds.R spatial_interpolation all
 #      Rscript R/run_two_stage_folds.R spatial_blocks 1
@@ -26,6 +26,19 @@
 # Only the stage-B model is saved: the stage-A draws already exist. Stage A is
 # refitted from the hyperparameters recorded in fit_summary.csv for the same
 # fold, variant and mesh where available (warm start; cold if that fails).
+#
+# terms adds the optional error-structure terms (doc/two_stage_plan.md, "Error
+# structure"): p, a static per-pixel effect, and s, a survey effect (survey =
+# citation x country x year, survey_id()). They go into the model name after
+# the variant, e.g. two_stage_omega_xi_u_p_s_pql_mesh-omega5000_xi2500. With s,
+# three draws files are saved from the same latent draws, differing only in
+# the survey term of the held-out draws:
+#   two_stage_<variant>_p_s...        a fresh N(0, sigma_s^2) per held-out
+#                                     survey (the predictive distribution of a
+#                                     new assay; the primary one);
+#   two_stage_<variant>_p_s_snone...  no survey term (the map prediction);
+#   two_stage_<variant>_p_s_spost...  held-out assays in a training survey take
+#                                     its posterior draw, others a fresh one.
 #
 # Run with OpenBLAS for CHOLMOD's supernodal factorisation (reference BLAS is
 # ~10x slower), e.g.
@@ -54,7 +67,7 @@ experiment_name <- arguments[1]
 fold_name <- arguments[2]
 # optional arguments are key=value; a bare third argument is m_ref, as before
 options <- list(m_ref = "mean", mesh = "omega5000_xi2500",
-                variants = "omega_u,omega_xi_u", stage = "A")
+                variants = "omega_u,omega_xi_u", stage = "A", terms = "")
 for (argument in arguments[-(1:2)]) {
   if (!grepl("=", argument)) argument <- paste0("m_ref=", argument)
   key <- sub("=.*$", "", argument)
@@ -65,6 +78,21 @@ m_ref_type <- options$m_ref
 mesh_tag <- options$mesh
 variants <- strsplit(options$variants, ",")[[1]]
 stage <- options$stage
+terms <- strsplit(options$terms, ",")[[1]]
+pixel_effect <- "p" %in% terms
+survey_effect <- "s" %in% terms
+stopifnot(all(terms %in% c("p", "s")))
+# the error-structure terms, as a suffix of the variant: "", "_p", "_s", "_p_s"
+terms_suffix <- paste0(if (pixel_effect) "_p" else "",
+                       if (survey_effect) "_s" else "")
+# the held-out survey draws saved (see above), and their model-name suffixes
+survey_modes <- if (survey_effect) c("fresh", "none", "posterior") else "none"
+# (only with s: without it the single "none" set is the model itself)
+survey_suffix <- if (survey_effect) {
+  c(fresh = "", none = "_snone", posterior = "_spost")
+} else {
+  c(none = "")
+}
 stopifnot(stage %in% c("A", "B"),
           !is.na(experiment_name), !is.na(fold_name),
           m_ref_type %in% c("mean", "loo"),
@@ -184,9 +212,19 @@ if (experiment_name == "spatial_interpolation") {
   stop("unknown experiment: ", experiment_name)
 }
 
-report("%s / %s, m_ref = %s, mesh = %s, variants = %s: %i training, %i held-out assays",
+report("%s / %s, m_ref = %s, mesh = %s, variants = %s, terms = %s: %i training, %i held-out assays",
        experiment_name, fold_name, m_ref_type, mesh_tag,
-       paste(variants, collapse = ","), nrow(training), nrow(test))
+       paste(variants, collapse = ","),
+       if (length(terms)) paste(terms, collapse = ",") else "none",
+       nrow(training), nrow(test))
+
+# surveys (citation x country x year) of the training and held-out assays
+stopifnot("citation" %in% names(training), "citation" %in% names(test))
+survey_train <- survey_id(training$citation, training$country_name,
+                          training$year_start,
+                          project_km(training$longitude, training$latitude))
+survey_test <- survey_id(test$citation, test$country_name, test$year_start,
+                         project_km(test$longitude, test$latitude))
 
 
 # 2. paired dynamical draws at the training and test assays ----------------
@@ -319,7 +357,9 @@ stopifnot(all(types %in% names(rho_for_type)))
 # held-out draws start as the dynamical model's own, and each type's columns are
 # replaced by the corrected draws when its fit succeeds; so a type whose fit
 # fails keeps the dynamical draws and is flagged
-p_out <- lapply(setNames(variants, variants), function(v) p_saved)
+# one set per variant and saved survey mode
+output_keys <- as.vector(outer(variants, survey_modes, paste, sep = "|"))
+p_out <- lapply(setNames(output_keys, output_keys), function(v) p_saved)
 
 # median length of the mesh edges among triangles whose three nodes all carry
 # data weight, i.e. the resolution the fields actually have where the data are
@@ -378,8 +418,8 @@ for (k in seq_along(types)) {
     for (variant in variants) {
       summaries[[length(summaries) + 1]] <- tibble(
         experiment = experiment_name, fold = fold_name,
-        model = paste0("two_stage_", variant, model_suffix),
-        variant = paste0(variant, if (stage == "B") "_pql" else ""),
+        model = paste0("two_stage_", variant, terms_suffix, model_suffix),
+        variant = paste0(variant, terms_suffix, if (stage == "B") "_pql" else ""),
         m_ref = if (loo_used) "loo" else "mean",
         mesh_config = mesh_tag, insecticide_type = type, rho = rho, n_train = 0L,
         n_test = length(test_rows), error = "no training assays",
@@ -396,7 +436,8 @@ for (k in seq_along(types)) {
     died = training$died[train_rows],
     mosquito_number = training$mosquito_number[train_rows],
     m = m_ref_all[train_rows],
-    rho = rho
+    rho = rho,
+    survey = survey_train[train_rows]
   )
   stage_a <- empirical_logit(train_k$died, train_k$mosquito_number, rho)
   train_k$z <- stage_a$z
@@ -411,7 +452,8 @@ for (k in seq_along(types)) {
     lat = test_df$latitude[test_rows],
     year = test_df$year_start[test_rows],
     cell = test_df$cell[test_rows],
-    m = colMeans(logit_test[, test_rows, drop = FALSE])
+    m = colMeans(logit_test[, test_rows, drop = FALSE]),
+    survey = survey_test[test_rows]
   )
 
   # the dynamical draws paired with the stored ones. With m_ref = loo the
@@ -447,7 +489,8 @@ for (k in seq_along(types)) {
     set.seed(2026 + k)
     fit <- NULL
     error_message <- NA_character_
-    summary_variant <- paste0(variant, if (stage == "B") "_pql" else "")
+    summary_variant <- paste0(variant, terms_suffix,
+                              if (stage == "B") "_pql" else "")
     fit_stage_a <- function(start = list()) {
       tryCatch(
         withCallingHandlers(
@@ -458,7 +501,9 @@ for (k in seq_along(types)) {
                          mesh = mesh,
                          mesh_xi = if (variant == "omega_xi_u") mesh_xi else
                            NULL,
-                         start = start),
+                         start = start,
+                         pixel_effect = pixel_effect,
+                         survey_effect = survey_effect),
           # non-convergence is recorded from opt below, not as a warning
           warning = function(w) {
             if (grepl("nlminb did not converge", conditionMessage(w))) {
@@ -519,7 +564,8 @@ for (k in seq_along(types)) {
                              m_draws_train = m_draws_train,
                              m_draws_new = m_draws_test,
                              n_draws = n_dyn_draws,
-                             batch_size = 100),
+                             batch_size = 100,
+                             survey = survey_modes),
           error = function(e) {
             error_message <<- paste("prediction:", conditionMessage(e))
             NULL
@@ -527,8 +573,14 @@ for (k in seq_along(types)) {
         )
       })
       if (!is.null(lambda)) {
-        stopifnot(!anyNA(lambda))
-        p_out[[variant]][, test_rows] <- plogis(lambda)
+        if (!is.list(lambda)) lambda <- list(lambda)
+        names(lambda) <- survey_modes
+        for (mode in survey_modes) {
+          stopifnot(!anyNA(lambda[[mode]]))
+          p_out[[paste(variant, mode, sep = "|")]][, test_rows] <-
+            plogis(lambda[[mode]])
+        }
+        rm(lambda)
       } else {
         use_fit <- FALSE
       }
@@ -541,7 +593,7 @@ for (k in seq_along(types)) {
     summary_row <- tibble(
       experiment = experiment_name,
       fold = fold_name,
-      model = paste0("two_stage_", variant, model_suffix),
+      model = paste0("two_stage_", variant, terms_suffix, model_suffix),
       variant = summary_variant,
       m_ref = if (loo_used) "loo" else "mean",
       mesh_config = mesh_tag,
@@ -567,6 +619,14 @@ for (k in seq_along(types)) {
       phi = get_hyper("phi"),
       persistence = get_hyper("persistence"),
       tau = get_hyper("tau"),
+      sigma_p = get_hyper("sigma_p"),
+      sigma_s = get_hyper("sigma_s"),
+      n_pixels = n_distinct(train_k$cell),
+      n_surveys = n_distinct(train_k$survey),
+      share_test_pixel_in_train = if (length(test_rows) > 0)
+        mean(test_k$cell %in% train_k$cell) else NA_real_,
+      share_test_survey_in_train = if (length(test_rows) > 0)
+        mean(test_k$survey %in% train_k$survey) else NA_real_,
       objective = if (is.null(fit)) NA_real_ else fit$opt$objective,
       convergence = if (is.null(fit)) NA_integer_ else fit$opt$convergence,
       nlminb_message = if (is.null(fit)) NA_character_ else fit$opt$message,
@@ -656,13 +716,17 @@ for (k in seq_along(types)) {
     }
 
     report(paste("%-18s %-10s n=%5i test=%4i T=%i nodes=%i/%s",
-                 "conv=%s range_omega=%.0f sigma_omega=%.2f tau=%.2f%s",
+                 "conv=%s range_omega=%.0f sigma_omega=%.2f tau=%.2f%s%s",
                  "fit %.0fs predict %.0fs%s%s"),
            type, variant, nrow(train_k), length(test_rows), T_k, mesh$n,
            if (variant == "omega_xi_u") mesh_xi$n else "-",
            if (is.null(fit)) "ERROR" else fit$opt$convergence,
            get_hyper("range_omega"), get_hyper("sigma_omega"),
            get_hyper("tau"),
+           paste0(if (pixel_effect) sprintf(" sigma_p=%.2f",
+                                            get_hyper("sigma_p")) else "",
+                  if (survey_effect) sprintf(" sigma_s=%.2f",
+                                             get_hyper("sigma_s")) else ""),
            if (variant == "omega_xi_u")
              sprintf(" range_eta=%.0f sigma_eta=%.3f phi=%.2f",
                      get_hyper("range_eta"), get_hyper("sigma_eta"),
@@ -691,17 +755,24 @@ summary_table <- bind_rows(summaries)
 rho_type <- tibble(insecticide_type = types, rho = rho_for_type[types])
 rho_test <- rho_for_type[types[test_df$type_id]]
 
-for (variant in variants) {
-  model <- paste0("two_stage_", variant, model_suffix)
+for (output_key in output_keys) {
+  variant <- sub("\\|.*$", "", output_key)
+  survey_mode <- sub("^.*\\|", "", output_key)
+  model <- paste0("two_stage_", variant, terms_suffix,
+                  survey_suffix[[survey_mode]], model_suffix)
   # (stage is also a column of summary_table, so the name is built outside)
-  saved_variant <- paste0(variant, if (stage == "B") "_pql" else "")
-  variant_summary <- filter(summary_table, variant == !!saved_variant)
+  saved_variant <- paste0(variant, terms_suffix,
+                          if (stage == "B") "_pql" else "")
+  variant_summary <- filter(summary_table, variant == !!saved_variant) %>%
+    mutate(model = !!model)
   object <- list(
     model = model,
     experiment = experiment_label,
     fold = fold_name,
     test_df = test_df,
-    p_draws = p_out[[variant]],
+    # the survey term in the held-out draws (see the header)
+    survey_draws = if (survey_effect) survey_mode else NA_character_,
+    p_draws = p_out[[output_key]],
     # every model is scored at the per-type replicate-based rho, which is also
     # what inflated v in the fit; as draws x assays so the scoring code's
     # rho_draws path applies it column by column
@@ -718,6 +789,8 @@ for (variant in variants) {
                             fold_name))
   saveRDS(object, file)
   report("saved %s", file)
+  # residuals do not depend on the survey mode: saved once
+  if (survey_mode != survey_modes[1]) next
 
   residual_file <- file.path(output_dir,
                              sprintf("train_residuals__%s__%s__%s.rds",

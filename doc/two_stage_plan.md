@@ -296,3 +296,64 @@ Two-stage ω+ξ+u minus dynamical: log score +0.295 [+0.188, +0.397] (interpolat
 - Interior residuals are still narrower than v implies (SD 0.70 vs 0.95). v, i.e. the per-type ρ, looks too large for the interior assays.
 
 **Recommendation: adopt stage B.** CV shows a benefit on every experiment: log score +0.06 to +0.19, and 95% coverage closer to nominal. It costs about 40 min per fold on the spatial folds. Next: use it for the maps (`R/two_stage_maps.R`, not changed here), and check the interior overdispersion (ρ).
+
+## Error structure
+
+Motivation (`R/two_stage_hotspot_diagnostics.R`, `hotspot_{nugget,covariance}.csv`): ω absorbs a static per-pixel effect (same-pixel, different-year residual covariance 0.17–0.32; ω̂ acts about half as a per-pixel term) and a survey-level effect (distinct pixels 0–10 km apart in the same year covary 1.5–10× more than in different years; u has τ² ≈ 0.001 at stage A).
+
+**Terms** (`tmb/two_stage_correction.cpp`, `fit_correction(pixel_effect, survey_effect)`; off by default):
+- p: iid static pixel (raster cell) effect, σ_p, PC prior P(σ_p > 1) = 0.05. Part of the target: prediction uses the joint draw at pixels with data, and a fresh N(0, σ_p²) per new pixel.
+- s: iid survey effect, σ_s, P(σ_s > 1) = 0.05. Survey = citation × country × year (`survey_id()`). Citation alone is too coarse: aggregated sources ("Ministry of Health", "PMI 2016", VectorBase) span countries (110 of 1434 citation-years, 9,902 assays). 1,898 surveys; median 7 assays, 3 pixels; 38% of per-type surveys have one pixel. The 12 assays with no citation (Madagascar 2023) fall back to 25 km single-linkage clusters within the country-year. s is batch error, not the target: maps leave it out (`predict_correction(survey = "none")`, the default).
+- Scoring held-out assays: the scoring code turns logit draws into draws of p and scores them with a beta-binomial at the external per-type ρ, so s has to be inside the draws to widen the predictive distribution, as e is. The primary +p+s model adds a fresh N(0, σ_s²) per held-out survey, shared by its assays (`survey = "fresh"`). Also saved from the same latent draws: `_snone` (no s, what a map user gets) and `_spost` (posterior s where the held-out survey has training assays; uses information a map user lacks). Held-out assays in a training survey: interpolation 83%, blocks 56–71%, forecasting 0%. Held-out pixels with training data: 0% on the spatial folds, 41–42% on forecasting.
+- Stage B and the cut-posterior shift are unchanged in form: p and s are more Gaussian latent columns of A.
+
+**Checks** (`R/check_two_stage_error_structure.R`):
+- Defaults against the committed code (git HEAD): objective, hyperparameters, mode, H, stage-B fit and predictive draws are identical (difference exactly 0).
+- Simulation (σ_p = 0.5, σ_s = 0.4, 2000 assays, 727 surveys, mostly small): σ̂_p = 0.44, σ̂_s = 0.27 (weakly identified at this survey size), range ω 508 (truth 500; 177 without p and s). Shift vs refit 2e-15. 95% coverage of the target: 0.95 (new pixels), 0.99 (training pixels, new year). Coverage of a new assay's λ + s: 0.90/0.89 without s, 0.92/0.95 with the fresh draw.
+
+**Runs.** `R/run_two_stage_folds.R <experiment> <fold> variants=omega_xi_u stage=B terms=p` (or `terms=p,s`); models `two_stage_omega_xi_u_p[_s][_snone|_spost]_pql_mesh-omega5000_xi2500`. All 45 type-fits converged per variant. About 6 min per type, 25–90 min per fold, peak 15.4 GB. Scored by `R/two_stage_metrics.R` → `outputs/two_stage/error_structure_two_stage.csv`.
+
+**Hyperparameters** (median (range) over 45 type-fits, stage B):
+
+| | σ_p | σ_s | τ (base → model) | range ω / base | σ_ω / base |
+|---|---|---|---|---|---|
+| +p | 0.22 (0.11–0.55) | | 0.39 → 0.28 | 1.04 (0.98–1.44) | 0.93 |
+| +p+s | 0.21 (0.11–0.47) | 0.42 (0.16–1.12) | 0.39 → 0.15 | 1.10 (0.95–6.89) | 0.91 |
+
+- σ_p is largest for Bendiocarb (0.45), DDT and Fenitrothion (0.37), smallest for Alpha-cypermethrin, Lambda-cyhalothrin and Malathion (0.14–0.15).
+- s takes most of u: τ halves. σ_s ≈ 0.4 for most types; Pirimiphos-methyl 0.94.
+- ω's range barely lengthens (+4%, +10%); σ_ω falls 7–9%. ω is not mainly a stand-in for p or s.
+
+**Scores.** Model − stage B (ω+ξ+u), 95% paired pixel bootstrap. Stage-B cover 50/95: 0.446/0.919 (interpolation), 0.438/0.911 (blocks), 0.454/0.898 (forecasting).
+
+| experiment | model | Δ log score | Δ CRPS (×10⁻³) | Δ explained (points) | cover 50 / 95 |
+|---|---|---|---|---|---|
+| interpolation | +p | +0.005 [−0.000, +0.009] | −0.3 [−0.7, +0.3] | +0.1 [−0.1, +0.4] | 0.446 / 0.923 |
+| | +p+s | +0.006 [−0.007, +0.019] | +0.8 [−0.4, +1.9] | −0.5 [−1.2, +0.5] | 0.455 / 0.927 |
+| | +p+s, no s | −0.010 [−0.020, +0.002] | +1.2 [−0.1, +2.4] | −0.6 [−1.4, +0.3] | 0.435 / 0.914 |
+| | +p+s, posterior s | +0.033 [+0.017, +0.050] | −2.5 [−4.6, −0.6] | +1.8 [+0.4, +3.2] | 0.463 / 0.924 |
+| blocks 1+2 | +p | +0.003 [+0.001, +0.007] | −0.0 [−0.2, +0.2] | −0.0 [−0.2, +0.1] | 0.441 / 0.911 |
+| | +p+s | +0.013 [+0.008, +0.018] | −0.8 [−1.3, −0.4] | +0.6 [+0.2, +0.9] | 0.442 / 0.915 |
+| | +p+s, no s | −0.010 [−0.015, −0.005] | −0.0 [−0.5, +0.4] | +0.1 [−0.3, +0.4] | 0.425 / 0.902 |
+| | +p+s, posterior s | +0.020 [+0.014, +0.027] | −2.3 [−2.9, −1.7] | +1.7 [+1.3, +2.1] | 0.442 / 0.912 |
+| forecasting 2014+2018 | +p | +0.003 [+0.001, +0.005] | −0.3 [−0.4, −0.1] | +0.2 [+0.0, +0.3] | 0.457 / 0.899 |
+| | +p+s | +0.006 [+0.002, +0.010] | +0.0 [−0.3, +0.4] | −0.1 [−0.3, +0.2] | 0.454 / 0.896 |
+| | +p+s, no s | −0.007 [−0.011, −0.003] | +0.4 [0.0, +0.8] | −0.2 [−0.5, 0.0] | 0.445 / 0.890 |
+| forecasting 2014 | +p+s | −0.003 [−0.006, +0.001] | +0.5 [+0.2, +0.9] | −0.4 [−0.6, −0.1] | 0.456 / 0.900 |
+| forecasting 2018 | +p+s | +0.027 [+0.019, +0.035] | −1.2 [−1.9, −0.4] | +0.5 [+0.1, +0.9] | 0.450 / 0.888 |
+
+- All gains are small: at most +0.013 log score for the primary models, against +0.06 to +0.19 for stage B over stage A.
+- +p: +0.003 to +0.005 log score, intervals at or just clear of 0; point predictions unchanged.
+- +p+s with a fresh survey draw: +0.006 to +0.013 log score on the pooled experiments. The gain is in calibration of the held-out assay distribution, not in the mean: without s in the draws (the map prediction), the same fit scores −0.007 to −0.010 below stage B, and CRPS and variance explained do not improve. Where the held-out survey has training assays, its posterior s helps (+0.02 to +0.03, +1.7 to +1.8 points explained); a map user does not have it.
+- Forecasting 2014 does not gain from s; 2018 does.
+
+**Hotspots** (`R/two_stage_error_structure_hotspots.R`, `outputs/two_stage/error_structure_hotspots.csv`): full-data stage-B fits, adopted meshes, the hotspot definition of the diagnostics (local extrema of ω̂ near the data, |ω̂| in the top 2%). Count above the base model's fixed |ω̂| threshold, median |ω̂| at hotspots, ω range:
+
+| type | base | +p | +p+s |
+|---|---|---|---|
+| Deltamethrin | 49, 0.66, 42 km | 35, 0.59, 43 km | 39, 0.62, 47 km |
+| Permethrin | 43, 0.84, 36 km | 28, 0.72, 37 km | 30, 0.75, 39 km |
+
+- p removes about 30% of the hotspots above the fixed threshold and shrinks the peaks by 10–15%; s adds little on top. At the relative (top 2%) threshold the counts barely change (46–48 vs 49; 41 vs 43), so the hotspot pattern remains, less prominent. σ_p in these fits: 0.20 (Deltamethrin), 0.29 (Permethrin).
+
+**Recommendation.** Adopt +p for maps and scoring: it is cheap, never worse, reduces hotspot prominence, and represents a real persistent local deviation. Adopt s for scoring held-out assays (fresh draw per survey) and for the variance decomposition, but keep it out of maps; its CV gain is in the predictive width, not the map. Report map-level scores (`_snone`) alongside, since they are what a map user gets. Neither term changes ω's range materially, so ω's short range is not an artefact of the missing error terms.

@@ -137,7 +137,13 @@ variant_labels <- c(
   two_stage_omega_xi_u = "two-stage ω+ξ+u",
   two_stage_omega_u_loo = "two-stage ω+u (leave-out m)",
   two_stage_omega_xi_u_loo = "two-stage ω+ξ+u (leave-out m)",
-  two_stage_omega_xi_u_pql = "two-stage ω+ξ+u, stage B (PQL)"
+  two_stage_omega_xi_u_pql = "two-stage ω+ξ+u, stage B (PQL)",
+  two_stage_omega_xi_u_p_pql = "two-stage ω+ξ+u+p, stage B",
+  two_stage_omega_xi_u_p_s_pql = "two-stage ω+ξ+u+p+s, stage B",
+  two_stage_omega_xi_u_p_s_snone_pql =
+    "two-stage ω+ξ+u+p+s, stage B, no s in held-out draws",
+  two_stage_omega_xi_u_p_s_spost_pql =
+    "two-stage ω+ξ+u+p+s, stage B, posterior s for training surveys"
 )
 mesh_tag_pattern <- "_mesh-([A-Za-z0-9_]+)$"
 label_for <- function(model) {
@@ -788,6 +794,59 @@ if (nrow(stage_b_table) > 0) {
     select(experiment, stage, elpd, crps, explained, coverage_50,
            coverage_95) %>%
     mutate(across(where(is.numeric), ~ round(.x, 4)))), row.names = FALSE)
+}
+
+
+# error structure ---------------------------------------------------------------
+
+# The optional static pixel effect p and survey effect s (doc/two_stage_plan.md,
+# "Error structure"), on stage B and the reported meshes, against stage B
+# without them; diff_* columns are model - stage B. The +p+s model is scored
+# three ways, from the same latent draws: with a fresh survey draw per held-out
+# survey (the predictive distribution of a new assay), with no survey term
+# (_snone: what a map gives), and with the posterior survey draw where the
+# held-out assay's survey has training data (_spost)
+error_structure_models <- paste0(
+  "two_stage_omega_xi_u",
+  c("_p", "_p_s", "_p_s_snone", "_p_s_spost"),
+  "_pql_mesh-", reported_mesh)
+error_structure_table <- all_scores %>%
+  filter(model %in% c(stage_b_model, error_structure_models)) %>%
+  pool_forecasting() %>%
+  group_by(experiment) %>%
+  group_modify(function(d, key) {
+    d <- models_complete(d)
+    if (n_distinct(d$model) < 2 || !stage_b_model %in% d$model) {
+      return(tibble())
+    }
+    summarise_group(d, pit_matrices, reference = stage_b_model) %>%
+      mutate(folds = paste(sort(unique(d$fold)), collapse = "+"))
+  }) %>%
+  ungroup()
+if (nrow(error_structure_table) > 0) {
+  error_structure_table <- error_structure_table %>%
+    mutate(model_label = label_for(model), .after = model) %>%
+    select(experiment, folds, model, model_label, n, n_pixels, elpd, crps,
+           explained, coverage_50, coverage_95, starts_with("diff_"),
+           starts_with("prob_better_"))
+  write.csv(error_structure_table,
+            file.path(output_dir, "error_structure_two_stage.csv"),
+            row.names = FALSE)
+  cat("\nerror structure, model - stage B (paired pixel bootstrap):\n")
+  print(as.data.frame(error_structure_table %>%
+    filter(model != stage_b_model) %>%
+    transmute(experiment, folds,
+              model = sub("_pql_mesh-.*$", "", sub("^two_stage_", "", model)),
+              d_elpd = sprintf("%+.4f [%+.4f, %+.4f]", diff_elpd,
+                               diff_elpd_lower, diff_elpd_upper),
+              d_crps_1e3 = sprintf("%+.2f [%+.2f, %+.2f]", 1e3 * diff_crps,
+                                   1e3 * diff_crps_lower,
+                                   1e3 * diff_crps_upper),
+              d_explained = sprintf("%+.2f [%+.2f, %+.2f]", diff_explained,
+                                    diff_explained_lower,
+                                    diff_explained_upper),
+              cover = sprintf("%.3f / %.3f", coverage_50, coverage_95))),
+    row.names = FALSE)
 }
 
 
