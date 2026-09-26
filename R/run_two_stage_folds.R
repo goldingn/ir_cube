@@ -3,7 +3,7 @@
 # the same format as the #12 folds, so they are scored by the same code.
 #
 #   Rscript R/run_two_stage_folds.R <experiment> <fold> [m_ref=mean|loo]
-#     [mesh=<tag>] [variants=omega_u,omega_xi_u]
+#     [mesh=<tag>] [variants=omega_u,omega_xi_u] [stage=A|B]
 #
 # e.g. Rscript R/run_two_stage_folds.R spatial_interpolation all
 #      Rscript R/run_two_stage_folds.R spatial_blocks 1
@@ -19,6 +19,13 @@
 # two_stage_omega_xi_u_mesh-omega5000_xi2500, so its draws, residuals and
 # fit-summary rows sit alongside the base ones, and the base files keep their
 # unsuffixed names.
+#
+# stage=B fits stage B (PQL on the beta-binomial counts, R/two_stage_pql.R) on
+# top of each type's stage-A fit, and saves it as two_stage_<variant>_pql
+# (plus the same suffixes), e.g. two_stage_omega_xi_u_pql_mesh-omega5000_xi2500.
+# Only the stage-B model is saved: the stage-A draws already exist. Stage A is
+# refitted from the hyperparameters recorded in fit_summary.csv for the same
+# fold, variant and mesh where available (warm start; cold if that fails).
 #
 # Run with OpenBLAS for CHOLMOD's supernodal factorisation (reference BLAS is
 # ~10x slower), e.g.
@@ -47,7 +54,7 @@ experiment_name <- arguments[1]
 fold_name <- arguments[2]
 # optional arguments are key=value; a bare third argument is m_ref, as before
 options <- list(m_ref = "mean", mesh = "omega5000_xi2500",
-                variants = "omega_u,omega_xi_u")
+                variants = "omega_u,omega_xi_u", stage = "A")
 for (argument in arguments[-(1:2)]) {
   if (!grepl("=", argument)) argument <- paste0("m_ref=", argument)
   key <- sub("=.*$", "", argument)
@@ -57,7 +64,9 @@ for (argument in arguments[-(1:2)]) {
 m_ref_type <- options$m_ref
 mesh_tag <- options$mesh
 variants <- strsplit(options$variants, ",")[[1]]
-stopifnot(!is.na(experiment_name), !is.na(fold_name),
+stage <- options$stage
+stopifnot(stage %in% c("A", "B"),
+          !is.na(experiment_name), !is.na(fold_name),
           m_ref_type %in% c("mean", "loo"),
           length(variants) > 0,
           all(variants %in% c("omega_u", "omega_xi_u")))
@@ -75,6 +84,7 @@ suppressMessages({
 })
 source("R/dynamical_predictions.R")
 source("R/two_stage_correction.R")
+source("R/two_stage_pql.R")
 
 draws_dir <- "outputs/cv_draws"
 output_draws_dir <- "outputs/cv_draws_two_stage"
@@ -108,7 +118,8 @@ if (!mesh_tag %in% names(mesh_configs)) {
 }
 mesh_config <- mesh_configs[[mesh_tag]]
 
-model_suffix <- paste0(if (m_ref_type == "loo") "_loo" else "",
+model_suffix <- paste0(if (stage == "B") "_pql" else "",
+                       if (m_ref_type == "loo") "_loo" else "",
                        if (mesh_tag == "base") "" else
                          paste0("_mesh-", mesh_tag))
 
@@ -325,6 +336,30 @@ median_data_edge_km <- function(mesh, coords) {
   median(sqrt(rowSums((loc[edges[, 1], ] - loc[edges[, 2], ]) ^ 2)))
 }
 
+# stage B warm-starts stage A at the hyperparameters recorded for this fold,
+# variant, m_ref and mesh, with the recorded objective for comparison
+recorded_stage_a_start <- function(type, variant) {
+  summary_file <- file.path(output_dir, "fit_summary.csv")
+  if (!file.exists(summary_file)) return(NULL)
+  recorded <- read.csv(summary_file, stringsAsFactors = FALSE)
+  if (!"mesh_config" %in% names(recorded)) return(NULL)
+  row <- recorded %>%
+    filter(experiment == experiment_name, as.character(fold) == fold_name,
+           variant == !!variant, m_ref == m_ref_type,
+           mesh_config == mesh_tag, insecticide_type == type,
+           convergence == 0)
+  if (nrow(row) != 1) return(NULL)
+  start <- list(log_sigma_omega = log(row$sigma_omega),
+                log_kappa_omega = log(sqrt(8) / row$range_omega),
+                log_tau = log(row$tau))
+  if (variant == "omega_xi_u") {
+    start <- c(start, list(log_sigma_eta = log(row$sigma_eta),
+                           log_kappa_eta = log(sqrt(8) / row$range_eta),
+                           logit_phi = qlogis(row$phi)))
+  }
+  list(start = start, objective = row$objective)
+}
+
 summaries <- list()
 residuals <- lapply(setNames(variants, variants), function(v) list())
 
@@ -344,7 +379,8 @@ for (k in seq_along(types)) {
       summaries[[length(summaries) + 1]] <- tibble(
         experiment = experiment_name, fold = fold_name,
         model = paste0("two_stage_", variant, model_suffix),
-        variant = variant, m_ref = if (loo_used) "loo" else "mean",
+        variant = paste0(variant, if (stage == "B") "_pql" else ""),
+        m_ref = if (loo_used) "loo" else "mean",
         mesh_config = mesh_tag, insecticide_type = type, rho = rho, n_train = 0L,
         n_test = length(test_rows), error = "no training assays",
         fallback_dynamical = length(test_rows) > 0)
@@ -411,8 +447,9 @@ for (k in seq_along(types)) {
     set.seed(2026 + k)
     fit <- NULL
     error_message <- NA_character_
-    time_fit <- system.time(
-      fit <- tryCatch(
+    summary_variant <- paste0(variant, if (stage == "B") "_pql" else "")
+    fit_stage_a <- function(start = list()) {
+      tryCatch(
         withCallingHandlers(
           fit_correction(train_k,
                          variant = variant,
@@ -420,7 +457,8 @@ for (k in seq_along(types)) {
                          T = T_k,
                          mesh = mesh,
                          mesh_xi = if (variant == "omega_xi_u") mesh_xi else
-                           NULL),
+                           NULL,
+                         start = start),
           # non-convergence is recorded from opt below, not as a warning
           warning = function(w) {
             if (grepl("nlminb did not converge", conditionMessage(w))) {
@@ -433,7 +471,37 @@ for (k in seq_along(types)) {
           NULL
         }
       )
-    )
+    }
+    stage_a_start <- if (stage == "B") recorded_stage_a_start(type, variant) else
+      NULL
+    time_fit <- system.time({
+      fit <- fit_stage_a(if (is.null(stage_a_start)) list() else
+        stage_a_start$start)
+      warm_start <- !is.null(stage_a_start)
+      if (warm_start && (is.null(fit) || fit$opt$convergence != 0)) {
+        error_message <- NA_character_
+        fit <- fit_stage_a()
+        warm_start <- FALSE
+      }
+    })
+    stage_a_objective <- if (is.null(fit)) NA_real_ else fit$opt$objective
+
+    # stage B on top of a converged stage-A fit
+    time_pql <- c(elapsed = 0)
+    if (stage == "B" && !is.null(fit) && fit$opt$convergence == 0) {
+      time_pql <- system.time(
+        fit <- tryCatch(fit_correction_pql(fit, train_k),
+                        error = function(e) {
+                          error_message <<- paste("PQL:", conditionMessage(e))
+                          NULL
+                        })
+      )
+    }
+    stage_b <- if (is.null(fit)) NULL else fit$stage_b
+    get_b <- function(name, missing = NA) {
+      if (is.null(stage_b) || is.null(stage_b[[name]])) missing else
+        stage_b[[name]]
+    }
 
     converged <- !is.null(fit) && fit$opt$convergence == 0
     max_gradient <- if (is.null(fit)) NA_real_ else
@@ -474,7 +542,7 @@ for (k in seq_along(types)) {
       experiment = experiment_name,
       fold = fold_name,
       model = paste0("two_stage_", variant, model_suffix),
-      variant = variant,
+      variant = summary_variant,
       m_ref = if (loo_used) "loo" else "mean",
       mesh_config = mesh_tag,
       insecticide_type = type,
@@ -530,6 +598,25 @@ for (k in seq_along(types)) {
       time_optimise_s = if (is.null(fit)) NA_real_ else
         fit$timings[["optimise"]],
       time_predict_s = time_predict[["elapsed"]],
+      stage = stage,
+      stage_a_warm_start = if (stage == "B") warm_start else NA,
+      stage_a_objective = stage_a_objective,
+      stage_a_objective_recorded = if (is.null(stage_a_start)) NA_real_ else
+        stage_a_start$objective,
+      pql_passes = get_b("passes_first", NA_integer_),
+      pql_converged = get_b("converged_first"),
+      pql_damped = get_b("damped_first"),
+      pql_rms_move = get_b("rms_move", NA_real_),
+      pql_max_move = get_b("max_move", NA_real_),
+      pql_refit = get_b("refit"),
+      pql_refit_convergence = get_b("refit_convergence", NA_integer_),
+      pql_passes_second = get_b("passes_second", NA_integer_),
+      pql_converged_second = get_b("converged_second"),
+      pql_rms_move_second = get_b("rms_move_second", NA_real_),
+      pql_n_clamped = get_b("n_clamped", NA_integer_),
+      time_pql_s = time_pql[["elapsed"]],
+      time_pql_refit_s = if (is.null(stage_b)) NA_real_ else
+        stage_b$timings[["refit"]],
       peak_memory_gb = peak_memory_gb()
     )
     summaries[[length(summaries) + 1]] <- summary_row
@@ -557,11 +644,20 @@ for (k in seq_along(types)) {
         latent = latent,
         residual = train_k$z - train_k$m - latent
       )
+      # stage B: z and v stay the stage-A empirical logit, so the extreme
+      # residual diagnostic in two_stage_metrics.R compares like with like;
+      # the latent is stage B's, and stage A's is kept beside it
+      if (!is.null(stage_b)) {
+        residuals[[variant]][[type]]$latent_stage_a <-
+          stage_b$lambda_a - train_k$m
+        residuals[[variant]][[type]]$z_pql <- fit$tmb_data$z
+        residuals[[variant]][[type]]$v_pql <- fit$tmb_data$v
+      }
     }
 
     report(paste("%-18s %-10s n=%5i test=%4i T=%i nodes=%i/%s",
                  "conv=%s range_omega=%.0f sigma_omega=%.2f tau=%.2f%s",
-                 "fit %.0fs predict %.0fs%s"),
+                 "fit %.0fs predict %.0fs%s%s"),
            type, variant, nrow(train_k), length(test_rows), T_k, mesh$n,
            if (variant == "omega_xi_u") mesh_xi$n else "-",
            if (is.null(fit)) "ERROR" else fit$opt$convergence,
@@ -572,6 +668,11 @@ for (k in seq_along(types)) {
                      get_hyper("range_eta"), get_hyper("sigma_eta"),
                      get_hyper("phi")) else "",
            time_fit[["elapsed"]], time_predict[["elapsed"]],
+           if (!is.null(stage_b))
+             sprintf(paste(" | PQL %i passes, RMS move %.3f, refit %s",
+                           "(+%s passes), %.0fs"),
+                     stage_b$passes_first, stage_b$rms_move, stage_b$refit,
+                     stage_b$passes_second, time_pql[["elapsed"]]) else "",
            if (summary_row$fallback_dynamical)
              paste(" FALLBACK TO DYNAMICAL:",
                    if (is.na(error_message)) fit$opt$message else
@@ -592,7 +693,9 @@ rho_test <- rho_for_type[types[test_df$type_id]]
 
 for (variant in variants) {
   model <- paste0("two_stage_", variant, model_suffix)
-  variant_summary <- filter(summary_table, variant == !!variant)
+  # (stage is also a column of summary_table, so the name is built outside)
+  saved_variant <- paste0(variant, if (stage == "B") "_pql" else "")
+  variant_summary <- filter(summary_table, variant == !!saved_variant)
   object <- list(
     model = model,
     experiment = experiment_label,
