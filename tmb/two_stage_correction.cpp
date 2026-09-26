@@ -3,12 +3,23 @@
 // Gaussian model for the empirical-logit bioassay mortality z_i, with its
 // sampling variance v_i fixed:
 //
-//   z_i = m_i + omega(s_i) + xi(s_i, t_i) + u_j(i) + e_i,   e_i ~ N(0, v_i)
+//   z_i = m_i + omega(s_i) + xi(s_i, t_i) + u_j(i) [+ p_c(i)] [+ s_k(i)] + e_i,
+//   e_i ~ N(0, v_i)
 //
 // where m_i is the dynamical model's logit prediction (an offset, never
 // updated), omega is a Matern field correcting the initial conditions, xi is
 // the accumulated sum since t0 of an AR(1)-in-time, Matern-in-space field of
 // annual selection anomalies eta, and u is an iid pixel-year effect.
+//
+// Two optional iid terms extend the error structure (doc/two_stage_plan.md,
+// "Error structure"); both are off by default, which gives exactly the model
+// without them:
+//   p  static pixel effect, one per pixel (raster cell), SD sigma_p: a
+//      persistent local deviation, part of the prediction target;
+//   s  survey effect, one per survey (citation x country x year), SD sigma_s:
+//      shared measurement / batch error, not part of the prediction target.
+// When a term is off its vector is mapped to zero in R, and neither its prior
+// nor its hyperprior enters the objective.
 //
 // Random effects:
 //   w_omega  node values of omega                           (n_nodes)
@@ -18,6 +29,8 @@
 // the number of years, and the fill-in of the Cholesky factor of the
 // space-time block dominates the cost of the fit.
 //   u        pixel-year effects                             (n_pixel_years)
+//   p        static pixel effects                           (n_pixels, or 1 if off)
+//   s        survey effects                                 (n_surveys, or 1 if off)
 // xi(., t0) = 0 is not a parameter: it enters only as the zero that the first
 // time difference is taken from.
 //
@@ -87,6 +100,12 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(pc_eta);            // as above, for the eta innovations field
   DATA_VECTOR(pc_tau);            // (tau0, P(tau > tau0))
   DATA_VECTOR(persistence_prior); // (meanlog, sdlog) of 1 / (1 - phi)
+  DATA_INTEGER(include_p);        // 1 to include the static pixel effect p
+  DATA_IVECTOR(p_index);          // 0-based pixel of each observation
+  DATA_VECTOR(pc_sigma_p);        // (sigma0, P(sigma_p > sigma0))
+  DATA_INTEGER(include_s);        // 1 to include the survey effect s
+  DATA_IVECTOR(s_index);          // 0-based survey of each observation
+  DATA_VECTOR(pc_sigma_s);        // (sigma0, P(sigma_s > sigma0))
 
   // parameters -------------------------------------------------------------
   PARAMETER_VECTOR(w_omega);
@@ -98,6 +117,10 @@ Type objective_function<Type>::operator() ()
   PARAMETER(log_kappa_eta);
   PARAMETER(logit_phi);
   PARAMETER(log_tau);
+  PARAMETER_VECTOR(p);
+  PARAMETER_VECTOR(s);
+  PARAMETER(log_sigma_p);
+  PARAMETER(log_sigma_s);
 
   Type sigma_omega = exp(log_sigma_omega);
   Type kappa_omega = exp(log_kappa_omega);
@@ -147,6 +170,22 @@ Type objective_function<Type>::operator() ()
     lambda(i) += u(u_index(i));
   }
 
+  // p: static pixel effects, s: survey effects (optional) -------------------
+  Type sigma_p = exp(log_sigma_p);
+  Type sigma_s = exp(log_sigma_s);
+  if (include_p == 1) {
+    nll -= dnorm(p, Type(0.0), sigma_p, true).sum();
+    for (int i = 0; i < z.size(); i++) {
+      lambda(i) += p(p_index(i));
+    }
+  }
+  if (include_s == 1) {
+    nll -= dnorm(s, Type(0.0), sigma_s, true).sum();
+    for (int i = 0; i < z.size(); i++) {
+      lambda(i) += s(s_index(i));
+    }
+  }
+
   // likelihood ------------------------------------------------------------------
   nll -= dnorm(z, lambda, sqrt(v), true).sum();
 
@@ -156,6 +195,16 @@ Type objective_function<Type>::operator() ()
   // exponential (PC) prior on tau, with the Jacobian for log tau
   Type lambda_tau = -log(pc_tau(1)) / pc_tau(0);
   nll -= log(lambda_tau) - lambda_tau * tau + log_tau;
+
+  // exponential (PC) priors on sigma_p and sigma_s, as for tau
+  if (include_p == 1) {
+    Type lambda_p = -log(pc_sigma_p(1)) / pc_sigma_p(0);
+    nll -= log(lambda_p) - lambda_p * sigma_p + log_sigma_p;
+  }
+  if (include_s == 1) {
+    Type lambda_s = -log(pc_sigma_s(1)) / pc_sigma_s(0);
+    nll -= log(lambda_s) - lambda_s * sigma_s + log_sigma_s;
+  }
 
   Type persistence = Type(1.0) / (Type(1.0) - phi);
   if (include_xi == 1) {
@@ -176,6 +225,8 @@ Type objective_function<Type>::operator() ()
   REPORT(phi);
   REPORT(persistence);
   REPORT(tau);
+  REPORT(sigma_p);
+  REPORT(sigma_s);
   ADREPORT(range_omega);
   ADREPORT(sigma_omega);
   ADREPORT(tau);

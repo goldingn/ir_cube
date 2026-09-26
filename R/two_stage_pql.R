@@ -30,6 +30,10 @@
 # with the final working (z, v) as data, and the PQL passes are re-run at the
 # new hyperparameters.
 #
+# The optional pixel (p) and survey (s) effects are more Gaussian latent terms
+# with columns in A: nothing here changes form, and the refit keeps whichever
+# terms the stage-A fit has.
+#
 # The result is a correction_fit with mode, H, H_chol, precision_obs (= the
 # final D) and the hyperparameters replaced, so predict_correction() uses it
 # unchanged: joint latent draws from H, the AR(1) forecast, and the
@@ -189,7 +193,9 @@ fit_correction_pql <- function(fit_a, train,
   time_second <- 0
   if (refit) {
     hyper_names <- c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
-                     "log_kappa_eta", "logit_phi", "log_tau")
+                     "log_kappa_eta", "logit_phi", "log_tau", "log_sigma_p",
+                     "log_sigma_s")
+    hyper_names <- intersect(hyper_names, names(fit_a$par_list))
     start <- lapply(fit_a$par_list[hyper_names], as.numeric)
     train_w <- train
     train_w$z <- first$working$z
@@ -197,7 +203,9 @@ fit_correction_pql <- function(fit_a, train,
     t_refit <- Sys.time()
     base <- fit_correction(train_w, variant = fit_a$variant, t0 = fit_a$t0,
                            T = fit_a$T, mesh = fit_a$mesh,
-                           mesh_xi = fit_a$mesh_xi, start = start)
+                           mesh_xi = fit_a$mesh_xi, start = start,
+                           pixel_effect = isTRUE(fit_a$pixel_effect),
+                           survey_effect = isTRUE(fit_a$survey_effect))
     time_refit <- difftime(Sys.time(), t_refit, units = "secs")
     t_second <- Sys.time()
     final <- pql_passes(base, died, n, rho, tol = tol,
