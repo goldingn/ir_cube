@@ -34,7 +34,8 @@
 # two-stage configuration, both variants on the omega5000_xi2500 meshes, beside
 # the dynamical model and the nulls; the other mesh configurations are in
 # cv_summary_two_stage.csv. term_inclusion_two_stage.csv is omega_xi_u against
-# omega_u, and cv_horizon_two_stage.csv the scores by forecast horizon.
+# omega_u, stage_b_two_stage.csv stage B (PQL) against stage A for omega_xi_u,
+# and cv_horizon_two_stage.csv the scores by forecast horizon.
 #
 # Only the five #12 folds are scored: spatial_interpolation/all,
 # spatial_blocks/1 and 2, temporal_forecasting/2014 and 2018. Leave-one-country
@@ -135,7 +136,8 @@ variant_labels <- c(
   two_stage_omega_u = "two-stage ω+u",
   two_stage_omega_xi_u = "two-stage ω+ξ+u",
   two_stage_omega_u_loo = "two-stage ω+u (leave-out m)",
-  two_stage_omega_xi_u_loo = "two-stage ω+ξ+u (leave-out m)"
+  two_stage_omega_xi_u_loo = "two-stage ω+ξ+u (leave-out m)",
+  two_stage_omega_xi_u_pql = "two-stage ω+ξ+u, stage B (PQL)"
 )
 mesh_tag_pattern <- "_mesh-([A-Za-z0-9_]+)$"
 label_for <- function(model) {
@@ -744,6 +746,51 @@ if (nrow(term_inclusion) > 0) {
 }
 
 
+# stage B ---------------------------------------------------------------------
+
+# Stage B (PQL on the beta-binomial counts, R/two_stage_pql.R) against stage A,
+# both omega_xi_u on the reported meshes, paired by pixel; diff_* columns are
+# stage B - stage A. Per experiment, and per forecasting origin
+stage_b_model <- paste0("two_stage_omega_xi_u_pql_mesh-", reported_mesh)
+stage_b_table <- all_scores %>%
+  filter(model %in% c(reported_model("omega_xi_u"), stage_b_model)) %>%
+  pool_forecasting() %>%
+  group_by(experiment) %>%
+  group_modify(function(d, key) {
+    d <- models_complete(d)
+    if (n_distinct(d$model) < 2) return(tibble())
+    summarise_group(d, pit_matrices, reference = reported_model("omega_xi_u")) %>%
+      mutate(folds = paste(sort(unique(d$fold)), collapse = "+"))
+  }) %>%
+  ungroup()
+if (nrow(stage_b_table) > 0) {
+  stage_b_table <- stage_b_table %>%
+    mutate(stage = ifelse(model == stage_b_model, "B", "A"), .after = model) %>%
+    select(experiment, folds, stage, model, n, n_pixels, elpd, crps, explained,
+           coverage_50, coverage_95, starts_with("diff_"),
+           starts_with("prob_better_"))
+  write.csv(stage_b_table, file.path(output_dir, "stage_b_two_stage.csv"),
+            row.names = FALSE)
+  cat("\nstage B - stage A, omega_xi_u (paired pixel bootstrap):\n")
+  print(as.data.frame(stage_b_table %>%
+    filter(stage == "B") %>%
+    transmute(experiment, folds, n,
+              d_elpd = sprintf("%+.4f [%+.4f, %+.4f]", diff_elpd,
+                               diff_elpd_lower, diff_elpd_upper),
+              d_crps_1e3 = sprintf("%+.2f [%+.2f, %+.2f]", 1e3 * diff_crps,
+                                   1e3 * diff_crps_lower,
+                                   1e3 * diff_crps_upper),
+              d_explained = sprintf("%+.2f [%+.2f, %+.2f]", diff_explained,
+                                    diff_explained_lower,
+                                    diff_explained_upper))),
+    row.names = FALSE)
+  print(as.data.frame(stage_b_table %>%
+    select(experiment, stage, elpd, crps, explained, coverage_50,
+           coverage_95) %>%
+    mutate(across(where(is.numeric), ~ round(.x, 4)))), row.names = FALSE)
+}
+
+
 # coverage curves --------------------------------------------------------------------
 
 coverage_table <- bind_rows(lapply(
@@ -1118,7 +1165,7 @@ read_residuals <- function(file) {
     out <- bind_rows(
       out,
       out[rep(seq_len(nrow(out)), n_residual_sims), ] %>%
-        mutate(source = "simulated from the stage-A fit",
+        mutate(source = "simulated from the fit",
                residual = (simulated$z - fitted) / sqrt(simulated$v),
                mortality = case_when(simulated_died == 0 ~ "0%",
                                      simulated_died == size ~ "100%",
@@ -1222,7 +1269,7 @@ plot_residual_diagnostics <- function(table) {
     geom_point(aes(shape = source), size = 2.2, stroke = 0.8,
                position = position_dodge(width = 0.6)) +
     scale_shape_manual(values = c("observed" = 16,
-                                  "simulated from the stage-A fit" = 1),
+                                  "simulated from the fit" = 1),
                        name = NULL) +
     facet_grid(grouping ~ fold_label + metric, scales = "free",
                space = "free_y", labeller = label_wrap_gen(28)) +
@@ -1245,7 +1292,7 @@ residual_files <- residual_files[grepl(
 # scores
 residual_files <- residual_files[
   vapply(strsplit(basename(residual_files), "__"), `[`, "", 2) %in%
-    two_stage_reported]
+    c(two_stage_reported, stage_b_model)]
 
 set.seed(2026 - 9 - 26)
 if (length(residual_files) == 0) {

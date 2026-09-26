@@ -244,4 +244,55 @@ Two-stage ω+ξ+u minus dynamical: log score +0.295 [+0.188, +0.397] (interpolat
 
 - The same pattern on every fold and both variants: 47–61% more 100%-mortality assays than the fit implies, and residuals at both extremes further out than the selection effect explains.
 - Interior residuals are narrower than v implies (SD 0.78 vs 0.93).
-- So the Gaussian empirical-logit response misfits the extremes: the fitted latent is not extreme enough where mortality saturates. Stage B (PQL on the beta-binomial) is indicated; its effect on the scores is untested.
+- So the Gaussian empirical-logit response misfits the extremes: the fitted latent is not extreme enough where mortality saturates. Stage B (PQL on the beta-binomial) is indicated; see "Stage B (PQL)" below.
+
+## Stage B (PQL)
+
+`R/two_stage_pql.R` (`fit_correction_pql()`), run by `R/run_two_stage_folds.R <experiment> <fold> variants=omega_xi_u stage=B`; model `two_stage_omega_xi_u_pql_mesh-omega5000_xi2500`. Scored by `R/two_stage_metrics.R` (`outputs/two_stage/stage_b_two_stage.csv`).
+
+**Method.**
+- Starts from the stage-A fit. Each pass re-expands around λ̂ = m_ref + ω̂ + ξ̂ + û to the quasi-binomial working z and v (design effect 1 + (n − 1)ρ), refactorises H = Q + A′DA with the stage-A symbolic Cholesky (`Matrix::update`), and solves for the mode. Q is never formed: H_new = H_A + A′ diag(D_new − D_A) A.
+- A pass is a Newton step on the penalised quasi-log-likelihood; a step that fails to increase it is halved. Stop at max |Δλ̂| < 0.01, cap 30 passes.
+- Hyperparameters are re-estimated once if the RMS change in λ̂ at the data exceeds 0.1: the stage-A marginal likelihood with the working (z, v) as data, warm-started at the stage-A values. Then the PQL passes run again.
+- The returned object is a `correction_fit` with mode, H, its factor, `precision_obs` (the final D) and the hyperparameters replaced. `predict_correction()` uses it unchanged: joint draws, the AR(1) forecast, and the cut-posterior shift at the final D.
+- In the folds, stage A is warm-started from the hyperparameters in `fit_summary.csv`. The objectives match the recorded ones to within 3e-8.
+
+**Simulation check** (`R/check_two_stage_pql.R`). Beta-binomial counts, ρ = 0.1, 40% of assays at 100%:
+- The stage-A mode equals H⁻¹A′D(z − m) to 7e-12. At the stage-B mode, the quasi-score is 5e-12.
+- Converged in 4 passes, then 2 more after re-estimating the hyperparameters. No damping.
+- Latent bias at the training assays where true p > 0.95: −1.28 (stage A), −0.29 (stage B). RMSE 1.44 → 0.67; RMSE over all assays 1.11 → 0.58.
+- 95% coverage of the true λ: 0.54 → 0.92 overall, and 0.27 → 0.93 where p > 0.95. By set: interpolation 0.45 → 0.90, forecast 0.69 → 0.92. Stage A's intervals miss because its latent is biased at the extremes.
+
+**Folds.** `omega_xi_u`, omega5000_xi2500. 45 type-fits, all converged, none fell back to the dynamical model.
+- PQL took 2–5 passes before the re-estimate and 1–3 after. No damping, and no λ̂ was clamped.
+- RMS move of λ̂ from stage A: 0.12–1.45 (median 0.56). So every fit re-estimated its hyperparameters.
+- Hyperparameters (median B/A): τ × 4.1 (0.09 → 0.39), σ_ω × 1.24, σ_η × 1.37, φ 0.19 → 0.07, ranges × 0.84–0.89. The stage-A extremes were absorbed as shrinkage; stage B attributes them to latent variation.
+- Cost per fold, on top of stage A (4–10 min): PQL 11–40 min, of which the re-estimate is 93%. Peak 7.5–14.4 GB.
+
+**Scores.** Stage B − stage A, 95% paired pixel bootstrap:
+
+| experiment | Δ log score | Δ CRPS (×10⁻³) | Δ variance explained (points) | cover 50 / 95, A → B |
+|---|---|---|---|---|
+| interpolation (n = 1045) | +0.192 [+0.122, +0.261] | −10.6 [−15.3, −6.0] | +4.9 [+2.1, +8.3] | 0.364 / 0.859 → 0.446 / 0.919 |
+| blocks 1+2 (n = 8694) | +0.059 [+0.039, +0.083] | −1.0 [−2.9, +0.7] | −0.3 [−1.5, +1.1] | 0.401 / 0.878 → 0.438 / 0.911 |
+| forecasting 2014+2018 (n = 14018) | +0.126 [+0.107, +0.145] | −12.2 [−13.9, −10.6] | +7.5 [+6.3, +8.8] | 0.409 / 0.856 → 0.454 / 0.898 |
+| forecasting 2014 | +0.152 [+0.129, +0.174] | −14.2 [−16.3, −12.0] | +9.6 [+7.9, +11.4] | |
+| forecasting 2018 | +0.064 [+0.041, +0.090] | −7.3 [−9.5, −5.3] | +3.7 [+2.6, +5.0] | |
+
+- Stage B's log score is higher everywhere, with every interval clear of 0. CRPS and variance explained improve on interpolation and forecasting; on blocks they are unchanged.
+- Variance explained, stage B: 57.0 (interpolation), 37.0 (blocks), 42.6 (forecasting). The NN oracle: 52.0, 34.1, 48.3.
+- Forecast 95% coverage by horizon, 1–5 years: 0.89–0.81 (A) → 0.91–0.88 (B). Variance explained at horizons 4–5: 18 (A) → 30–31 (B).
+
+**Training residual diagnostic** (the same stage-A standardised residuals, with the stage-B latent; ranges over the 5 folds):
+
+| mortality class | assays observed / implied, A → B | mean residual observed / simulated, B | SD observed / simulated, B |
+|---|---|---|---|
+| 0% | 1.28–1.51 → 0.63–0.69 | −0.62 to −0.75 / −0.51 to −0.55 | 0.24–0.36 / 0.18–0.24 |
+| interior | 0.86–0.88 → 1.00–1.01 | −0.09 to −0.10 / −0.12 to −0.15 | 0.69–0.71 / 0.95–0.96 |
+| 100% | 1.46–1.61 → 0.99–1.01 | +0.12 to +0.16 / +0.12 to +0.15 | 0.31–0.37 / 0.30–0.36 |
+
+- Stage B removes the 100%-mortality excess. The observed and implied counts agree, and so do the residual means.
+- 0% assays are now over-implied, by 31–37% (about 60–150 assays per fold, against 6,000–7,000 at 100%).
+- Interior residuals are still narrower than v implies (SD 0.70 vs 0.95). v, i.e. the per-type ρ, looks too large for the interior assays.
+
+**Recommendation: adopt stage B.** CV shows a benefit on every experiment: log score +0.06 to +0.19, and 95% coverage closer to nominal. It costs about 40 min per fold on the spatial folds. Next: use it for the maps (`R/two_stage_maps.R`, not changed here), and check the interior overdispersion (ρ).
