@@ -2,8 +2,10 @@
 # fold, draw for draw, and that the recursion is exactly additive on the logit
 # scale. Run from the repo root:
 #   Rscript R/check_dynamical_predictions.R outputs/cv_draws/dynamical__spatial_interpolation__all.rds interp
-#   Rscript R/check_dynamical_predictions.R outputs/cv_draws/dynamical__temporal_forecasting__2020.rds forecast
+#   Rscript R/check_dynamical_predictions.R outputs/cv_draws/dynamical__temporal_forecasting__2018.rds forecast
 
+# country_id is dropped from the rows so each cell takes the country of its
+# first record in df, as fit_fold() does; records on borders can differ
 fold_file <- commandArgs(trailingOnly = TRUE)[1]
 experiment <- commandArgs(trailingOnly = TRUE)[2]
 suppressMessages({
@@ -27,12 +29,12 @@ invisible(gc())
 if (experiment == "interp") {
   training <- spatial_interpolation$training; test <- spatial_interpolation$test
 } else {
-  f <- temporal_forecasting_folds[["2020"]]; training <- f$training; test <- f$test
+  f <- temporal_forecasting_folds[["2018"]]; training <- f$training; test <- f$test
 }
 stopifnot(identical(test$cell_id, fold$test_df$cell_id), identical(test$year_id, fold$test_df$year_id),
           identical(test$type_id, fold$test_df$type_id))
 
-t_test <- system.time(p_test <- dynamical_predictions(fold, fold$test_df, df, x_cell_years, cell_years_index, classes_index, types))
+t_test <- system.time(p_test <- dynamical_predictions(fold, dplyr::select(fold$test_df, -any_of("country_id")), df, x_cell_years, cell_years_index, classes_index, types))
 diff <- abs(p_test - p_ref)
 cat(sprintf("TEST: n=%d, max abs diff %.3g, max rel logit diff %.3g, time %.1fs\n", ncol(p_test), max(diff),
             max(abs(qlogis(p_test) - qlogis(p_ref))), t_test[["elapsed"]]))
@@ -40,7 +42,7 @@ rm(p_test, p_ref, diff); invisible(gc(reset = TRUE))
 
 cat(sprintf("TRAIN: %d rows, %d unique cell-type-years\n", nrow(training),
             nrow(distinct(training, cell_id, type_id, year_id))))
-t_train <- system.time(p_train <- dynamical_predictions(fold, training, df, x_cell_years, cell_years_index, classes_index, types))
+t_train <- system.time(p_train <- dynamical_predictions(fold, dplyr::select(training, -any_of("country_id")), df, x_cell_years, cell_years_index, classes_index, types))
 g <- gc()
 cat(sprintf("TRAIN: time %.1fs, result %s, R max used since reset %.0f MB\n", t_train[["elapsed"]],
             format(object.size(p_train), units = "MB"), sum(g[, ncol(g)])))

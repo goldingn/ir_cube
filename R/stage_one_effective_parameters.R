@@ -80,11 +80,6 @@ if (experiment_name == "spatial_interpolation") {
   stopifnot(fold_name %in% names(temporal_forecasting_folds))
   training <- temporal_forecasting_folds[[fold_name]]$training
   test <- temporal_forecasting_folds[[fold_name]]$test
-} else if (experiment_name == "spatial_extrapolation") {
-  index <- match(fold_name, countries_to_validate)
-  stopifnot(!is.na(index))
-  training <- spatial_extrapolation$training[[index]]
-  test <- spatial_extrapolation$test[[index]]
 } else {
   stop("unknown experiment: ", experiment_name)
 }
