@@ -183,12 +183,14 @@ dynamical_logit_chunk <- function(effect, logit_init, time_varying, flat,
 # from a matrix of latent vectors `theta` (n_latent x n_draws, in the fit's
 # latent order). Years at or before t0 have xi = 0, years in (t0, T] read the
 # fitted x, and later years run the AR(1) for eta forward from
-# eta_T = x_T - x_{T-1}, adding `innovations[[h]]` (n_nodes_xi x n_draws,
-# N(0, Q_eta^-1)) at horizon h and accumulating into xi, as
-# predict_correction() does. With innovations = NULL the recursion carries the
-# mean forward instead: eta_{T+h} = phi^h eta_T, so
+# eta_T = x_T - psi x_{T-1}, adding `innovations[[h]]` (n_nodes_xi x n_draws,
+# N(0, Q_eta^-1)) at horizon h and accumulating into xi as
+# xi_{T+h} = psi xi_{T+h-1} + eta_{T+h}, as predict_correction() does (psi = 1,
+# the undamped sum, unless the fit has damped_xi). With innovations = NULL the
+# recursion carries the mean forward instead: eta_{T+h} = phi^h eta_T, so
+# undamped
 #   xi_{T+h} = xi_T + eta_T phi (1 - phi^h) / (1 - phi),
-# the plateauing forecast of the issue.
+# the plateauing forecast of the issue; damped, the mean decays to 0.
 correction_node_fields <- function(fit, theta, years, innovations = NULL) {
   theta <- as.matrix(theta)
   n_nodes_xi <- fit$mesh_xi$n
@@ -205,7 +207,8 @@ correction_node_fields <- function(fit, theta, years, innovations = NULL) {
   x_col <- function(j) x[(j - 1) * n_nodes_xi + seq_len(n_nodes_xi), ,
                          drop = FALSE]
   xi_T <- x_col(fit$n_years)
-  eta_T <- if (fit$n_years > 1) xi_T - x_col(fit$n_years - 1) else xi_T
+  psi <- correction_psi(fit)
+  eta_T <- if (fit$n_years > 1) xi_T - psi * x_col(fit$n_years - 1) else xi_T
 
   phi <- fit$hyper$phi
   for (y in years) {
@@ -221,7 +224,7 @@ correction_node_fields <- function(fit, theta, years, innovations = NULL) {
         if (!is.null(innovations)) {
           eta <- eta + sqrt(1 - phi ^ 2) * innovations[[h]]
         }
-        xi_y <- xi_y + eta
+        xi_y <- psi * xi_y + eta
       }
     }
     out$xi[[as.character(y)]] <- xi_y

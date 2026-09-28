@@ -4,7 +4,7 @@
 #
 #   Rscript R/run_two_stage_folds.R <experiment> <fold> [m_ref=mean|loo]
 #     [mesh=<tag>] [variants=omega_u,omega_xi_u] [stage=A|B] [terms=p|p,s]
-#     [rho=fixed|estimated]
+#     [rho=fixed|estimated] [xi=undamped|damped]
 #
 # e.g. Rscript R/run_two_stage_folds.R spatial_interpolation all
 #      Rscript R/run_two_stage_folds.R spatial_blocks 1
@@ -48,6 +48,12 @@
 # rho_draws then hold each type's estimated rho (the model's own rho), and the
 # training residual file's v is at it. The default, rho=fixed, is unchanged.
 #
+# xi=damped estimates a damping psi of xi, xi_t = psi xi_{t-1} + eta_t
+# (doc/two_stage_plan.md, "Damped accumulation"); "_psi" goes into the model
+# name after the terms (and "_rho"), e.g.
+# two_stage_omega_xi_u_p_psi_pql_mesh-omega5000_xi2500. The default,
+# xi=undamped, is unchanged.
+#
 # Run with OpenBLAS for CHOLMOD's supernodal factorisation (reference BLAS is
 # ~10x slower), e.g.
 #   LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=4 nice -n 10 Rscript ...
@@ -76,7 +82,7 @@ fold_name <- arguments[2]
 # optional arguments are key=value; a bare third argument is m_ref, as before
 options <- list(m_ref = "mean", mesh = "omega5000_xi2500",
                 variants = "omega_u,omega_xi_u", stage = "A", terms = "",
-                rho = "fixed")
+                rho = "fixed", xi = "undamped")
 for (argument in arguments[-(1:2)]) {
   if (!grepl("=", argument)) argument <- paste0("m_ref=", argument)
   key <- sub("=.*$", "", argument)
@@ -92,11 +98,14 @@ pixel_effect <- "p" %in% terms
 survey_effect <- "s" %in% terms
 stopifnot(all(terms %in% c("p", "s")), options$rho %in% c("fixed", "estimated"))
 estimate_rho <- options$rho == "estimated"
+stopifnot(options$xi %in% c("undamped", "damped"))
+damped_xi <- options$xi == "damped"
 # the error-structure terms, as a suffix of the variant: "", "_p", "_s", "_p_s",
 # then "_rho" if rho is estimated
 terms_suffix <- paste0(if (pixel_effect) "_p" else "",
                        if (survey_effect) "_s" else "",
-                       if (estimate_rho) "_rho" else "")
+                       if (estimate_rho) "_rho" else "",
+                       if (damped_xi) "_psi" else "")
 # the held-out survey draws saved (see above), and their model-name suffixes
 survey_modes <- if (survey_effect) c("fresh", "none", "posterior") else "none"
 # (only with s: without it the single "none" set is the model itself)
@@ -519,7 +528,8 @@ for (k in seq_along(types)) {
                          start = start,
                          pixel_effect = pixel_effect,
                          survey_effect = survey_effect,
-                         estimate_rho = estimate_rho),
+                         estimate_rho = estimate_rho,
+                         damped_xi = damped_xi),
           # non-convergence is recorded from opt below, not as a warning
           warning = function(w) {
             if (grepl("nlminb did not converge", conditionMessage(w))) {
@@ -642,6 +652,11 @@ for (k in seq_along(types)) {
       rho_stage_a = if (estimate_rho) get_b("rho_a", NA_real_) else NA_real_,
       rho_se_logit = if (estimate_rho && !is.null(fit)) fit$rho_se_logit else
         NA_real_,
+      psi = if (damped_xi) get_hyper("psi") else NA_real_,
+      psi_se_logit = if (damped_xi && !is.null(fit)) fit$psi_se_logit else
+        NA_real_,
+      psi_stage_a = if (damped_xi) get_b("hyper_a", list())$psi %||% NA_real_ else
+        NA_real_,
       n_pixels = n_distinct(train_k$cell),
       n_surveys = n_distinct(train_k$survey),
       share_test_pixel_in_train = if (length(test_rows) > 0)
@@ -757,9 +772,11 @@ for (k in seq_along(types)) {
                   if (survey_effect) sprintf(" sigma_s=%.2f",
                                              get_hyper("sigma_s")) else ""),
            if (variant == "omega_xi_u")
-             sprintf(" range_eta=%.0f sigma_eta=%.3f phi=%.2f",
+             sprintf(" range_eta=%.0f sigma_eta=%.3f phi=%.2f%s",
                      get_hyper("range_eta"), get_hyper("sigma_eta"),
-                     get_hyper("phi")) else "",
+                     get_hyper("phi"),
+                     if (damped_xi) sprintf(" psi=%.3f", get_hyper("psi")) else
+                       "") else "",
            time_fit[["elapsed"]], time_predict[["elapsed"]],
            if (!is.null(stage_b))
              sprintf(paste(" | PQL %i passes, RMS move %.3f, refit %s",

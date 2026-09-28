@@ -32,6 +32,11 @@
 # v_i = v0_i (1 + (n_i - 1) rho), v0_i the binomial part of v, and a normal
 # prior on logit rho centred on the replicate-based estimate (train$rho).
 #
+# Optional damped accumulation (doc/two_stage_plan.md, "Damped accumulation"),
+# off by default: damped_xi = TRUE makes xi(s, t) = psi xi(s, t - 1) + eta(s, t)
+# with 0 <= psi < 1 a hyperparameter, so that xi reverts to 0 (the dynamical
+# model) on the timescale 1 / (1 - psi) instead of accumulating without bound.
+#
 # Hyperparameters are estimated by penalised maximum marginal
 # likelihood (TMB, template in tmb/two_stage_correction.cpp); given them, the
 # latent posterior is exactly Gaussian with precision equal to the random
@@ -195,7 +200,13 @@ matern_precision_r <- function(fem, kappa, sigma) {
 # P(sigma_p > 1) = 0.05 and P(sigma_s > 1) = 0.05 for the optional pixel and
 # survey effects. With estimate_rho, logit rho ~ N(logit rho_hat, rho_logit_sd^2),
 # rho_hat the replicate-based per-type estimate: at sd 0.56 the central 95%
-# interval is about rho_hat / 3 to 3 rho_hat (exp(1.96 x 0.56) = 3.0)
+# interval is about rho_hat / 3 to 3 rho_hat (exp(1.96 x 0.56) = 3.0).
+# With damped_xi, the reversion timescale L_psi = 1 / (1 - psi) ~ lognormal(log
+# 10, 0.82): a median of ten years and a 95% interval of 2-50 years
+# (exp(1.96 x 0.82) = 5.0). Two years is fast reversion (half-life of a
+# deviation about 1.4 years); fifty years is indistinguishable from the
+# undamped random walk over the 30 years of data. The median of ten years is a
+# third of the data window, so the prior does not favour either end
 correction_priors <- function(range0 = 50,
                               alpha_range = 0.05,
                               sigma0 = 1,
@@ -208,7 +219,9 @@ correction_priors <- function(range0 = 50,
                               alpha_sigma_p = 0.05,
                               sigma_s0 = 1,
                               alpha_sigma_s = 0.05,
-                              rho_logit_sd = 0.56) {
+                              rho_logit_sd = 0.56,
+                              psi_reversion_median = 10,
+                              psi_reversion_sdlog = 0.82) {
   list(
     pc_omega = c(range0, alpha_range, sigma0, alpha_sigma),
     pc_eta = c(range0, alpha_range, sigma0, alpha_sigma),
@@ -216,7 +229,8 @@ correction_priors <- function(range0 = 50,
     persistence_prior = c(log(persistence_median), persistence_sdlog),
     pc_sigma_p = c(sigma_p0, alpha_sigma_p),
     pc_sigma_s = c(sigma_s0, alpha_sigma_s),
-    rho_logit_sd = rho_logit_sd
+    rho_logit_sd = rho_logit_sd,
+    psi_prior = c(log(psi_reversion_median), psi_reversion_sdlog)
   )
 }
 
@@ -288,6 +302,11 @@ correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
                          rho_prior = c(0, 1)))
   }
   if (is.null(parameters$logit_rho)) parameters$logit_rho <- 0
+  # damped xi likewise
+  if (is.null(data$damped_xi)) {
+    data <- c(data, list(damped_xi = 0L, psi_prior = c(log(10), 0.82)))
+  }
+  if (is.null(parameters$logit_psi)) parameters$logit_psi <- 0
   hyper_names <- c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
                    "log_kappa_eta", "logit_phi", "log_tau")
   map <- list()
@@ -307,6 +326,11 @@ correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
     hyper_names <- c(hyper_names, "logit_rho")
   } else {
     map$logit_rho <- factor(NA)
+  }
+  if (data$damped_xi == 1 && variant != "omega_u") {
+    hyper_names <- c(hyper_names, "logit_psi")
+  } else {
+    map$logit_psi <- factor(NA)
   }
   if (variant == "omega_u") {
     # xi and its hyperparameters drop out of the model entirely
@@ -356,7 +380,10 @@ correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
 # start is start$logit_rho, else logit(train$rho). The fit's precision_obs and
 # tmb_data$v are then at the estimated rho. hyper_hessian = TRUE adds the
 # numerical Hessian of the objective in the hyperparameters (optimHess), and
-# with it the standard error of logit rho.
+# with it the standard errors of logit rho and logit psi.
+#
+# damped_xi = TRUE estimates the damping psi of xi (see the header); the start
+# is start$logit_psi, else psi = 0.9 (the prior median reversion timescale).
 fit_correction <- function(train,
                            variant = c("omega_xi_u", "omega_u"),
                            t0,
@@ -373,9 +400,11 @@ fit_correction <- function(train,
                            pixel_effect = FALSE,
                            survey_effect = FALSE,
                            estimate_rho = FALSE,
+                           damped_xi = FALSE,
                            hyper_hessian = FALSE) {
 
   variant <- match.arg(variant)
+  damped_xi <- damped_xi && variant == "omega_xi_u"
   if (survey_effect && !"survey" %in% names(train)) {
     stop("survey_effect = TRUE needs a survey column in train (see survey_id())")
   }
@@ -464,7 +493,10 @@ fit_correction <- function(train,
     v0 = if (estimate_rho) train$v0 else 0,
     n_assay = if (estimate_rho) as.numeric(train$mosquito_number) else 0,
     rho_prior = if (estimate_rho) c(qlogis(rho_centre), rho_logit_sd) else
-      c(0, 1)
+      c(0, 1),
+    damped_xi = as.integer(damped_xi),
+    psi_prior = if (is.null(priors$psi_prior)) c(log(10), 0.82) else
+      priors$psi_prior
   )
 
   # start the ranges at a few hundred km, well inside the prior, and the
@@ -478,7 +510,8 @@ fit_correction <- function(train,
     log_tau = log(0.3),
     log_sigma_p = log(0.3),
     log_sigma_s = log(0.3),
-    logit_rho = if (estimate_rho) qlogis(rho_centre) else 0
+    logit_rho = if (estimate_rho) qlogis(rho_centre) else 0,
+    logit_psi = if (damped_xi) qlogis(0.9) else 0
   )
   start <- modifyList(defaults, start)
   parameters <- c(
@@ -489,7 +522,7 @@ fit_correction <- function(train,
             "log_kappa_eta", "logit_phi", "log_tau")],
     list(p = rep(0, if (pixel_effect) nrow(pixels) else 1),
          s = rep(0, if (survey_effect) nrow(surveys) else 1)),
-    start[c("log_sigma_p", "log_sigma_s", "logit_rho")]
+    start[c("log_sigma_p", "log_sigma_s", "logit_rho", "logit_psi")]
   )
 
   obj <- correction_adfun(data, parameters, variant, silent = silent)
@@ -542,22 +575,29 @@ fit_correction <- function(train,
   if (pixel_effect) hyper$sigma_p <- report$sigma_p
   if (survey_effect) hyper$sigma_s <- report$sigma_s
   rho_se_logit <- NA_real_
+  psi_se_logit <- NA_real_
   hyper_hessian_matrix <- NULL
   if (estimate_rho) {
     hyper$rho <- report$rho
     # the likelihood's v and D at the estimated rho
     data$v <- data$v0 * (1 + (data$n_assay - 1) * report$rho)
-    if (hyper_hessian) {
-      hyper_hessian_matrix <- stats::optimHess(opt$par, obj$fn, obj$gr)
-      covariance <- tryCatch(solve(hyper_hessian_matrix),
-                             error = function(e) NULL)
-      i <- which(names(opt$par) == "logit_rho")
-      if (!is.null(covariance) && covariance[i, i] > 0) {
-        rho_se_logit <- sqrt(covariance[i, i])
+  }
+  if (hyper_hessian && (estimate_rho || damped_xi)) {
+    hyper_hessian_matrix <- stats::optimHess(opt$par, obj$fn, obj$gr)
+    covariance <- tryCatch(solve(hyper_hessian_matrix),
+                           error = function(e) NULL)
+    se_of <- function(name) {
+      i <- which(names(opt$par) == name)
+      if (length(i) == 1 && !is.null(covariance) && covariance[i, i] > 0) {
+        sqrt(covariance[i, i])
+      } else {
+        NA_real_
       }
-      # optimHess leaves the inner problem at a perturbed point: restore it
-      obj$fn(opt$par)
     }
+    if (estimate_rho) rho_se_logit <- se_of("logit_rho")
+    if (damped_xi) psi_se_logit <- se_of("logit_psi")
+    # optimHess leaves the inner problem at a perturbed point: restore it
+    obj$fn(opt$par)
   }
   if (variant == "omega_xi_u") {
     hyper <- c(hyper, list(
@@ -567,6 +607,7 @@ fit_correction <- function(train,
       phi = report$phi,
       persistence = report$persistence
     ))
+    if (damped_xi) hyper$psi <- report$psi
   }
 
   sd_report <- if (sdreport) TMB::sdreport(obj) else NULL
@@ -611,6 +652,8 @@ fit_correction <- function(train,
         if (length(unique(train$rho)) == 1) unique(train$rho) else NA_real_,
       rho_centre = if (estimate_rho) rho_centre else NA_real_,
       rho_se_logit = rho_se_logit,
+      damped_xi = damped_xi,
+      psi_se_logit = psi_se_logit,
       hyper_hessian = hyper_hessian_matrix,
       pixels = pixels,
       surveys = surveys,
@@ -656,8 +699,9 @@ sample_latent_deviation <- function(H_chol, n_latent, n) {
 #
 # Latent draws are joint samples with precision H, so omega, xi and u keep
 # their posterior correlations. xi beyond T is forecast by running the AR(1)
-# for eta forward from each draw's eta_T = x_T - x_{T-1} with fresh Matern
-# innovations, and accumulating. u is taken from the joint draw at pixel-years
+# for eta forward from each draw's eta_T = x_T - psi x_{T-1} with fresh Matern
+# innovations, and accumulating: xi_t = psi xi_{t-1} + eta_t (psi = 1 unless
+# the fit has damped_xi). u is taken from the joint draw at pixel-years
 # with data, and drawn from N(0, tau^2) (once per distinct pixel-year) elsewhere.
 # The static pixel effect p (if fitted) is handled the same way per pixel: the
 # joint draw at pixels with data, N(0, sigma_p^2) once per distinct new pixel
@@ -716,6 +760,8 @@ predict_correction <- function(fit,
   n_latent <- length(fit$mode)
   hyper <- fit$hyper
   include_xi <- fit$variant == "omega_xi_u"
+  # damping of xi: 1 (undamped accumulation) unless the fit estimated it
+  psi <- correction_psi(fit)
 
   coords <- coords_km(new)
   A_new <- mesh_basis(fit$mesh, coords)
@@ -805,7 +851,7 @@ predict_correction <- function(fit,
         last <- (fit$n_years - 1) * n_nodes_xi + seq_len(n_nodes_xi)
         xi_nodes <- x_draw[last, , drop = FALSE]
         eta_nodes <- if (fit$n_years > 1) {
-          xi_nodes - x_draw[last - n_nodes_xi, , drop = FALSE]
+          xi_nodes - psi * x_draw[last - n_nodes_xi, , drop = FALSE]
         } else {
           xi_nodes
         }
@@ -813,7 +859,7 @@ predict_correction <- function(fit,
           innovation <- sample_latent_deviation(Q_eta_chol, n_nodes_xi, nb)
           eta_nodes <- hyper$phi * eta_nodes +
             sqrt(1 - hyper$phi ^ 2) * innovation
-          xi_nodes <- xi_nodes + eta_nodes
+          xi_nodes <- psi * xi_nodes + eta_nodes
           rows <- which(forecast)[horizon == h]
           if (length(rows) > 0) {
             lambda[rows, ] <- lambda[rows, ] +
@@ -863,6 +909,12 @@ predict_correction <- function(fit,
   }
 
   if (length(survey) == 1) draws[[1]] else draws
+}
+
+# the damping psi of xi in a fit: xi_t = psi xi_{t-1} + eta_t. 1 (the undamped
+# sum of eta) unless the fit estimated it (fit_correction(damped_xi = TRUE))
+correction_psi <- function(fit) {
+  if (isTRUE(fit$damped_xi)) fit$hyper$psi else 1
 }
 
 # The named mesh configurations of the mesh-resolution experiment

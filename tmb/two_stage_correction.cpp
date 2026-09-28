@@ -38,11 +38,18 @@
 // xi(., t0) = 0 is not a parameter: it enters only as the zero that the first
 // time difference is taken from.
 //
+// Damped accumulation (doc/two_stage_plan.md, "Damped accumulation"): with
+// damped_xi = 1, xi(s, t) = psi xi(s, t - 1) + eta(s, t), 0 <= psi < 1, with
+// logit psi a hyperparameter and a lognormal prior on the reversion timescale
+// 1 / (1 - psi). xi is then asymptotically stationary and reverts to 0 (the
+// dynamical model) on that timescale. By default (damped_xi = 0) logit_psi is
+// mapped out and xi is the undamped sum of eta, exactly the model without it.
+//
 // x rather than eta is the random effect so that each observation touches the
 // nodes of a single year: parameterising by eta would make every observation
 // depend on all earlier years' eta, and the Hessian much denser. The map
-// x -> eta (first differences, with x_t0 = 0) is unit lower triangular, so its
-// Jacobian is 1 and the prior on eta is the prior on x.
+// x -> eta (eta_t = x_t - psi x_{t-1}, with x_t0 = 0; psi = 1 undamped) is unit
+// lower triangular, so its Jacobian is 1 and the prior on eta is the prior on x.
 //
 // The model is Gaussian in the random effects, so given the hyperparameters the
 // Laplace approximation is exact and the inner Newton step converges at once.
@@ -114,6 +121,8 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(v0);                // binomial part of v (used if estimate_rho)
   DATA_VECTOR(n_assay);           // mosquitoes per assay (used if estimate_rho)
   DATA_VECTOR(rho_prior);         // (mean, sd) of the normal prior on logit rho
+  DATA_INTEGER(damped_xi);        // 1 for xi_t = psi xi_{t-1} + eta_t
+  DATA_VECTOR(psi_prior);         // (meanlog, sdlog) of 1 / (1 - psi)
 
   // parameters -------------------------------------------------------------
   PARAMETER_VECTOR(w_omega);
@@ -130,6 +139,7 @@ Type objective_function<Type>::operator() ()
   PARAMETER(log_sigma_p);
   PARAMETER(log_sigma_s);
   PARAMETER(logit_rho);
+  PARAMETER(logit_psi);
 
   Type sigma_omega = exp(log_sigma_omega);
   Type kappa_omega = exp(log_kappa_omega);
@@ -151,12 +161,22 @@ Type objective_function<Type>::operator() ()
     int n_nodes = x.dim(0);
     int n_years = x.dim(1);
 
-    // time differences, with x_t0 = 0
+    // (damped) time differences, with x_t0 = 0
     array<Type> eta(n_nodes, n_years);
-    for (int i = 0; i < n_nodes; i++) {
-      eta(i, 0) = x(i, 0);
-      for (int t = 1; t < n_years; t++) {
-        eta(i, t) = x(i, t) - x(i, t - 1);
+    if (damped_xi == 1) {
+      Type psi = invlogit(logit_psi);
+      for (int i = 0; i < n_nodes; i++) {
+        eta(i, 0) = x(i, 0);
+        for (int t = 1; t < n_years; t++) {
+          eta(i, t) = x(i, t) - psi * x(i, t - 1);
+        }
+      }
+    } else {
+      for (int i = 0; i < n_nodes; i++) {
+        eta(i, 0) = x(i, 0);
+        for (int t = 1; t < n_years; t++) {
+          eta(i, t) = x(i, t) - x(i, t - 1);
+        }
       }
     }
 
@@ -232,6 +252,14 @@ Type objective_function<Type>::operator() ()
     // so d log L / d logit_phi = phi
     nll -= dnorm(log(persistence), persistence_prior(0), persistence_prior(1),
                  true) + log(phi);
+    // lognormal prior on the reversion timescale L_psi = 1 / (1 - psi), with
+    // the same Jacobian (d log L_psi / d logit_psi = psi)
+    if (damped_xi == 1) {
+      Type psi = invlogit(logit_psi);
+      Type reversion = Type(1.0) / (Type(1.0) - psi);
+      nll -= dnorm(log(reversion), psi_prior(0), psi_prior(1), true) +
+        log(psi);
+    }
   }
 
   // reports ---------------------------------------------------------------------
@@ -247,6 +275,8 @@ Type objective_function<Type>::operator() ()
   REPORT(sigma_p);
   REPORT(sigma_s);
   REPORT(rho);
+  Type psi = invlogit(logit_psi);
+  REPORT(psi);
   ADREPORT(range_omega);
   ADREPORT(sigma_omega);
   ADREPORT(tau);

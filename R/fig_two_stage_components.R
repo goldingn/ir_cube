@@ -4,8 +4,8 @@
 #   figures/two_stage/supp_components_realisations.png (and .pdf)
 #     joint random realisations of every component through time, stacked on a
 #     shared time axis: net use, the dynamical model's logit m, the annual
-#     anomalies eta, their cumulative sum xi, the static omega and p, the
-#     pixel-year jitter u, the combined logit, and mortality with the data
+#     anomalies eta, their accumulation xi, the static omega and p, the
+#     combined logit m + omega + xi + p, and mortality with the data
 #   figures/two_stage/supp_components_intervals.png (and .pdf)
 #     posterior mean and 95% intervals of mortality: the dynamical model alone
 #     against the two-stage final model, with the data
@@ -16,10 +16,13 @@
 #   LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=4 nice -n 10 Rscript ...
 #
 # The final model (doc/two_stage_plan.md, "Final model"): on the logit scale
-#   lambda(s, t) = m(s, t) + omega(s) + xi(s, t) + u(s, t) + p(s),
-# with m the dynamical model's prediction, xi(s, t) = sum_{t0 < r <= t}
-# eta(s, r), eta AR(1) in time with Matern innovations, u iid per pixel-year
-# and p iid per pixel. Beyond the last data year T, eta is simulated forward.
+#   lambda(s, t) = m(s, t) + omega(s) + xi(s, t) + p(s) [+ u(s, t)],
+# with m the dynamical model's prediction, xi(s, t) = psi xi(s, t - 1) +
+# eta(s, t) (psi = 1 in the undamped model: xi is the sum of eta), eta AR(1)
+# in time with Matern innovations, and p iid per pixel. Beyond the last data
+# year T, eta is simulated forward. u, iid per pixel-year, is observation-level
+# noise (with the assay noise), not part of the inferred process, so neither
+# figure shows it: both target m + omega + xi + p.
 #
 # The fit saved by R/two_stage_maps.R (outputs/two_stage/maps/<type>/fit.rds)
 # is a light copy without the Hessian factor, so this script refits the final
@@ -34,13 +37,21 @@
 
 type <- "Deltamethrin"
 
+# the model of R/two_stage_maps.R (model_config there): "omega_xi_u_p_pql", or
+# with damped xi "omega_xi_u_p_psi_pql"
+model_config <- "omega_xi_u_p_pql"
+damped_xi <- grepl("_psi", model_config)
+
 code_dir <- Sys.getenv("TWO_STAGE_CODE_DIR", "R")
 template_path <- Sys.getenv("TWO_STAGE_TEMPLATE",
                             "tmb/two_stage_correction.cpp")
 
 cache_dir <- "outputs/two_stage/components"
-cache_file <- file.path(cache_dir, sprintf("%s_fit_cache.rds", type))
-draws_file <- file.path(cache_dir, sprintf("%s_pixel_draws.rds", type))
+model_tag <- if (damped_xi) "_psi" else ""
+cache_file <- file.path(cache_dir, sprintf("%s%s_fit_cache.rds", type,
+                                           model_tag))
+draws_file <- file.path(cache_dir, sprintf("%s%s_pixel_draws.rds", type,
+                                           model_tag))
 figure_dir <- "figures/two_stage"
 dir.create(cache_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
@@ -138,7 +149,8 @@ if (!file.exists(cache_file)) {
   time_fit <- system.time({
     fit_a <- fit_correction(train_k, variant = "omega_xi_u", t0 = t0,
                             T = T_k, mesh = meshes$omega,
-                            mesh_xi = meshes$xi, pixel_effect = TRUE)
+                            mesh_xi = meshes$xi, pixel_effect = TRUE,
+                            damped_xi = damped_xi)
     stopifnot(fit_a$opt$convergence == 0)
     fit <- fit_correction_pql(fit_a, train_k)
   })
@@ -147,6 +159,9 @@ if (!file.exists(cache_file)) {
 
   # the refit must be the fit behind the maps
   saved <- readRDS(file.path("outputs/two_stage/maps", type, "fit.rds"))
+  stopifnot(identical(read.csv(file.path("outputs/two_stage/maps", type,
+                                         "hyperparameters.csv"))$model_config,
+                      model_config))
   mode_diff <- max(abs(fit$mode - saved$mode))
   report("max |mode - saved mode| = %.2e; phi %.4f vs %.4f", mode_diff,
          fit$hyper$phi, saved$hyper$phi)
@@ -205,8 +220,8 @@ large <- pixel_summary %>%
 
 # (ii) no data: a cell of the prediction mask inside the limits of Pf
 # transmission, 400-600 km from the nearest Deltamethrin assay, in a country
-# with Deltamethrin data: far beyond the range of omega (~43 km), so omega, p
-# and u revert to their priors and the prediction to the dynamical model, but
+# with Deltamethrin data: far beyond the range of omega (~43 km), so omega and
+# p revert to their priors and the prediction to the dynamical model, but
 # within the reach of the large-scale xi (range ~1000 km). The candidate with
 # the highest net use in 2020 is taken, so that the dynamical model has a
 # trajectory to follow
@@ -253,8 +268,8 @@ report("pixels: %s", paste(sprintf("%s cell %i (%s, %.2f, %.2f; %i assays, %i ye
 # draw d pairs dynamical draw d with a latent draw from N(mode, H^-1) shifted by
 # the cut-posterior formula for that dynamical draw (as predict_correction()
 # does), the AR(1) forecast of eta beyond T with fresh Matern innovations, and
-# u and p from the latent draw where the pixel(-year) has data and fresh from
-# their priors elsewhere
+# p from the latent draw where the pixel has data and fresh from its prior
+# elsewhere. (u, observation noise, is not drawn)
 if (!file.exists(draws_file) ||
     !identical(readRDS(draws_file)$cells, pixels$cell)) {
 
@@ -297,15 +312,12 @@ if (!file.exists(draws_file) ||
   Q_eta_chol <- Matrix::Cholesky(Matrix::forceSymmetric(Q_eta),
                                  perm = TRUE, LDL = FALSE, super = TRUE)
 
-  u_index <- matrix(fit$pixel_years$u_index[match(
-    paste(rep(pixels$cell, each = n_years_all), rep(years_all, n_pix)),
-    paste(fit$pixel_years$cell, fit$pixel_years$year))],
-    n_years_all, n_pix)
+  psi <- correction_psi(fit)
   p_index <- fit$pixels$p_index[match(pixels$cell, fit$pixels$cell)]
 
   empty <- function() array(NA_real_, c(n_years_all, n_pix, n_draws))
   xi <- empty()
-  u <- empty()
+  eta <- empty()
   omega <- matrix(NA_real_, n_pix, n_draws)
   p <- matrix(NA_real_, n_pix, n_draws)
 
@@ -324,20 +336,15 @@ if (!file.exists(draws_file) ||
       if (y > t0 && y <= T_k) {
         xi_new <- x[(y - t0 - 1) * n_nodes_xi + seq_len(n_nodes_xi), ,
                     drop = FALSE]
-        eta_nodes <- xi_new - xi_nodes
+        eta_nodes <- xi_new - psi * xi_nodes
         xi_nodes <- xi_new
       } else if (y > T_k) {
         eta_nodes <- hyper$phi * eta_nodes + sqrt(1 - hyper$phi ^ 2) *
           sample_latent_deviation(Q_eta_chol, n_nodes_xi, nb)
-        xi_nodes <- xi_nodes + eta_nodes
+        xi_nodes <- psi * xi_nodes + eta_nodes
       }
       xi[j, , batch] <- as.matrix(A_xi %*% xi_nodes)
-      seen <- !is.na(u_index[j, ])
-      u[j, , batch] <- matrix(rnorm(n_pix * nb, 0, hyper$tau), n_pix, nb)
-      if (any(seen)) {
-        u[j, seen, batch] <- theta[fit$blocks$u[u_index[j, seen]], ,
-                                   drop = FALSE]
-      }
+      eta[j, , batch] <- as.matrix(A_xi %*% eta_nodes)
     }
     p[, batch] <- matrix(rnorm(n_pix * nb, 0, hyper$sigma_p), n_pix, nb)
     seen_p <- !is.na(p_index)
@@ -346,12 +353,10 @@ if (!file.exists(draws_file) ||
                                 drop = FALSE]
     }
   }
-  eta <- xi
-  eta[-1, , ] <- xi[-1, , ] - xi[-n_years_all, , ]
 
   nets <- covariates$time_varying[, , "nets"]
   saveRDS(list(cells = pixels$cell, pixels = pixels, years = years_all,
-               m = m, omega = omega, xi = xi, eta = eta, u = u, p = p,
+               m = m, omega = omega, xi = xi, eta = eta, p = p, psi = psi,
                nets = nets, hyper = hyper, T = T_k),
           draws_file)
   report("draws at %i pixels x %i years x %i draws saved", n_pix,
@@ -438,7 +443,8 @@ bioassays <- train_k %>%
 set.seed(5)
 which_draws <- sort(sample(n_draws, 3))
 
-lambda <- draws$m + draws$xi + draws$u +
+# the inferred process m + omega + xi + p; u is observation noise and left out
+lambda <- draws$m + draws$xi +
   array(rep(draws$omega + draws$p, each = length(years)), dim(draws$m))
 
 row_plot <- function(data, ylab, geoms, y_scale = NULL, strip = FALSE,
@@ -481,7 +487,8 @@ p_eta <- row_plot(
        geom_point(aes(y = value, colour = realisation), size = 0.6),
        realisation_colour))
 p_xi <- row_plot(
-  realisations(draws$xi, which_draws), "cumulative\nξ = Ση",
+  realisations(draws$xi, which_draws),
+  if (draws$psi < 1) "damped sum\nξ = ψξ + η" else "cumulative\nξ = Ση",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))
@@ -495,13 +502,8 @@ p_p <- row_plot(
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))
-p_u <- row_plot(
-  realisations(draws$u, which_draws), "pixel-year\neffect u",
-  list(zero_line,
-       geom_point(aes(y = value, colour = realisation), size = 0.6),
-       realisation_colour))
 p_lambda <- row_plot(
-  realisations(lambda, which_draws), "logit\nm+ω+ξ+u+p",
+  realisations(lambda, which_draws), "logit\nm+ω+ξ+p",
   list(geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
        realisation_colour))
 p_mort <- row_plot(
@@ -516,14 +518,14 @@ p_mort <- row_plot(
                      breaks = c(0, 0.5, 1)),
   bottom = TRUE)
 
-fig_realisations <- patchwork::wrap_plots(p_nets, p_m, p_eta, p_xi, p_omega, p_p, p_u, p_lambda,
+fig_realisations <- patchwork::wrap_plots(p_nets, p_m, p_eta, p_xi, p_omega, p_p, p_lambda,
                       p_mort, ncol = 1,
-                      heights = c(1, 1.1, 1, 1.1, 0.8, 0.8, 1, 1.1, 1.2)) &
+                      heights = c(1, 1.1, 1, 1.1, 0.8, 0.8, 1.1, 1.2)) &
   theme(plot.margin = margin(1, 4, 1, 4))
 for (ext in c("png", "pdf")) {
   ggsave(file.path(figure_dir, sprintf("supp_components_realisations.%s", ext)),
          plot = fig_realisations,
-         bg = "white", width = 7.5, height = 10, dpi = 300,
+         bg = "white", width = 7.5, height = 9.2, dpi = 300,
          device = if (ext == "pdf") cairo_pdf else NULL)
 }
 
@@ -532,9 +534,8 @@ for (ext in c("png", "pdf")) {
 
 # mortality intervals for the population fraction at each pixel-year: the
 # dynamical model alone (plogis(m)) and the two-stage model
-# (plogis(m + omega + xi + u + p), with the cut-posterior shift). u is included:
-# it is a real pixel-year deviation of the population, and the assay-level
-# (beta-binomial) noise is not
+# (plogis(m + omega + xi + p), with the cut-posterior shift). u is observation
+# noise, like the assay-level (beta-binomial) noise, so neither is included
 summarise_draws <- function(values, model) {
   pixel_year(apply(values, 1:2, mean), "mean") %>%
     mutate(lower = as.vector(apply(values, 1:2, quantile, 0.025)),

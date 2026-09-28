@@ -28,14 +28,16 @@
 #      assays, then stage B from it (fit_correction_pql(), R/two_stage_pql.R);
 #   4. per type, on every mask cell and map year, compute
 #        - the correction's posterior mean (omega + xi, logit scale): the
-#          latent mode projected to the cells. u and p are left out: their
-#          mean is 0 away from sampled pixel-years and pixels, so adding them
-#          at the sampled pixels only would speckle the maps, and a map of the
-#          smooth fields is the point. So all the maps here (means and SDs) are
-#          of the smooth part, m + omega + xi, not the target
-#          m + omega + xi + u + p. The latent draws are joint (p is drawn with
-#          omega and xi and then dropped), so omega and xi keep their
-#          posterior correlation with p
+#          latent mode projected to the cells. u, the iid pixel-year term, is
+#          observation noise (shared by the assays of a pixel-year, like the
+#          assay-level beta-binomial noise), not part of the inferred process
+#          m + omega + xi + p, so it is never mapped. p is part of the process
+#          but is left out too: its mean is 0 away from sampled pixels, so
+#          adding it there only would speckle the maps, and a map of the
+#          smooth fields is the point. So all the maps here (means and SDs)
+#          are of the smooth part, m + omega + xi. The latent draws are joint
+#          (u and p are drawn with omega and xi and then dropped), so omega
+#          and xi keep their posterior correlation with them
 #        - its posterior SD, from 200 joint latent draws, conditional on m_ref
 #          (the second stage's own uncertainty)
 #        - the two-stage posterior mean mortality, E[ilogit(m + omega + xi)]
@@ -49,8 +51,11 @@
 #   5. figures in figures/two_stage/, in the layout of R/fig_ir_maps.R.
 #
 # Beyond T (2024 for most types, 2023 for Fenitrothion and Malathion) xi is an
-# AR(1) forecast: its mean is xi_T + eta_T phi (1 - phi^h) / (1 - phi), which
-# plateaus at a rate set by phi, and its SD grows with the horizon h.
+# AR(1) forecast. Undamped, its mean is xi_T + eta_T phi (1 - phi^h) / (1 - phi),
+# which plateaus at a rate set by phi, and its SD grows without bound with the
+# horizon h. With damped xi (model_config "..._psi_pql", doc/two_stage_plan.md,
+# "Damped accumulation"), xi_{T+h} = psi xi_{T+h-1} + eta_{T+h}: the mean decays
+# to 0 (the dynamical model) and the SD to the stationary SD of xi.
 #
 # Steps 3-4 skip a type whose rasters already exist and were made with the
 # current mesh_config and model_config, unless `overwrite` is TRUE, so the figures can be
@@ -67,6 +72,8 @@ mesh_config <- "omega5000_xi2500"
 # (doc/two_stage_plan.md, "Final model and headline results"). The survey
 # effect (fit_correction(survey_effect = TRUE)) is not in it
 model_config <- "omega_xi_u_p_pql"
+# damped xi, xi_t = psi xi_{t-1} + eta_t, if the model_config says so
+damped_xi <- grepl("_psi", model_config)
 
 report <- function(...) {
   cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "|", sprintf(...), "\n")
@@ -373,7 +380,7 @@ if (length(types_to_fit) > 0) {
     time_fit <- system.time({
       fit_a <- fit_correction(train_k, variant = "omega_xi_u", t0 = t0,
                               T = T_k, mesh = mesh, mesh_xi = mesh_xi,
-                              pixel_effect = TRUE)
+                              pixel_effect = TRUE, damped_xi = damped_xi)
       stopifnot(fit_a$opt$convergence == 0)
       fit <- fit_correction_pql(fit_a, train_k)
     })
@@ -389,11 +396,14 @@ if (length(types_to_fit) > 0) {
     report(paste("%-18s n=%5i T=%i nodes=%i/%i conv=%i |grad|=%.1e",
                  "range_omega=%.0f sigma_omega=%.2f range_eta=%.0f",
                  "sigma_eta=%.3f phi=%.2f tau=%.3f sigma_p=%.2f",
-                 "| PQL passes %i+%s, RMS move %.2f, refit %s | fit %.0f s"),
+                 "psi=%s | PQL passes %i+%s, RMS move %.2f, refit %s |",
+                 "fit %.0f s"),
            type, nrow(train_k), T_k, mesh$n, mesh_xi$n, fit$opt$convergence,
            max_gradient, fit$hyper$range_omega, fit$hyper$sigma_omega,
            fit$hyper$range_eta, fit$hyper$sigma_eta, fit$hyper$phi,
-           fit$hyper$tau, fit$hyper$sigma_p, fit$stage_b$passes_first,
+           fit$hyper$tau, fit$hyper$sigma_p,
+           if (damped_xi) sprintf("%.3f", fit$hyper$psi) else "1 (undamped)",
+           fit$stage_b$passes_first,
            fit$stage_b$passes_second, fit$stage_b$rms_move,
            fit$stage_b$refit, time_fit[["elapsed"]])
 
@@ -499,6 +509,8 @@ if (length(types_to_fit) > 0) {
     stage_b_light <- fit$stage_b[setdiff(names(fit$stage_b),
                                          c("lambda_a", "lambda"))]
     saveRDS(list(model_config = model_config, hyper = fit$hyper,
+                 damped_xi = isTRUE(fit$damped_xi),
+                 psi_se_logit = fit$psi_se_logit,
                  mode = fit$mode, blocks = fit$blocks,
                  mesh = fit$mesh, mesh_xi = fit$mesh_xi, t0 = fit$t0,
                  T = fit$T, n_years = fit$n_years,
@@ -519,6 +531,8 @@ if (length(types_to_fit) > 0) {
       sigma_eta = fit$hyper$sigma_eta,
       phi = fit$hyper$phi, persistence_years = fit$hyper$persistence,
       tau = fit$hyper$tau, sigma_p = fit$hyper$sigma_p,
+      psi = if (damped_xi) fit$hyper$psi else NA_real_,
+      psi_se_logit = if (damped_xi) fit$psi_se_logit else NA_real_,
       convergence = fit$opt$convergence,
       max_gradient = max_gradient,
       stage_a_objective = stage_a_objective,
@@ -660,12 +674,13 @@ difference_limit <- ceiling(pooled_quantile("difference_pp") / 5) * 5
 sd_limit <- ceiling(pooled_quantile("correction_sd", 1) * 10) / 10
 
 # every map is of the final model's smooth correction: the per-pixel-year u
-# and per-pixel p are left out of means and SDs alike (see the header)
+# (observation noise) and per-pixel p are left out of means and SDs alike (see
+# the header)
 forecast_note <- function(type) {
   T_k <- hyperparameters$T[hyperparameters$insecticide_type == type]
-  sprintf(paste("final model (stage B, omega + xi + u + p), mapped without",
+  sprintf(paste("final model (stage B, omega + xi + u + p%s), mapped without",
                 "u and p; data to %i; later years are the AR(1) forecast of",
-                "xi"), T_k)
+                "xi"), if (damped_xi) ", damped xi" else "", T_k)
 }
 
 for (type in insecticides_plot) {
@@ -772,7 +787,8 @@ ggplot() +
   theme(plot.margin = unit(c(0.3, 0, 0, 0), "cm"),
         legend.ticks = element_blank()) +
   labs(title = sprintf("Second-stage correction in %i", compare_year),
-       subtitle = paste("Final model (stage B, +p): posterior mean of",
+       subtitle = paste(if (damped_xi) "Final model (stage B, +p, damped ξ):" else
+                          "Final model (stage B, +p):", "posterior mean of",
                         "omega + xi, logit scale (u and p not mapped)"))
 ggsave(file.path(figure_dir,
                  sprintf("correction_all_types_%i.png", compare_year)),
@@ -787,7 +803,8 @@ hyperparameters %>%
          `eta SD` = sigma_eta,
          `phi` = phi,
          `tau` = tau,
-         `sigma_p` = sigma_p) %>%
+         `sigma_p` = sigma_p,
+         any_of(c(psi = "psi"))) %>%
   pivot_longer(-insecticide_type) %>%
   mutate(name = factor(name, levels = unique(name)),
          insecticide_type = factor(insecticide_type,

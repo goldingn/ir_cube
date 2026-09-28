@@ -41,6 +41,11 @@
 # like the other hyperparameters. The returned fit's rho, D and H are at the
 # final rho.
 #
+# Damped xi (doc/two_stage_plan.md, "Damped accumulation"): if the stage-A fit
+# estimated psi (fit_correction(damped_xi = TRUE)), the re-estimate estimates it
+# again with the other hyperparameters, and its standard error (optimHess).
+# Nothing else changes: psi enters only Q, i.e. H.
+#
 # The result is a correction_fit with mode, H, H_chol, precision_obs (= the
 # final D) and the hyperparameters replaced, so predict_correction() uses it
 # unchanged: joint latent draws from H, the AR(1) forecast, and the
@@ -182,6 +187,7 @@ fit_correction_pql <- function(fit_a, train,
   died <- train$died
   n <- train$mosquito_number
   estimate_rho <- isTRUE(fit_a$estimate_rho)
+  damped_xi <- isTRUE(fit_a$damped_xi)
   rho <- if (estimate_rho) fit_a$hyper$rho else train$rho
   stopifnot(length(died) == fit_a$n_obs)
 
@@ -203,7 +209,8 @@ fit_correction_pql <- function(fit_a, train,
   if (refit) {
     hyper_names <- c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
                      "log_kappa_eta", "logit_phi", "log_tau", "log_sigma_p",
-                     "log_sigma_s", if (estimate_rho) "logit_rho")
+                     "log_sigma_s", if (estimate_rho) "logit_rho",
+                     if (damped_xi) "logit_psi")
     hyper_names <- intersect(hyper_names, names(fit_a$par_list))
     start <- lapply(fit_a$par_list[hyper_names], as.numeric)
     train_w <- train
@@ -217,7 +224,8 @@ fit_correction_pql <- function(fit_a, train,
                            pixel_effect = isTRUE(fit_a$pixel_effect),
                            survey_effect = isTRUE(fit_a$survey_effect),
                            estimate_rho = estimate_rho,
-                           hyper_hessian = estimate_rho)
+                           damped_xi = damped_xi,
+                           hyper_hessian = estimate_rho || damped_xi)
     if (estimate_rho) rho <- base$hyper$rho
     time_refit <- difftime(Sys.time(), t_refit, units = "secs")
     t_second <- Sys.time()
