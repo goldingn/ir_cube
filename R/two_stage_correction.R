@@ -27,6 +27,11 @@
 #             left out of maps, and added (as a fresh draw per held-out survey)
 #             only to predict held-out assays, like the assay noise e.
 #
+# Optional joint rho (doc/two_stage_plan.md, "Joint rho"), off by default:
+# estimate_rho = TRUE makes the overdispersion rho a hyperparameter, with
+# v_i = v0_i (1 + (n_i - 1) rho), v0_i the binomial part of v, and a normal
+# prior on logit rho centred on the replicate-based estimate (train$rho).
+#
 # Hyperparameters are estimated by penalised maximum marginal
 # likelihood (TMB, template in tmb/two_stage_correction.cpp); given them, the
 # latent posterior is exactly Gaussian with precision equal to the random
@@ -188,7 +193,9 @@ matern_precision_r <- function(fem, kappa, sigma) {
 # fields, P(tau > 1) = 0.05, and persistence 1 / (1 - phi) ~ lognormal(log 5,
 # 0.62), i.e. a median of five years with a 95% interval of roughly 1.5-17
 # P(sigma_p > 1) = 0.05 and P(sigma_s > 1) = 0.05 for the optional pixel and
-# survey effects
+# survey effects. With estimate_rho, logit rho ~ N(logit rho_hat, rho_logit_sd^2),
+# rho_hat the replicate-based per-type estimate: at sd 0.56 the central 95%
+# interval is about rho_hat / 3 to 3 rho_hat (exp(1.96 x 0.56) = 3.0)
 correction_priors <- function(range0 = 50,
                               alpha_range = 0.05,
                               sigma0 = 1,
@@ -200,14 +207,16 @@ correction_priors <- function(range0 = 50,
                               sigma_p0 = 1,
                               alpha_sigma_p = 0.05,
                               sigma_s0 = 1,
-                              alpha_sigma_s = 0.05) {
+                              alpha_sigma_s = 0.05,
+                              rho_logit_sd = 0.56) {
   list(
     pc_omega = c(range0, alpha_range, sigma0, alpha_sigma),
     pc_eta = c(range0, alpha_range, sigma0, alpha_sigma),
     pc_tau = c(tau0, alpha_tau),
     persistence_prior = c(log(persistence_median), persistence_sdlog),
     pc_sigma_p = c(sigma_p0, alpha_sigma_p),
-    pc_sigma_s = c(sigma_s0, alpha_sigma_s)
+    pc_sigma_s = c(sigma_s0, alpha_sigma_s),
+    rho_logit_sd = rho_logit_sd
   )
 }
 
@@ -273,6 +282,12 @@ correction_design <- function(mesh, mesh_xi, coords, year, t0, T) {
 correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
                              silent = TRUE) {
   dll <- load_correction_template()
+  # joint rho is off unless the data ask for it (older callers do not)
+  if (is.null(data$estimate_rho)) {
+    data <- c(data, list(estimate_rho = 0L, v0 = 0, n_assay = 0,
+                         rho_prior = c(0, 1)))
+  }
+  if (is.null(parameters$logit_rho)) parameters$logit_rho <- 0
   hyper_names <- c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
                    "log_kappa_eta", "logit_phi", "log_tau")
   map <- list()
@@ -287,6 +302,11 @@ correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
       map[[term]] <- factor(rep(NA, length(parameters[[term]])))
       map[[paste0("log_sigma_", term)]] <- factor(NA)
     }
+  }
+  if (data$estimate_rho == 1) {
+    hyper_names <- c(hyper_names, "logit_rho")
+  } else {
+    map$logit_rho <- factor(NA)
   }
   if (variant == "omega_u") {
     # xi and its hyperparameters drop out of the model entirely
@@ -328,6 +348,15 @@ correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
 #
 # Speed depends heavily on the BLAS used by CHOLMOD's supernodal factorisation:
 # with R's reference BLAS the same fits are ~10x slower than with OpenBLAS.
+#
+# estimate_rho = TRUE estimates rho jointly (see the header). train then needs
+# mosquito_number and rho (the prior centre, one value), and either v0 (the
+# binomial part of v, e.g. the PQL working 1 / (n p (1 - p))) or died, from
+# which the stage-A v0 = 1 / (y + 0.5) + 1 / (n - y + 0.5) is computed. The
+# start is start$logit_rho, else logit(train$rho). The fit's precision_obs and
+# tmb_data$v are then at the estimated rho. hyper_hessian = TRUE adds the
+# numerical Hessian of the objective in the hyperparameters (optimHess), and
+# with it the standard error of logit rho.
 fit_correction <- function(train,
                            variant = c("omega_xi_u", "omega_u"),
                            t0,
@@ -342,7 +371,9 @@ fit_correction <- function(train,
                            sdreport = FALSE,
                            silent = TRUE,
                            pixel_effect = FALSE,
-                           survey_effect = FALSE) {
+                           survey_effect = FALSE,
+                           estimate_rho = FALSE,
+                           hyper_hessian = FALSE) {
 
   variant <- match.arg(variant)
   if (survey_effect && !"survey" %in% names(train)) {
@@ -357,6 +388,15 @@ fit_correction <- function(train,
     stage_a <- empirical_logit(train$died, train$mosquito_number, train$rho)
     train$z <- stage_a$z
     train$v <- stage_a$v
+  }
+  if (estimate_rho) {
+    rho_centre <- unique(train$rho)
+    stopifnot(length(rho_centre) == 1, "mosquito_number" %in% names(train))
+    if (!"v0" %in% names(train)) {
+      train$v0 <- empirical_logit(train$died, train$mosquito_number, 0)$v
+    }
+    rho_logit_sd <- if (is.null(priors$rho_logit_sd)) 0.56 else
+      priors$rho_logit_sd
   }
 
   coords <- coords_km(train)
@@ -419,7 +459,12 @@ fit_correction <- function(train,
     include_s = as.integer(survey_effect),
     s_index = as.integer(s_index - 1),
     pc_sigma_s = if (is.null(priors$pc_sigma_s)) c(1, 0.05) else
-      priors$pc_sigma_s
+      priors$pc_sigma_s,
+    estimate_rho = as.integer(estimate_rho),
+    v0 = if (estimate_rho) train$v0 else 0,
+    n_assay = if (estimate_rho) as.numeric(train$mosquito_number) else 0,
+    rho_prior = if (estimate_rho) c(qlogis(rho_centre), rho_logit_sd) else
+      c(0, 1)
   )
 
   # start the ranges at a few hundred km, well inside the prior, and the
@@ -432,7 +477,8 @@ fit_correction <- function(train,
     logit_phi = qlogis(0.8),
     log_tau = log(0.3),
     log_sigma_p = log(0.3),
-    log_sigma_s = log(0.3)
+    log_sigma_s = log(0.3),
+    logit_rho = if (estimate_rho) qlogis(rho_centre) else 0
   )
   start <- modifyList(defaults, start)
   parameters <- c(
@@ -443,7 +489,7 @@ fit_correction <- function(train,
             "log_kappa_eta", "logit_phi", "log_tau")],
     list(p = rep(0, if (pixel_effect) nrow(pixels) else 1),
          s = rep(0, if (survey_effect) nrow(surveys) else 1)),
-    start[c("log_sigma_p", "log_sigma_s")]
+    start[c("log_sigma_p", "log_sigma_s", "logit_rho")]
   )
 
   obj <- correction_adfun(data, parameters, variant, silent = silent)
@@ -495,6 +541,24 @@ fit_correction <- function(train,
   )
   if (pixel_effect) hyper$sigma_p <- report$sigma_p
   if (survey_effect) hyper$sigma_s <- report$sigma_s
+  rho_se_logit <- NA_real_
+  hyper_hessian_matrix <- NULL
+  if (estimate_rho) {
+    hyper$rho <- report$rho
+    # the likelihood's v and D at the estimated rho
+    data$v <- data$v0 * (1 + (data$n_assay - 1) * report$rho)
+    if (hyper_hessian) {
+      hyper_hessian_matrix <- stats::optimHess(opt$par, obj$fn, obj$gr)
+      covariance <- tryCatch(solve(hyper_hessian_matrix),
+                             error = function(e) NULL)
+      i <- which(names(opt$par) == "logit_rho")
+      if (!is.null(covariance) && covariance[i, i] > 0) {
+        rho_se_logit <- sqrt(covariance[i, i])
+      }
+      # optimHess leaves the inner problem at a perturbed point: restore it
+      obj$fn(opt$par)
+    }
+  }
   if (variant == "omega_xi_u") {
     hyper <- c(hyper, list(
       sigma_eta = report$sigma_eta,
@@ -537,11 +601,17 @@ fit_correction <- function(train,
       H = H,
       H_chol = H_chol,
       A_latent = A_latent,
-      precision_obs = 1 / train$v,
+      precision_obs = 1 / data$v,
       m_ref = train$m,
       pixel_years = pixel_years,
       pixel_effect = pixel_effect,
       survey_effect = survey_effect,
+      estimate_rho = estimate_rho,
+      rho = if (estimate_rho) report$rho else
+        if (length(unique(train$rho)) == 1) unique(train$rho) else NA_real_,
+      rho_centre = if (estimate_rho) rho_centre else NA_real_,
+      rho_se_logit = rho_se_logit,
+      hyper_hessian = hyper_hessian_matrix,
       pixels = pixels,
       surveys = surveys,
       n_obs = nrow(train),

@@ -416,3 +416,72 @@ Motivation (`R/two_stage_hotspot_diagnostics.R`, `hotspot_{nugget,covariance}.cs
 **Recommendation.** Adopt +p: it is cheap, never worse, reduces hotspot prominence, and represents a real persistent local deviation. s gains only in the width of the held-out predictive distribution, not in the map. Neither term changes ω's range materially, so ω's short range is not an artefact of the missing error terms.
 
 **Decision.** The final model is stage B + p, without s (top of this document). The s code stays as an option (`terms=p,s`).
+
+## Joint rho
+
+Why: after stage B, interior training residuals are narrower than v implies (SD 0.70 vs 0.95), and 0% assays are over-implied. That suggests the fixed per-type ρ̂ is too large once u and p are in the model.
+
+**Method** (`fit_correction(estimate_rho = TRUE)`, runner `rho=estimated`; off by default):
+- v_i = v0_i (1 + (n_i − 1) ρ), with ρ a hyperparameter. v0 is 1/(y + 0.5) + 1/(n − y + 0.5) at stage A, and 1/(n p̂(1 − p̂)) in the stage-B re-estimate.
+- Prior: logit ρ ~ N(logit ρ̂, 0.56²), where ρ̂ is the external per-type estimate. The central 95% interval is about ρ̂/3 to 3ρ̂.
+- ρ is estimated at stage A, used by the first PQL passes, and re-estimated with the other hyperparameters. The second passes hold it fixed. D, the cut-posterior shift and the draws all use the final ρ.
+- SE: from `optimHess` of the working-model objective.
+- Model: `two_stage_omega_xi_u_p_rho_pql_mesh-omega5000_xi2500`.
+
+**Checks** (`R/check_two_stage_joint_rho.R`):
+- With the defaults, the model is identical to HEAD, with and without p: objective, hyperparameters, mode, H, stage-B D and draws all differ by exactly 0.
+- Shift vs refit: 1e-12.
+- Simulation: beta-binomial, true ρ = 0.1, τ = 0.3, σ_p = 0.3, 25% of pixel-years replicated.
+  - Stage B estimates ρ = 0.072 [0.065, 0.081] and τ = 0.40. The result is the same with the prior centred on the truth, on 2× the truth, or at sd 3.
+  - With ρ fixed at the truth, τ = 0.22.
+  - Iterating the re-estimate does not remove the bias (0.071; 0.084 with less saturation). PQL under-estimates ρ and moves the assay noise into u.
+  - 95% coverage of λ at new pixels: 0.93 with ρ fixed at the truth, 0.98 with ρ estimated.
+
+**Estimates** (45 type-fits, all converged; PQL 18–64 min per fold, peak 15.9 GB). Estimated ρ is the interpolation value [95% CI], with the range over the 5 folds in brackets.
+
+| type | ρ̂ external | ρ estimated, interpolation (folds) | σ_p final → joint | τ final → joint |
+|---|---|---|---|---|
+| Alpha-cypermethrin | 0.252 | 0.238 [0.208, 0.271] (0.083–0.282) | 0.16 → 0.22 | 0.15 → 0.26 |
+| Bendiocarb | 0.125 | 0.019 [0.017, 0.021] (0.015–0.023) | 0.48 → 0.55 | 0.30 → 0.94 |
+| DDT | 0.118 | 0.043 [0.039, 0.047] (0.043–0.058) | 0.38 → 0.44 | 0.29 → 0.62 |
+| Deltamethrin | 0.154 | 0.091 [0.085, 0.097] (0.065–0.092) | 0.20 → 0.20 | 0.22 → 0.51 |
+| Fenitrothion | 0.121 | 0.002 [0.001, 0.003] (0.002–0.003) | 0.46 → 0.48 | 0.44 → 1.04 |
+| Lambda-cyhalothrin | 0.095 | 0.037 [0.031, 0.043] (0.034–0.037) | 0.13 → 0.12 | 0.54 → 0.81 |
+| Malathion | 0.244 | 0.026 [0.022, 0.031] (0.016–0.028) | 0.21 → 0.69 | 0.12 → 0.57 |
+| Permethrin | 0.176 | 0.101 [0.092, 0.109] (0.074–0.111) | 0.30 → 0.35 | 0.28 → 0.55 |
+| Pirimiphos-methyl | 0.179 | 0.002 [0.001, 0.003] (0.001–0.007) | 0.22 → 0.21 | 0.56 → 1.38 |
+
+- Estimated / external ρ: median 0.35 (range 0.01–1.12). The CI excludes ρ̂ in 43 of 45 fits, and the prior does not hold ρ.
+- The variance goes to u: τ × 2.3 (median 0.28 → 0.62).
+- σ_p × 1.11, σ_ω × 1.10, σ_η × 1.25 (medians of joint / final).
+- This is the simulation's PQL bias, but larger.
+
+**Scores.** Joint − final, with 95% paired pixel bootstrap intervals. (a) Every model scored at the external ρ̂. (b) The joint model scored at its own estimated ρ (`TWO_STAGE_RHO=own`, `*_own_rho.csv`). Final cover 50/95: 0.446/0.923 (interpolation), 0.441/0.911 (blocks), 0.457/0.899 (forecasting).
+
+| experiment | scoring | Δ log score | Δ CRPS (×10⁻³) | Δ explained | Δ cover 50 | Δ cover 95 | cover 50 / 95 |
+|---|---|---|---|---|---|---|---|
+| interpolation | (a) | +0.039 [+0.013, +0.063] | −1.9 [−3.0, −0.8] | +0.7 [+0.1, +1.3] | +0.045 | +0.020 | 0.491 / 0.943 |
+| | (b) | −0.038 [−0.069, −0.009] | −0.8 [−1.8, +0.3] | +0.7 | −0.042 | −0.020 | 0.404 / 0.903 |
+| blocks 1+2 | (a) | +0.004 [−0.006, +0.015] | +0.2 [−0.3, +0.8] | −0.1 [−0.5, +0.3] | +0.009 | +0.016 | 0.450 / 0.927 |
+| | (b) | −0.042 [−0.056, −0.029] | +0.3 [−0.3, +0.8] | −0.1 | −0.020 | −0.013 | 0.421 / 0.898 |
+| forecasting 2014+2018 | (a) | +0.022 [+0.014, +0.030] | −2.1 [−2.6, −1.6] | +1.5 [+1.2, +1.8] | +0.025 | +0.020 | 0.482 / 0.919 |
+| | (b) | −0.069 [−0.093, −0.048] | −2.1 [−2.6, −1.7] | +1.5 | −0.025 | −0.015 | 0.432 / 0.884 |
+
+All coverage-difference intervals exclude 0. The per-origin results are in `joint_rho_two_stage[_own_rho].csv`.
+
+**Training residuals** (as in the stage-B diagnostic; the joint model is standardised and simulated at its own ρ). Ranges over the 5 folds:
+
+| class | observed / implied, final → joint | SD observed / simulated, final | joint |
+|---|---|---|---|
+| 0% | 0.63–0.70 → 0.88–1.07 | 0.24–0.36 / 0.17–0.24 | 0.34–0.46 / 0.20–0.29 |
+| interior | 1.00–1.01 → 0.94–0.95 | 0.69–0.71 / 0.95 | 0.74–0.77 / 1.02–1.03 |
+| 100% | 0.99–1.01 → 1.15–1.18 | 0.31–0.37 / 0.30–0.36 | 0.74–0.80 / 0.73–0.80 |
+
+- The 0% excess is fixed, but a 15–18% 100% excess appears.
+- The interior SD gap remains (0.75 vs 1.02). ρ being too large does not explain it.
+
+**Recommendation: do not adopt.**
+- The data do not support a lower ρ inside this model. PQL moves assay noise into u (the same bias in simulation), and the estimate contradicts the replicate evidence.
+- Scored at its own ρ, it is worse on log score everywhere (−0.04 to −0.07) and undercovers (95%: 0.88–0.90).
+- The gain at the external ρ̂ (+0.02 to +0.04 log score, 95% cover 0.92–0.94) comes mostly from extra width: the inflated τ plus the external ρ̂ count the noise twice. There is a small mean gain: +0.7 to +1.5 points explained on interpolation and forecasting, none on blocks.
+- Keep ρ fixed at ρ̂. The interior residual narrowness needs another explanation, e.g. the stage-A standardisation used by the diagnostic.

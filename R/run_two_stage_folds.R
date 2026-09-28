@@ -4,6 +4,7 @@
 #
 #   Rscript R/run_two_stage_folds.R <experiment> <fold> [m_ref=mean|loo]
 #     [mesh=<tag>] [variants=omega_u,omega_xi_u] [stage=A|B] [terms=p|p,s]
+#     [rho=fixed|estimated]
 #
 # e.g. Rscript R/run_two_stage_folds.R spatial_interpolation all
 #      Rscript R/run_two_stage_folds.R spatial_blocks 1
@@ -40,6 +41,13 @@
 #   two_stage_<variant>_p_s_spost...  held-out assays in a training survey take
 #                                     its posterior draw, others a fresh one.
 #
+# rho=estimated estimates the assay overdispersion rho per type inside the
+# correction (doc/two_stage_plan.md, "Joint rho"), with a prior centred on the
+# replicate-based per-type rho; "_rho" goes into the model name after the
+# terms, e.g. two_stage_omega_xi_u_p_rho_pql_mesh-omega5000_xi2500. The saved
+# rho_draws then hold each type's estimated rho (the model's own rho), and the
+# training residual file's v is at it. The default, rho=fixed, is unchanged.
+#
 # Run with OpenBLAS for CHOLMOD's supernodal factorisation (reference BLAS is
 # ~10x slower), e.g.
 #   LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=4 nice -n 10 Rscript ...
@@ -67,7 +75,8 @@ experiment_name <- arguments[1]
 fold_name <- arguments[2]
 # optional arguments are key=value; a bare third argument is m_ref, as before
 options <- list(m_ref = "mean", mesh = "omega5000_xi2500",
-                variants = "omega_u,omega_xi_u", stage = "A", terms = "")
+                variants = "omega_u,omega_xi_u", stage = "A", terms = "",
+                rho = "fixed")
 for (argument in arguments[-(1:2)]) {
   if (!grepl("=", argument)) argument <- paste0("m_ref=", argument)
   key <- sub("=.*$", "", argument)
@@ -81,10 +90,13 @@ stage <- options$stage
 terms <- strsplit(options$terms, ",")[[1]]
 pixel_effect <- "p" %in% terms
 survey_effect <- "s" %in% terms
-stopifnot(all(terms %in% c("p", "s")))
-# the error-structure terms, as a suffix of the variant: "", "_p", "_s", "_p_s"
+stopifnot(all(terms %in% c("p", "s")), options$rho %in% c("fixed", "estimated"))
+estimate_rho <- options$rho == "estimated"
+# the error-structure terms, as a suffix of the variant: "", "_p", "_s", "_p_s",
+# then "_rho" if rho is estimated
 terms_suffix <- paste0(if (pixel_effect) "_p" else "",
-                       if (survey_effect) "_s" else "")
+                       if (survey_effect) "_s" else "",
+                       if (estimate_rho) "_rho" else "")
 # the held-out survey draws saved (see above), and their model-name suffixes
 survey_modes <- if (survey_effect) c("fresh", "none", "posterior") else "none"
 # (only with s: without it the single "none" set is the model itself)
@@ -360,6 +372,9 @@ stopifnot(all(types %in% names(rho_for_type)))
 # one set per variant and saved survey mode
 output_keys <- as.vector(outer(variants, survey_modes, paste, sep = "|"))
 p_out <- lapply(setNames(output_keys, output_keys), function(v) p_saved)
+# each variant's own rho per type: the estimate where the fit is used, the
+# replicate-based rho otherwise (fixed rho, or a type that falls back)
+rho_own <- lapply(setNames(variants, variants), function(v) rho_for_type[types])
 
 # median length of the mesh edges among triangles whose three nodes all carry
 # data weight, i.e. the resolution the fields actually have where the data are
@@ -503,7 +518,8 @@ for (k in seq_along(types)) {
                            NULL,
                          start = start,
                          pixel_effect = pixel_effect,
-                         survey_effect = survey_effect),
+                         survey_effect = survey_effect,
+                         estimate_rho = estimate_rho),
           # non-convergence is recorded from opt below, not as a warning
           warning = function(w) {
             if (grepl("nlminb did not converge", conditionMessage(w))) {
@@ -585,6 +601,7 @@ for (k in seq_along(types)) {
         use_fit <- FALSE
       }
     }
+    if (use_fit && estimate_rho) rho_own[[variant]][[type]] <- fit$rho
 
     hyper <- if (is.null(fit)) list() else fit$hyper
     get_hyper <- function(name) {
@@ -621,6 +638,10 @@ for (k in seq_along(types)) {
       tau = get_hyper("tau"),
       sigma_p = get_hyper("sigma_p"),
       sigma_s = get_hyper("sigma_s"),
+      rho_estimated = if (estimate_rho) get_hyper("rho") else NA_real_,
+      rho_stage_a = if (estimate_rho) get_b("rho_a", NA_real_) else NA_real_,
+      rho_se_logit = if (estimate_rho && !is.null(fit)) fit$rho_se_logit else
+        NA_real_,
       n_pixels = n_distinct(train_k$cell),
       n_surveys = n_distinct(train_k$survey),
       share_test_pixel_in_train = if (length(test_rows) > 0)
@@ -686,6 +707,11 @@ for (k in seq_along(types)) {
     # mode, so z - m_ref - latent is the fitted residual
     if (!is.null(fit)) {
       latent <- as.vector(fit$A_latent %*% fit$mode)
+      # with rho estimated, the stage-A response's v at the model's own rho
+      if (estimate_rho) {
+        train_k$v <- empirical_logit(train_k$died, train_k$mosquito_number,
+                                     fit$rho)$v
+      }
       residuals[[variant]][[type]] <- tibble(
         training_row = train_rows,
         insecticide_type = type,
@@ -704,6 +730,7 @@ for (k in seq_along(types)) {
         latent = latent,
         residual = train_k$z - train_k$m - latent
       )
+      if (estimate_rho) residuals[[variant]][[type]]$rho <- fit$rho
       # stage B: z and v stay the stage-A empirical logit, so the extreme
       # residual diagnostic in two_stage_metrics.R compares like with like;
       # the latent is stage B's, and stage A's is kept beside it
@@ -723,7 +750,9 @@ for (k in seq_along(types)) {
            if (is.null(fit)) "ERROR" else fit$opt$convergence,
            get_hyper("range_omega"), get_hyper("sigma_omega"),
            get_hyper("tau"),
-           paste0(if (pixel_effect) sprintf(" sigma_p=%.2f",
+           paste0(if (estimate_rho) sprintf(" rho=%.3f (prior centre %.3f)",
+                                            get_hyper("rho"), rho) else "",
+                  if (pixel_effect) sprintf(" sigma_p=%.2f",
                                             get_hyper("sigma_p")) else "",
                   if (survey_effect) sprintf(" sigma_s=%.2f",
                                              get_hyper("sigma_s")) else ""),
@@ -753,7 +782,6 @@ for (k in seq_along(types)) {
 summary_table <- bind_rows(summaries)
 
 rho_type <- tibble(insecticide_type = types, rho = rho_for_type[types])
-rho_test <- rho_for_type[types[test_df$type_id]]
 
 for (output_key in output_keys) {
   variant <- sub("\\|.*$", "", output_key)
@@ -773,12 +801,15 @@ for (output_key in output_keys) {
     # the survey term in the held-out draws (see the header)
     survey_draws = if (survey_effect) survey_mode else NA_character_,
     p_draws = p_out[[output_key]],
-    # every model is scored at the per-type replicate-based rho, which is also
-    # what inflated v in the fit; as draws x assays so the scoring code's
-    # rho_draws path applies it column by column
-    rho_draws = matrix(rho_test, nrow = n_dyn_draws, ncol = nrow(test_df),
-                       byrow = TRUE),
+    # the model's own rho: the per-type replicate-based rho that inflated v in
+    # the fit, or with rho=estimated each type's estimate. As draws x assays so
+    # the scoring code's rho_draws path reads it column by column. The headline
+    # scoring ignores it and uses the replicate-based rho for every model
+    rho_draws = matrix(rho_own[[variant]][types[test_df$type_id]],
+                       nrow = n_dyn_draws, ncol = nrow(test_df), byrow = TRUE),
     rho_type = rho_type,
+    rho_own_type = tibble(insecticide_type = types,
+                          rho = unname(rho_own[[variant]][types])),
     m_ref = if (loo_used) "loo" else "mean",
     fallback_types = variant_summary$insecticide_type[
       variant_summary$fallback_dynamical],

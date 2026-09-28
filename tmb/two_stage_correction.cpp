@@ -31,6 +31,10 @@
 //   u        pixel-year effects                             (n_pixel_years)
 //   p        static pixel effects                           (n_pixels, or 1 if off)
 //   s        survey effects                                 (n_surveys, or 1 if off)
+//
+// The assay variance v_i is fixed data by default. With estimate_rho = 1 it is
+// v0_i (1 + (n_i - 1) rho), with v0_i the binomial part and logit rho a
+// hyperparameter with a normal prior (mapped out, so absent, by default).
 // xi(., t0) = 0 is not a parameter: it enters only as the zero that the first
 // time difference is taken from.
 //
@@ -106,6 +110,10 @@ Type objective_function<Type>::operator() ()
   DATA_INTEGER(include_s);        // 1 to include the survey effect s
   DATA_IVECTOR(s_index);          // 0-based survey of each observation
   DATA_VECTOR(pc_sigma_s);        // (sigma0, P(sigma_s > sigma0))
+  DATA_INTEGER(estimate_rho);     // 1 to estimate the assay overdispersion rho
+  DATA_VECTOR(v0);                // binomial part of v (used if estimate_rho)
+  DATA_VECTOR(n_assay);           // mosquitoes per assay (used if estimate_rho)
+  DATA_VECTOR(rho_prior);         // (mean, sd) of the normal prior on logit rho
 
   // parameters -------------------------------------------------------------
   PARAMETER_VECTOR(w_omega);
@@ -121,6 +129,7 @@ Type objective_function<Type>::operator() ()
   PARAMETER_VECTOR(s);
   PARAMETER(log_sigma_p);
   PARAMETER(log_sigma_s);
+  PARAMETER(logit_rho);
 
   Type sigma_omega = exp(log_sigma_omega);
   Type kappa_omega = exp(log_kappa_omega);
@@ -187,7 +196,17 @@ Type objective_function<Type>::operator() ()
   }
 
   // likelihood ------------------------------------------------------------------
-  nll -= dnorm(z, lambda, sqrt(v), true).sum();
+  // v is fixed data by default. With estimate_rho, v = v0 (1 + (n - 1) rho),
+  // with v0 the binomial part and rho a hyperparameter with a normal prior on
+  // its logit (doc/two_stage_plan.md, "Joint rho")
+  Type rho = invlogit(logit_rho);
+  if (estimate_rho == 1) {
+    vector<Type> v_rho = v0 * (Type(1.0) + (n_assay - Type(1.0)) * rho);
+    nll -= dnorm(z, lambda, sqrt(v_rho), true).sum();
+    nll -= dnorm(logit_rho, rho_prior(0), rho_prior(1), true);
+  } else {
+    nll -= dnorm(z, lambda, sqrt(v), true).sum();
+  }
 
   // priors (penalties) on the hyperparameters ----------------------------------
   nll -= log_pc_matern(log_kappa_omega, log_sigma_omega, pc_omega);
@@ -227,6 +246,7 @@ Type objective_function<Type>::operator() ()
   REPORT(tau);
   REPORT(sigma_p);
   REPORT(sigma_s);
+  REPORT(rho);
   ADREPORT(range_omega);
   ADREPORT(sigma_omega);
   ADREPORT(tau);
