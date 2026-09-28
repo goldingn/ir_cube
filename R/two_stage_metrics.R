@@ -36,6 +36,9 @@
 # mesh configuration is in cv_summary_two_stage.csv. term_inclusion_two_stage.csv is omega_xi_u against
 # omega_u, stage_b_two_stage.csv stage B (PQL) against stage A for omega_xi_u,
 # and cv_horizon_two_stage.csv the scores by forecast horizon.
+# damped_xi_two_stage.csv is the final model with damped xi against the
+# final model (doc/two_stage_plan.md, "Damped accumulation"), overall and by
+# forecast horizon.
 #
 # TWO_STAGE_RHO=own scores each two-stage model at its own rho instead (the
 # rho_draws saved with its draws: the replicate-based per-type rho it was fitted
@@ -138,6 +141,8 @@ two_stage_reported <- reported_model(c("omega_u", "omega_xi_u"))
 final_model <- reported_model("omega_xi_u_p_pql")
 # the final model with rho estimated jointly (doc/two_stage_plan.md, "Joint rho")
 joint_rho_model <- reported_model("omega_xi_u_p_rho_pql")
+# the final model with damped xi (doc/two_stage_plan.md, "Damped accumulation")
+damped_model <- reported_model("omega_xi_u_p_psi_pql")
 two_stage_headline <- c(reported_model("omega_xi_u"), final_model)
 headline_models <- c("dynamical", "intercept", "nearest_neighbour",
                      "nearest_neighbour_oracle", two_stage_headline)
@@ -167,7 +172,8 @@ variant_labels <- c(
     "two-stage ω+ξ+u+p+s, stage B, no s in held-out draws",
   two_stage_omega_xi_u_p_s_spost_pql =
     "two-stage ω+ξ+u+p+s, stage B, posterior s for training surveys",
-  two_stage_omega_xi_u_p_rho_pql = "two-stage ω+ξ+u+p, stage B, joint rho"
+  two_stage_omega_xi_u_p_rho_pql = "two-stage ω+ξ+u+p, stage B, joint rho",
+  two_stage_omega_xi_u_p_psi_pql = "two-stage ω+ξ+u+p, stage B, damped ξ"
 )
 mesh_tag_pattern <- "_mesh-([A-Za-z0-9_]+)$"
 label_for <- function(model) {
@@ -993,6 +999,69 @@ if (nrow(horizon_table) > 0) {
     mutate(model_label = label_for(model), .after = model)
   write.csv(horizon_table, output_csv("cv_horizon_two_stage.csv"),
             row.names = FALSE)
+}
+
+
+# damped xi ---------------------------------------------------------------------
+
+# The final model with damped xi (xi_t = psi xi_{t-1} + eta_t, psi estimated
+# per type; doc/two_stage_plan.md, "Damped accumulation") against the final
+# model (undamped); diff_* columns are damped - undamped, paired by pixel, per
+# experiment and forecasting origin, and per forecast horizon. It comes after
+# the other bootstraps so that adding it leaves their random draws unchanged
+damped_other <- if (final_model == damped_model) {
+  reported_model("omega_xi_u_p_pql")
+} else {
+  final_model
+}
+damped_pair <- c(damped_other, damped_model)
+damped_compare <- function(d) {
+  d <- models_complete(d)
+  if (n_distinct(d$model) < 2) return(tibble())
+  summarise_group(d, pit_matrices, reference = damped_other) %>%
+    mutate(folds = paste(sort(unique(d$fold)), collapse = "+"))
+}
+damped_table <- all_scores %>%
+  filter(model %in% damped_pair) %>%
+  pool_forecasting() %>%
+  group_by(experiment) %>%
+  group_modify(function(d, key) damped_compare(d)) %>%
+  ungroup()
+if (nrow(damped_table) > 0) {
+  damped_horizon <- all_scores %>%
+    filter(model %in% damped_pair, !is.na(horizon)) %>%
+    pool_forecasting() %>%
+    group_by(experiment, horizon) %>%
+    group_modify(function(d, key) damped_compare(d)) %>%
+    ungroup()
+  damped_table <- bind_rows(damped_table %>% mutate(horizon = NA_real_),
+                            damped_horizon) %>%
+    mutate(model_label = label_for(model), .after = model) %>%
+    select(experiment, horizon, folds, model, model_label, n, n_pixels,
+           elpd, crps, explained, coverage_50, coverage_95,
+           starts_with("diff_"), starts_with("prob_better_"))
+  write.csv(damped_table, output_csv("damped_xi_two_stage.csv"),
+            row.names = FALSE)
+  interval_text <- function(x, lower, upper, scale = 1, digits = 3) {
+    sprintf(paste0("%+.", digits, "f [%+.", digits, "f, %+.", digits, "f]"),
+            scale * x, scale * lower, scale * upper)
+  }
+  cat("\ndamped xi - undamped final model (paired pixel bootstrap):\n")
+  print(as.data.frame(damped_table %>%
+    filter(model == damped_model) %>%
+    transmute(experiment, horizon, n,
+              d_elpd = interval_text(diff_elpd, diff_elpd_lower,
+                                     diff_elpd_upper),
+              d_crps_1e3 = interval_text(diff_crps, diff_crps_lower,
+                                         diff_crps_upper, 1e3, 2),
+              d_explained = interval_text(diff_explained, diff_explained_lower,
+                                          diff_explained_upper, 1, 2),
+              d_cover50 = interval_text(diff_cover50, diff_cover50_lower,
+                                        diff_cover50_upper),
+              d_cover95 = interval_text(diff_cover95, diff_cover95_lower,
+                                        diff_cover95_upper),
+              cover = sprintf("%.3f / %.3f", coverage_50, coverage_95))),
+    row.names = FALSE)
 }
 
 

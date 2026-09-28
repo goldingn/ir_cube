@@ -4,8 +4,11 @@
 
 **Final model.** Stage B (PQL on the beta-binomial counts, `R/two_stage_pql.R`) of `omega_xi_u` plus the static per-pixel effect p (`terms=p`); no survey effect s. Meshes omega5000_xi2500; `m_ref` = dynamical posterior mean logit; per-type ρ.
 - λ = m_ref + ω + ξ + u + p. Held-out draws: joint latent draw, p from its posterior at pixels with training data and fresh N(0, σ_p²) elsewhere. Model `two_stage_omega_xi_u_p_pql_mesh-omega5000_xi2500`.
-- Maps (`R/two_stage_maps.R`): the smooth correction ω + ξ only; u and p are left out of the mean and SD maps.
+- Maps (`R/two_stage_maps.R`): the smooth correction ω + ξ only; u (observation noise) and p are left out of the mean and SD maps.
 - The survey-effect code stays as an option (`terms=p,s`); it is not in the final model.
+- ξ is undamped. A damped ξ (ψ estimated) was tested and not adopted, because it forecasts worse at 4–5 years (see "Damped accumulation"). It stays as an option (`xi=damped`).
+
+**u is observation noise.** The pixel-year term u is treated as observation-level noise shared by the assays of a pixel-year, not as part of the inferred process. The prediction target is m + ω + ξ + p. This reverses issue #21, which put u in the target. Cross-validation scoring is unchanged: a held-out assay's predictive distribution includes u either way. Maps and the supplement figures leave u out.
 
 Headline (`outputs/two_stage/cv_headline_two_stage.csv`, `figures/two_stage/`). Log score: mean beta-binomial log predictive density; CRPS on the mortality scale; 95% pixel-bootstrap intervals. NN = nearest recent survey (k = 1); NN oracle = nearest surveys at the k minimising held-out error.
 
@@ -485,3 +488,65 @@ All coverage-difference intervals exclude 0. The per-origin results are in `join
 - Scored at its own ρ, it is worse on log score everywhere (−0.04 to −0.07) and undercovers (95%: 0.88–0.90).
 - The gain at the external ρ̂ (+0.02 to +0.04 log score, 95% cover 0.92–0.94) comes mostly from extra width: the inflated τ plus the external ρ̂ count the noise twice. There is a small mean gain: +0.7 to +1.5 points explained on interpolation and forecasting, none on blocks.
 - Keep ρ fixed at ρ̂. The interior residual narrowness needs another explanation, e.g. the stage-A standardisation used by the diagnostic.
+
+## Damped accumulation
+
+Why: at stage B, φ ≈ 0.01–0.07 and σ_η ≈ 0.5, so ξ = Ση is close to a random walk. Its prior SD grows as σ_η√t. Away from data the 95% interval widens to about 5–99% by 2015, and the correction SD reaches about 4 logit by 2030. Within data, ξ produces year-to-year reversals.
+
+**Model** (`fit_correction(damped_xi = TRUE)`, runner `xi=damped`; off by default):
+- ξ(s,t) = ψ ξ(s,t−1) + η(s,t), with ξ(s,t0) = 0 and 0 ≤ ψ < 1. η is unchanged: AR(1) in time, with Matérn innovations. ψ → 1 recovers the current model.
+- This departs from issue #21, whose ξ accumulates without damping, so that forecasts hold the accumulated deviation. Damped, ξ reverts to 0 (the dynamical model) on the timescale L_ψ = 1/(1 − ψ).
+- x (the node values of ξ) stays the random effect. The prior is on η_t = x_t − ψ x_{t−1} (Jacobian 1), so the Hessian keeps its sparsity.
+- Prior: L_ψ ~ lognormal(log 10, 0.82), i.e. a median of 10 years and a 95% interval of 2–50 years. 2 years is fast reversion. 50 years cannot be told apart from the random walk over the 30 data years. The median is a third of the data window, so neither end is favoured.
+- The forecast beyond T continues η's AR(1) from η_T = x_T − ψx_{T−1}, with ξ_t = ψξ_{t−1} + η_t (`predict_correction()`, `correction_node_fields()`).
+- Stage B re-estimates ψ with the other hyperparameters. Its SE comes from `optimHess` of the working-model objective.
+- The cut-posterior shift is unchanged in form, because ψ enters only Q.
+- Model: `two_stage_omega_xi_u_p_psi_pql_mesh-omega5000_xi2500`.
+
+**Checks** (`R/check_two_stage_damped_xi.R`):
+- With the defaults, the model is identical to HEAD: objective, hyperparameters, mode, H, stage-B D, draws and forecast node fields all differ by exactly 0.
+- Shift vs refit: 2e-14. The simulated forecast mean matches the closed-form recursion.
+- Simulation, true ψ = 0.7: stage B estimates ψ = 0.75 [0.36, 0.94]. True ψ = 1: 0.965 [0.90, 0.99], i.e. L_ψ ≈ 29 years.
+- 95% coverage of λ is 0.92–0.97 in both simulations.
+
+**Estimates** (45 type-fits, all converged, none fell back; PQL including `optimHess` median 4 min per type; peak 17.6 GB). ψ with SE and 95% CI on interpolation; the ranges over the 5 folds are in brackets:
+
+| type | ψ, interpolation (folds) | L_ψ, folds (years) | φ final → ψ | σ_η final → ψ | τ final → ψ |
+|---|---|---|---|---|---|
+| Lambda-cyhalothrin | 0.52 (0.22) [0.16, 0.86] (0.52–0.56) | 2.1–2.3 | 0.05 → 0.37 | 0.54 → 0.93 | 0.56 → 0.38 |
+| Permethrin | 0.78 (0.03) [0.71, 0.84] (0.51–0.78) | 2.0–4.6 | 0.02 → 0.05 | 0.48 → 0.72 | 0.28 → 0.07 |
+| Deltamethrin | 0.73 (0.04) [0.65, 0.79] (0.46–0.74) | 1.9–3.8 | 0.01 → 0.06 | 0.53 → 0.72 | 0.22 → 0.05 |
+| Fenitrothion | 0.84 (0.13) [0.45, 0.97] (0.58–0.87) | 2.4–8.0 | 0.75 → 0.74 | 0.07 → 0.17 | 0.46 → 0.45 |
+| Bendiocarb | 0.73 (0.07) [0.57, 0.85] (0.48–0.73) | 1.9–3.7 | 0.03 → 0.12 | 0.59 → 0.82 | 0.37 → 0.18 |
+| DDT | 0.74 (0.06) [0.61, 0.84] (0.25–0.76) | 1.3–4.2 | 0.03 → 0.28 | 0.64 → 0.79 | 0.19 → 0.08 |
+| Alpha-cypermethrin | 0.61 (0.20) [0.23, 0.89] (0.45–0.88) | 1.8–8.6 | 0.09 → 0.35 | 0.44 → 0.66 | 0.17 → 0.11 |
+| Malathion | 0.84 (0.12) [0.50, 0.97] (0.73–0.88) | 3.7–8.5 | 0.75 → 0.74 | 0.09 → 0.25 | 0.12 → 0.11 |
+| Pirimiphos-methyl | 0.41 (0.20) [0.11, 0.78] (0.39–0.89) | 1.6–8.9 | 0.19 → 0.37 | 0.34 → 1.00 | 0.56 → 0.18 |
+
+- The data choose fast reversion: median ψ = 0.73 over the 45 fits (L_ψ ≈ 3.7 years). The CI upper bounds are 0.60–0.996, so the fits are far from the random walk, though a few types cannot rule out slow reversion.
+- The field becomes a larger, short-memory term. Medians over 45 fits: σ_η × 1.7, φ 0.06 → 0.35, and τ 0.28 → 0.12, so ξ takes over much of u. σ_ω is unchanged.
+
+**Scores.** Damped − final, 95% paired pixel bootstrap, all at the external ρ̂ (`outputs/two_stage/damped_xi_two_stage.csv`):
+
+| experiment | Δ log score | Δ CRPS (×10⁻³) | Δ explained (points) | Δ cover 50 | Δ cover 95 | cover 50 / 95 |
+|---|---|---|---|---|---|---|
+| interpolation | +0.001 [−0.014, +0.017] | +0.1 [−1.9, +2.2] | −0.3 [−1.8, +1.1] | +0.012 [−0.005, +0.030] | +0.000 [−0.007, +0.007] | 0.458 / 0.923 |
+| blocks 1+2 | −0.007 [−0.018, +0.004] | −0.9 [−2.1, +0.3] | +0.8 [−0.1, +1.7] | −0.015 [−0.022, −0.008] | −0.013 [−0.017, −0.009] | 0.426 / 0.898 |
+| forecasting 2014+2018 | −0.038 [−0.055, −0.022] | +6.0 [+4.3, +7.8] | −3.9 [−5.2, −2.7] | −0.007 [−0.014, +0.001] | −0.009 [−0.014, −0.004] | 0.450 / 0.890 |
+| forecasting 2014 | −0.059 [−0.077, −0.042] | +7.7 [+5.6, +9.8] | −5.4 [−7.0, −3.8] | −0.012 [−0.022, −0.003] | −0.014 [−0.019, −0.009] | 0.448 / 0.890 |
+| forecasting 2018 | +0.012 [−0.015, +0.039] | +1.9 [−0.8, +4.6] | −1.2 [−2.8, +0.4] | +0.007 [−0.006, +0.021] | +0.003 [−0.005, +0.010] | 0.455 / 0.889 |
+
+**By forecast horizon** (both origins pooled; final → damped):
+
+| horizon | Δ log score | log score | variance explained | cover 95 |
+|---|---|---|---|---|
+| 1 | +0.007 [−0.009, +0.025] | −3.498 → −3.491 | 51.0 → 50.5 | 0.912 → 0.920 |
+| 2 | −0.012 [−0.036, +0.011] | −3.486 → −3.497 | 51.9 → 51.2 | 0.912 → 0.914 |
+| 3 | +0.032 [−0.004, +0.070] | −3.728 → −3.696 | 39.2 → 39.0 | 0.880 → 0.893 |
+| 4 | −0.121 [−0.164, −0.079] | −3.662 → −3.784 | 30.5 → 21.1 | 0.883 → 0.851 |
+| 5 | −0.156 [−0.197, −0.115] | −3.871 → −4.026 | 31.0 → 18.6 | 0.887 → 0.830 |
+
+- Spatial experiments: no material change. Forecasting: worse at horizons 4–5 years. Reverting to the dynamical model loses skill that the undamped ξ keeps: −10 to −12 points explained, and 95% coverage 0.83–0.85.
+- So the held deviation is real at those horizons, where the dynamical model itself has little skill. The data prefer fast reversion within the data window (the fitted ψ), but held-out forecasts do not.
+
+**Decision: do not adopt.** The rule was to adopt if the lower CI bound of Δ log score is ≥ −0.01 in every experiment. It fails on forecasting 2014 (−0.059 [−0.077, −0.042]), on the pooled forecasts, and marginally on blocks (lower bound −0.018). The final model stays undamped. The code stays as an option (`xi=damped`).
