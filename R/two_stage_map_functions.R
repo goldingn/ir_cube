@@ -2,12 +2,12 @@
 # the dynamical model's posterior draws at every mask cell, and the stage-A
 # correction's latent fields projected from the mesh nodes to those cells.
 #
-# The dynamical part mirrors predict_batch() in R/predict.R, but in plain R on
-# the logit scale (see R/dynamical_predictions.R for why the recursion has a
-# closed form there), so that it can be paired draw for draw with the
-# correction's cut-posterior mode shift, which predict.R's greta calculate()
-# cannot. Functions only: source from the repo root after
-# R/dynamical_predictions.R and R/two_stage_correction.R.
+# The dynamical part is in plain R on the logit scale (see
+# R/dynamical_predictions.R for why the recursion has a closed form there), so
+# that it can be paired draw for draw with the correction's cut-posterior mode
+# shift; R/predict.R uses it for the dynamical model's maps. Functions only:
+# source from the repo root after R/dynamical_predictions.R and
+# R/two_stage_correction.R.
 
 
 # covariates at the prediction cells ------------------------------------------
@@ -59,16 +59,9 @@ map_covariates <- function(cells, baseline_year = 1995, end_year = 2030,
 # `options` are the fit's model options: fold_options(fold), or the full fit's
 # model_options.
 #
-# emulate_predict_fill = TRUE reproduces what predict.R actually computed, for
-# checking against its saved maps only. `logit_init_mean` is needed only for
-# fits whose draws do not name it (see logit_init_mean_draws()); classes_index
-# is needed by dynamical_terms(), which also computes the selection effects. There, the observed countries' (and
-# regions') n x types matrix of raw deviations is assigned into the rows of a
-# greta zeros() array with `pred[index, ] <- raw`; greta fills the target
-# elements in column-major order from the source's elements in row-major
-# order, so every country x type deviation lands on the wrong country and type
-# (a transpose-and-refill of the block). The saved outputs/ir_maps therefore
-# carry scrambled initial conditions; their covariate effects are unaffected.
+# `logit_init_mean` is needed only for fits whose draws do not name it (see
+# logit_init_mean_draws()); classes_index is needed by dynamical_terms(), which
+# also computes the selection effects.
 map_logit_init <- function(draws_matrix,
                            logit_init_mean,
                            types,
@@ -77,7 +70,6 @@ map_logit_init <- function(draws_matrix,
                            regions,
                            lookup = country_region_lookup(),
                            seed = 1,
-                           emulate_predict_fill = FALSE,
                            options) {
 
   n_draws <- nrow(draws_matrix)
@@ -93,18 +85,6 @@ map_logit_init <- function(draws_matrix,
                       !is.null(options$init_covariates)))
   init_region_raw <- variables$init_region_raw
   init_country_raw <- variables$init_country_raw
-
-  if (emulate_predict_fill) {
-    # row-major values into column-major positions, draw by draw
-    refill <- function(a) {
-      for (d in seq_len(dim(a)[1])) {
-        a[d, , ] <- matrix(as.vector(t(a[d, , ])), dim(a)[2], dim(a)[3])
-      }
-      a
-    }
-    init_country_raw <- refill(init_country_raw)
-    init_region_raw <- refill(init_region_raw)
-  }
 
   # observed countries and regions keep their sampled deviations; the rest are
   # drawn from the prior, once per posterior draw and shared by every cell
@@ -159,6 +139,17 @@ map_cell_logit_init <- function(logit_init, cell_country, k, init = NULL,
   logit_init_from_relative(l, init_frac_constants(types)$min[k])
 }
 
+# map_logit_init()'s output for the draws `draws`, keeping the initial-state
+# coefficients with them
+subset_logit_init <- function(logit_init, draws) {
+  out <- logit_init[draws, , , drop = FALSE]
+  init_coef <- attr(logit_init, "init_coef")
+  if (!is.null(init_coef)) {
+    attr(out, "init_coef") <- init_coef[draws, , , drop = FALSE]
+  }
+  out
+}
+
 
 # dynamical draws on a chunk of cells ------------------------------------------
 
@@ -201,6 +192,26 @@ dynamical_logit_chunk <- function(effect, logit_init, time_varying, flat,
     }
   }
   out
+}
+
+# dynamical_logit_chunk() for type k at rows `rows` of map_covariates()'s
+# output `covariates`, whose cells are in countries `country_index` (into
+# dimnames(logit_init)[[2]]), with the fit's floor and reversion. `effect`
+# (draws x n_covs x types) and `floor` and `kappa_type` (from
+# dynamical_parameter_draws(), NULL when the fit has none) are for the same
+# draws as `logit_init` (map_logit_init()).
+map_type_logit <- function(k, rows, country_index, effect, logit_init,
+                           covariates, years, years_keep, floor = NULL,
+                           kappa_type = NULL) {
+  dynamical_logit_chunk(
+    effect = matrix(effect[, , k], nrow = dim(effect)[1]),
+    logit_init = map_cell_logit_init(logit_init, country_index, k,
+                                     covariates$init[rows, , drop = FALSE]),
+    time_varying = covariates$time_varying[rows, , , drop = FALSE],
+    flat = covariates$flat[rows, , drop = FALSE],
+    years = years, years_keep = years_keep,
+    floor = floor,
+    kappa = if (!is.null(kappa_type)) kappa_type[, k])
 }
 
 

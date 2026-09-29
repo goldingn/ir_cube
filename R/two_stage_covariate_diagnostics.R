@@ -135,6 +135,7 @@ if (!file.exists(dynamical_file)) {
                                    classes_index, types,
                                    draw_index = draw_index)
   m_ref <- colMeans(safe_logit(p_train))
+  design <- fold_options(fold)$selection_columns
   rm(p_train, fold)
   invisible(gc())
 
@@ -174,7 +175,8 @@ if (!file.exists(dynamical_file)) {
   names(map_sample) <- types
   sample_union <- sort(unique(unlist(map_sample)))
   covariates_map <- map_covariates(mask_cells[sample_union], baseline_year,
-                                   final_data_year)
+                                   final_data_year,
+                                   design)
   map_selection <- lapply(seq_along(types), function(k) {
     rows <- match(map_sample[[k]], sample_union)
     effect_t <- t(parameters$effect_type[, , k])
