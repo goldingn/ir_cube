@@ -1,6 +1,10 @@
 # plot estimated baseline susceptibility
 
 # load packages and functions
+# greta first, so python starts before terra and sf are attached (a fit that
+# did not pass logit_init_mean to model() needs its saved dag)
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 source("R/dynamical_predictions.R")
@@ -10,7 +14,8 @@ source("R/two_stage_map_functions.R")
 fit_env <- new.env()
 load("temporary/fitted_model.RData", envir = fit_env)
 types <- fit_env$types
-fold <- list(draws = fit_env$draws)
+fold <- list(draws = fit_env$draws, options = fit_env$model_options)
+options <- fold_options(fold)
 draw_index <- paired_draw_index(fold)
 draws_matrix <- as.matrix(fold$draws)[draw_index, , drop = FALSE]
 logit_init_mean <- logit_init_mean_draws(fold, draw_index)
@@ -19,11 +24,17 @@ country_borders <- readRDS("data/clean/country_borders.RDS")
 
 # logit initial fraction susceptible for every country, with countries and
 # regions without data drawn from the hierarchical prior, as in R/predict.R
-# (same draws and seed, so the same initial states as the maps)
+# (same draws and seed, so the same initial states as the maps). With
+# initial-state covariates, this is the initial state at the covariates' mean
+# (they are standardised)
 logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
                                  fit_env$classes_index, fit_env$countries,
-                                 fit_env$regions, seed = 1)
+                                 fit_env$regions, seed = 1, options = options)
 rm(fit_env)
+if (!is.null(options$init_covariates)) {
+  logit_init_all <- sweep(logit_init_all, 3, init_frac_constants(types)$min,
+                          FUN = logit_init_from_relative)
+}
 stopifnot(all(country_borders$country_name %in% dimnames(logit_init_all)[[2]]))
 
 init_all <- plogis(logit_init_all)

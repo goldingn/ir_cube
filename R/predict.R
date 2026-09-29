@@ -6,8 +6,8 @@
 #   Rscript R/predict.R
 #
 # Run with the greta environment of R/packages.R (the draws are a greta object,
-# and a fit that did not pass logit_init_mean to model() needs its saved dag),
-# e.g.
+# and a fit that did not pass logit_init_mean to model() needs its saved dag,
+# which needs python), e.g.
 #   R_LIBS=~/R/greta06-lib RETICULATE_PYTHON=.../greta06-env/bin/python \
 #     OPENBLAS_NUM_THREADS=1 nice -n 10 Rscript R/predict.R
 #
@@ -15,10 +15,14 @@
 # parameter transforms (dynamical_terms(), R/dynamical_model.R) and the closed
 # form of the recursion on the logit scale, via map_covariates(),
 # map_logit_init() and dynamical_logit_chunk() (R/two_stage_map_functions.R),
-# as R/two_stage_maps.R does. Countries and regions without data take their
+# as R/two_stage_maps.R does, with the fit's model options (fold_options();
+# fits saved without options take the legacy ones). Countries and regions without data take their
 # initial state from the hierarchical prior, drawn once per posterior draw
 # with a fixed seed, so the maps are reproducible. Cells without a country in
 # data/clean/country_raster.tif are NA.
+#
+# The maps are of predicted bioassay mortality: the fraction susceptible, or
+# with a mortality floor f, f + (1 - f) times it.
 #
 # Writes, for each of the nine types and llin_effective, and each year from the
 # baseline year to 2030:
@@ -27,6 +31,8 @@
 # llin_effective is the mortality of each draw weighted over the active
 # ingredients by temporary/ingredient_weights.RDS.
 
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 source("R/dynamical_predictions.R")
@@ -64,7 +70,9 @@ classes_index <- fit_env$classes_index
 countries <- fit_env$countries
 regions <- fit_env$regions
 df <- fit_env$df
-fold <- list(draws = fit_env$draws)
+fold <- list(draws = fit_env$draws, options = fit_env$model_options,
+             x_cells_init = fit_env$x_cells_init)
+options <- fold_options(fold)
 rm(fit_env)
 invisible(gc())
 
@@ -75,22 +83,34 @@ parameters <- dynamical_parameter_draws(fold, df = df,
                                         classes_index = classes_index,
                                         types = types,
                                         draw_index = draw_index,
-                                        logit_init_mean = logit_init_mean)
+                                        logit_init_mean = logit_init_mean,
+                                        options = options)
 
 # initial states for every country in the lookup. The prior draws for countries
 # and regions without data are made for all 2000 draws and then subset, so a
-# draw has the same initial states whatever n_draws is
+# draw has the same initial states whatever n_draws is. With initial-state
+# covariates these are the logit relative initial states, with the covariates'
+# coefficients as an attribute (see map_logit_init())
 lookup <- country_region_lookup()
 logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
                                  classes_index, countries, regions, lookup,
-                                 seed = 1)
-stopifnot(isTRUE(all.equal(logit_init_all[, countries, , drop = FALSE],
-                           parameters$logit_init,
-                           check.attributes = FALSE)))
+                                 seed = 1, options = options)
+init_covariates <- !is.null(options$init_covariates)
+stopifnot(isTRUE(all.equal(
+  logit_init_all[, countries, , drop = FALSE],
+  if (init_covariates) parameters$logit_init_relative else
+    parameters$logit_init,
+  check.attributes = FALSE)))
 
 predict_draws <- round(seq(1, length(draw_index), length.out = n_draws))
 effect <- parameters$effect_type[predict_draws, , , drop = FALSE]
 logit_init <- logit_init_all[predict_draws, , , drop = FALSE]
+if (init_covariates) {
+  attr(logit_init, "init_coef") <-
+    attr(logit_init_all, "init_coef")[predict_draws, , , drop = FALSE]
+}
+mortality_floor <- parameters$mortality_floor[predict_draws]
+kappa_type <- parameters$kappa_type[predict_draws, , drop = FALSE]
 rm(parameters, logit_init_all, draws_matrix, fold)
 invisible(gc())
 report("%i draws of %i types", n_draws, length(types))
@@ -102,7 +122,8 @@ mask <- rast("data/clean/raster_mask.tif")
 cells <- terra::cells(mask)
 n_cells <- length(cells)
 years_predict <- baseline_year:end_year
-covariates <- map_covariates(cells, baseline_year, end_year)
+covariates <- map_covariates(cells, baseline_year, end_year,
+                             options$selection_columns)
 
 country_raster <- rast("data/clean/country_raster.tif")
 cell_country <- as.character(terra::extract(country_raster,
@@ -136,10 +157,14 @@ predict_output <- function(output) {
       k <- match(type, types)
       dyn <- dynamical_logit_chunk(
         effect = effect[, , k],
-        logit_init = t(logit_init[, cell_country_index[ok], k]),
+        logit_init = map_cell_logit_init(
+          logit_init, cell_country_index[ok], k,
+          covariates$init[ok, , drop = FALSE]),
         time_varying = covariates$time_varying[ok, , , drop = FALSE],
         flat = covariates$flat[ok, , drop = FALSE],
-        years = years_predict, years_keep = years_predict)
+        years = years_predict, years_keep = years_predict,
+        floor = mortality_floor,
+        kappa = if (!is.null(kappa_type)) kappa_type[, k])
       p_type <- lapply(dyn, function(x) weights[[type]] * plogis(x))
       p <- if (is.null(p)) p_type else Map(`+`, p, p_type)
       rm(dyn, p_type)
