@@ -28,7 +28,7 @@ fit_fold <- function(train_df,
                      x_cells_init = NULL,
                      settings = dynamical_mcmc_settings(),
                      stored_draws = 2000,
-                     inits_file = "temporary/inits.RDS") {
+                     inits_file = dynamical_inits_file) {
 
   # the model, with the likelihood over the training fold (R/dynamical_model.R)
   built <- build_dynamical_model(train_df = train_df,

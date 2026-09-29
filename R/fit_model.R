@@ -174,7 +174,7 @@ init_range <- 1 - init_frac_min
 settings <- dynamical_mcmc_settings(n_chains = 8)
 
 # used cached posterior means as inits
-inits_one <- dynamical_inits(readRDS("temporary/inits.RDS"), built$variables,
+inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built$variables,
                              columns = colnames(x_cell_years),
                              country_region_index = country_region_index)
 
@@ -203,7 +203,7 @@ post_means <- lapply(posts,
                      function(x) {
                        apply(x, 2:3, mean)
                      })
-inits <- do.call(greta::initials, post_means)
-saveRDS(inits, "temporary/inits.RDS")
+attr(post_means, "columns") <- colnames(x_cell_years)
+saveRDS(post_means, dynamical_inits_file)
 
 
