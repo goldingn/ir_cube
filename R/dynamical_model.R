@@ -53,16 +53,17 @@ source("R/windowed_hmc.R")
 #                     analysis. See reversion_kappa().
 #   init_centred      how the hierarchy on the initial state is
 #                     parameterised (#25): "none", N(0, 1) deviations scaled
-#                     by the sds; "all", centred, the regions' and countries'
-#                     logit relative initial states sampled directly. The same
-#                     model; see dynamical_variables()
+#                     by the sds; "country", the countries' logit relative
+#                     initial states sampled directly (centred), the regions'
+#                     deviations still non-centred. The same model; see
+#                     dynamical_variables()
 dynamical_model_options <- function(rho = c("type", "class"),
                                     mortality_floor = TRUE,
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
                                     reversion = "estimated",
-                                    init_centred = c("none", "all")) {
+                                    init_centred = c("none", "country")) {
   list(rho = match.arg(rho),
        mortality_floor = mortality_floor,
        init_covariates = init_covariates,
@@ -86,7 +87,7 @@ check_dynamical_model_options <- function(options) {
                       mortality_floor = list(FALSE, TRUE),
                       init_covariates = list(NULL),
                       reversion = list(FALSE),
-                      init_centred = list("none", "all"))
+                      init_centred = list("none", "country"))
   reversion <- options$reversion
   if (identical(reversion, "estimated") ||
       (is.numeric(reversion) && length(reversion) > 0 &&
@@ -250,41 +251,39 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
                                  dim = n_classes))
   }
 
-  # The centred hierarchy on the initial state (#25): init_region_level, each
-  # region's logit relative initial state, with prior N(logit_init_mean,
-  # init_region_sd), and init_country_level, each country's, with prior
-  # N(its region's level, init_country_sd), replace init_region_raw and
-  # init_country_raw. The same model as the non-centred one, which puts
-  # N(0, 1) on the raw deviations, each level less the level above it and
-  # divided by its sd. All regions and most countries have data for most
-  # types, which pins their initial states: with non-centred deviations the
-  # raw deviations then move with the sds (raw = deviation / sd), and those
-  # of every country in a region against their region's, so HMC mixes slowly.
-  # Centring the countries alone moves that ridge to logit_init_mean, whose
-  # sum with each country's deviation is what the data fix.
-  if (identical(options$init_centred, "all")) {
+  # Centred countries (#25): init_country_level, each country's logit
+  # relative initial state, with prior N(its region's, init_country_sd),
+  # replaces init_country_raw; the region's is logit_init_mean plus its
+  # non-centred deviation. The same model as the non-centred one, which puts
+  # N(0, 1) on init_country_raw, the country's level less its region's and
+  # divided by init_country_sd. Most countries have data for most types, which
+  # pins their initial states: with non-centred deviations those of every
+  # country in a region then move together against their region's and
+  # logit_init_mean, a ridge HMC mixes along slowly. Centring the countries'
+  # deviations from logit_init_mean alone leaves the ridge against
+  # logit_init_mean; centring the regions too puts them in a funnel with
+  # init_region_sd, which 5 regions barely identify (a chain stuck for 2,000
+  # iterations at init_region_sd 0.06).
+  if (identical(options$init_centred, "country")) {
     stopifnot(length(country_region_index) == n_countries)
-    region_mean <- sweep(zeros(n_regions, n_types), 2,
-                         variables$logit_init_mean, FUN = "+")
-    region_sd <- sweep(zeros(n_regions, n_types), 2,
-                       variables$init_region_sd, FUN = "+")
+    region_level <- sweep(sweep(variables$init_region_raw, 2,
+                                variables$init_region_sd, FUN = "*"),
+                          2, variables$logit_init_mean, FUN = "+")
     country_sd <- sweep(zeros(n_countries, n_types), 2,
                         variables$init_country_sd, FUN = "+")
-    variables$init_region_raw <- NULL
     variables$init_country_raw <- NULL
-    variables$init_region_level <- normal(region_mean, region_sd)
     variables$init_country_level <- normal(
-      variables$init_region_level[country_region_index, ], country_sd)
+      region_level[country_region_index, ], country_sd)
   }
 
   c(variables, rho, floor, init_covariates, reversion)
 }
 
-# The non-centred deviations of the initial state (init_region_raw and
-# init_country_raw) from the centred levels (#25), for draws x dim arrays of
+# The non-centred deviations of the countries' initial states
+# (init_country_raw) from the centred levels (#25), for draws x dim arrays of
 # each variable (as variable_draws() gives); `v` is returned with the levels
-# replaced. The prediction code draws the deviations of countries and regions
-# without data on the non-centred scale.
+# replaced. The prediction code draws the deviations of countries without data
+# on the non-centred scale.
 init_noncentred_draws <- function(v, country_region_index) {
   if (is.null(v$init_country_level)) {
     return(v)
@@ -294,17 +293,14 @@ init_noncentred_draws <- function(v, country_region_index) {
   mean <- array(v$logit_init_mean, c(n_draws, n_types))
   region_sd <- array(v$init_region_sd, c(n_draws, n_types))
   country_sd <- array(v$init_country_sd, c(n_draws, n_types))
-  v$init_region_raw <- v$init_region_level
   v$init_country_raw <- v$init_country_level
   for (k in seq_len(n_types)) {
-    v$init_region_raw[, , k] <- (v$init_region_level[, , k] - mean[, k]) /
-      region_sd[, k]
-    v$init_country_raw[, , k] <-
-      (v$init_country_level[, , k] -
-         v$init_region_level[, country_region_index, k, drop = FALSE][, , 1]) /
+    region_level <- v$init_region_raw[, country_region_index, k,
+                                      drop = FALSE][, , 1] * region_sd[, k] +
+      mean[, k]
+    v$init_country_raw[, , k] <- (v$init_country_level[, , k] - region_level) /
       country_sd[, k]
   }
-  v$init_region_level <- NULL
   v$init_country_level <- NULL
   v
 }
@@ -376,16 +372,15 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
 
   # initial state: logit relative position above init_frac_min, the prior mean
   # plus region and country deviations
+  init_region_effect <- sweep(v$init_region_raw, 2, v$init_region_sd,
+                              FUN = "*")
   if (!is.null(v$init_country_level)) {
-    # the centred hierarchy (#25)
+    # centred countries (#25)
     logit_init_relative <- v$init_country_level
-    init_region_effect <- sweep(v$init_region_level, 2, v$logit_init_mean,
-                                FUN = "-")
     init_country_effect <- logit_init_relative -
-      v$init_region_level[country_region_index, ]
+      sweep(init_region_effect, 2, v$logit_init_mean,
+            FUN = "+")[country_region_index, ]
   } else {
-    init_region_effect <- sweep(v$init_region_raw, 2, v$init_region_sd,
-                                FUN = "*")
     init_country_effect <- sweep(v$init_country_raw, 2, v$init_country_sd,
                                  FUN = "*")
     init_country_overall_effect <- init_country_effect +
@@ -458,21 +453,21 @@ dynamical_inits <- function(cached, variables, columns = NULL,
                             country_region_index = NULL) {
   cached_columns <- force(cached_columns)
   cached <- unclass(cached)
-  # the centred levels (#25) from cached non-centred deviations, which need
-  # the cached logit_init_mean
+  # the centred country levels (#25) from cached non-centred deviations,
+  # which need the cached logit_init_mean
   if ("init_country_level" %in% names(variables) &&
       is.null(cached$init_country_level)) {
     stopifnot(!is.null(cached$init_country_raw),
               !is.null(cached$logit_init_mean),
               !is.null(country_region_index))
-    cached$init_region_level <- sweep(
+    region_level <- sweep(
       sweep(as.matrix(cached$init_region_raw), 2, c(cached$init_region_sd),
             FUN = "*"),
       2, c(cached$logit_init_mean), FUN = "+")
     cached$init_country_level <-
       sweep(as.matrix(cached$init_country_raw), 2,
             c(cached$init_country_sd), FUN = "*") +
-      cached$init_region_level[country_region_index, , drop = FALSE]
+      region_level[country_region_index, , drop = FALSE]
   }
   # the selection coefficients, by covariate (row): the cached values where
   # the column is in the cached fit's design, and weak selection (a log effect
