@@ -21,9 +21,10 @@
 # selection_design() in R/model_covariates.R).
 #
 # Returned as a cells x years x n array of the time-varying covariates (nets,
-# irs, pop and any hinge columns, the column order of x_cell_years), a
-# cells x 10 matrix of the
-# static crop covariates, and a cells x 2 matrix `init` of the initial-state
+# irs, pop and any hinge columns, and with a trend the crop products, in the
+# column order of x_cell_years), a matrix of the static crop covariates
+# (cells x 10 without a trend, cells x 0 with one; selection_static()), and a
+# cells x 2 matrix `init` of the initial-state
 # covariates (init_covariate_matrix(), R/model_covariates.R), rather than
 # predict.R's long (cell, year) matrix: the
 # long form is 53M rows x 13 columns (5.5 GB) for 1.48M cells and 36 years,
@@ -33,7 +34,7 @@ map_covariates <- function(cells, baseline_year = 1995, end_year = 2030,
                            design = selection_design()) {
   list(time_varying = selection_time_varying(cells, baseline_year, end_year,
                                              design),
-       flat = selection_flat(cells),
+       flat = selection_static(cells, design),
        init = init_covariate_matrix(cells))
 }
 

@@ -153,6 +153,30 @@ covariates <- map_covariates(map_rows$cell, baseline_year, max(map_years),
                              model_options$selection_columns)
 parameters <- dynamical_parameter_draws(fold, df, classes_index, types,
                                         draw_index = 1)
+
+# the map path's covariates are x_cell_years at the data cells
+n_fit_years <- max(cell_years_index$year_id)
+x_map <- do.call(rbind, lapply(seq_len(nrow(map_rows)), function(i) {
+  cbind(covariates$time_varying[i, seq_len(n_fit_years), , drop = FALSE][1, , ],
+        covariates$flat[rep(i, n_fit_years), , drop = FALSE])
+}))
+x_fit <- x_cell_years[match(paste(rep(map_rows$cell_id, each = n_fit_years),
+                                  rep(seq_len(n_fit_years), nrow(map_rows))),
+                            paste(cell_years_index$cell_id,
+                                  cell_years_index$year_id)), ]
+cat(sprintf("map covariates vs x_cell_years, %d cell-years x %d columns: max abs diff %.3g\n",
+            nrow(x_fit), ncol(x_fit), max(abs(x_map - x_fit))))
+stopifnot(identical(dim(x_map), dim(x_fit)), max(abs(x_map - x_fit)) == 0)
+
+# the trends' product columns are 0 in the baseline year
+trend_columns <- grep(":g_(dom|ag)$", colnames(x_cell_years))
+if (length(trend_columns) > 0) {
+  x_baseline <- x_cell_years[cell_years_index$year_id == 1, trend_columns]
+  cat(sprintf("%d trend product columns in %d: %d non-zero values\n",
+              length(trend_columns), baseline_year, sum(x_baseline != 0)))
+  stopifnot(all(x_baseline == 0))
+}
+
 logit_init_all <- map_logit_init(trace, NULL, types, classes_index, countries,
                                  regions, country_region_lookup(),
                                  options = model_options)
