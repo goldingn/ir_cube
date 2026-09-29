@@ -181,6 +181,9 @@ x_cell_years <- all_extract %>%
          -year_id) %>%
   as.matrix()
 
+# the initial-state covariates (#19) at each cell, one row per cell_id
+x_cells_init <- init_covariate_matrix(unique_cells)
+
 # dimensions of things in the fitting stage
 n_covs <- ncol(x_cell_years)
 n_obs <- nrow(df)
@@ -191,13 +194,18 @@ n_types <- length(types)
 n_regions <- length(regions)
 n_countries <- length(countries)
 
+# the model terms (R/dynamical_model.R)
+model_options <- dynamical_model_options()
+
 # build the model, with the likelihood over all the data (R/dynamical_model.R)
 built <- build_dynamical_model(train_df = df,
                                df = df,
                                x_cell_years = x_cell_years,
                                cell_years_index = cell_years_index,
                                classes_index = classes_index,
-                               types = types)
+                               types = types,
+                               options = model_options,
+                               x_cells_init = x_cells_init)
 m <- built$model
 
 # the variables and derived quantities, as named objects in the saved image,
@@ -217,7 +225,7 @@ init_range <- 1 - init_frac_min
 n_chains <- 8
 
 # used cached posterior means as inits
-inits_one <- readRDS("temporary/inits.RDS")
+inits_one <- dynamical_inits(readRDS("temporary/inits.RDS"), built$variables)
 inits <- replicate(n_chains,
                    inits_one,
                    simplify = FALSE)

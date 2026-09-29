@@ -227,7 +227,8 @@ mean_draws <- coda::mcmc.list(coda::mcmc(
   matrix(colMeans(draws_matrix), nrow = 1,
          dimnames = list(NULL, colnames(draws_matrix)))))
 attr(mean_draws, "model_info") <- mean_info
-mean_fold <- list(draws = mean_draws, options = fold$options)
+mean_fold <- list(draws = mean_draws, options = fold$options,
+                  x_cells_init = fold$x_cells_init)
 p_at_mean_theta <- dynamical_predictions(mean_fold, training, df, x_cell_years,
                                          cell_years_index, classes_index,
                                          types, draw_index = 1)

@@ -6,6 +6,8 @@
 # been sourced already, for `df`, `unique_cells`, `classes`, `types`, `regions`
 # and `countries`.
 
+source("R/model_covariates.R")
+
 # build covariate rasters for the proper model
 
 nets_cube <- pre_pad_cube(nets_cube, baseline_year)
@@ -101,6 +103,9 @@ x_cell_years <- all_extract %>%
   select(-cell_id,
          -year_id) %>%
   as.matrix()
+
+# the initial-state covariates (#19) at each cell, one row per cell_id
+x_cells_init <- init_covariate_matrix(unique_cells)
 
 # dimensions of things in the fitting stage
 n_covs <- ncol(x_cell_years)

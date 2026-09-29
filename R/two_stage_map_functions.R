@@ -18,8 +18,10 @@
 # forward to end_year by repeating their first and last layers.
 #
 # Returned as a cells x years x 3 array of the time-varying covariates (nets,
-# irs, pop, the column order of x_cell_years) and a cells x 10 matrix of the
-# static crop covariates, rather than predict.R's long (cell, year) matrix: the
+# irs, pop, the column order of x_cell_years), a cells x 10 matrix of the
+# static crop covariates, and a cells x 2 matrix `init` of the initial-state
+# covariates (init_covariate_matrix(), R/model_covariates.R), rather than
+# predict.R's long (cell, year) matrix: the
 # long form is 53M rows x 13 columns (5.5 GB) for 1.48M cells and 36 years,
 # whereas this keeps the crops once per cell and lets a chunk of cells be
 # assembled one year at a time.
@@ -56,7 +58,8 @@ map_covariates <- function(cells, baseline_year = 1995, end_year = 2030) {
                  crops_all$rice)
   flat <- as.matrix(terra::extract(covs_flat, cells))
 
-  list(time_varying = time_varying, flat = flat)
+  list(time_varying = time_varying, flat = flat,
+       init = init_covariate_matrix(cells))
 }
 
 
@@ -71,6 +74,12 @@ map_covariates <- function(cells, baseline_year = 1995, end_year = 2030) {
 # The country -> region mapping for prediction is the UNSD one, as in
 # predict.R, where the fit took each country's region from its first record;
 # the two agree for every observed country (checked in two_stage_maps.R).
+#
+# With initial-state covariates (options$init_covariates, #19) the initial
+# state varies within a country, so this returns instead the logit relative
+# initial state of each country (the same draws x countries x types array),
+# with the covariates' coefficients (draws x n_init_covs x types) as attribute
+# "init_coef"; map_cell_logit_init() takes either and gives logit q_0 at cells.
 #
 # emulate_predict_fill = TRUE reproduces what predict.R actually computed, for
 # checking against its saved maps only. `logit_init_mean` is needed only for
@@ -132,14 +141,40 @@ map_logit_init <- function(draws_matrix,
                           all_regions)
 
   # the model's own transform (R/dynamical_model.R), over all countries
-  logit_init <- dynamical_terms_draws(variables,
-                                      classes_index = classes_index,
-                                      country_region_index = country_region,
-                                      types = types,
-                                      terms = "logit_init_country",
-                                      options = options)[[1]]
+  covariates <- !is.null(options$init_covariates)
+  logit_init <- dynamical_terms_draws(
+    variables,
+    classes_index = classes_index,
+    country_region_index = country_region,
+    types = types,
+    terms = if (covariates) "logit_init_relative" else "logit_init_country",
+    options = options)[[1]]
   dimnames(logit_init) <- list(NULL, all_countries, types)
+  if (covariates) {
+    attr(logit_init, "init_coef") <- array(
+      variables$init_coef,
+      c(n_draws, length(options$init_covariates), n_types),
+      dimnames = list(NULL, options$init_covariates, types))
+  }
   logit_init
+}
+
+# Logit q_0 at cells, cells x draws, for type k, from map_logit_init()'s
+# output: `cell_country` indexes each cell's country in its second dimension,
+# and `init` is the cells' initial-state covariates (map_covariates()$init),
+# used only when the fit has them.
+map_cell_logit_init <- function(logit_init, cell_country, k, init = NULL,
+                                types = dimnames(logit_init)[[3]]) {
+  n_draws <- dim(logit_init)[1]
+  l <- t(matrix(logit_init[, cell_country, k], nrow = n_draws))
+  init_coef <- attr(logit_init, "init_coef")
+  if (is.null(init_coef)) {
+    return(l)
+  }
+  stopifnot(!is.null(init))
+  x <- init[, dimnames(init_coef)[[2]], drop = FALSE]
+  l <- l + x %*% t(matrix(init_coef[, , k], nrow = n_draws))
+  logit_init_from_relative(l, init_frac_constants(types)$min[k])
 }
 
 

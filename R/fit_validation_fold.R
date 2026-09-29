@@ -25,6 +25,7 @@ fit_fold <- function(train_df,
                      classes_index,
                      types,
                      options = dynamical_model_options(),
+                     x_cells_init = NULL,
                      n_chains = 4,
                      warmup = 2000,
                      n_samples = 5000,
@@ -39,7 +40,8 @@ fit_fold <- function(train_df,
                                  cell_years_index = cell_years_index,
                                  classes_index = classes_index,
                                  types = types,
-                                 options = options)
+                                 options = options,
+                                 x_cells_init = x_cells_init)
   m <- built$model
   # mcmc() matches the initial values to greta arrays by name in this frame
   list2env(built$variables, environment())
@@ -203,6 +205,7 @@ fit_fold <- function(train_df,
        rho_type_draws = rho_type_draws,
        type_id = test_df$type_id,
        options = built$options,
+       x_cells_init = x_cells_init,
        test_df = test_df,
        p_draws_before = p_draws_before,
        before_df = before_df,

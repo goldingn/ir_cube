@@ -95,7 +95,8 @@ if (!file.exists(cache_file)) {
   stopifnot(isTRUE(all.equal(fit_env$df, df)),
             identical(fit_env$types, types),
             identical(fit_env$unique_cells, unique_cells))
-  fold <- list(draws = fit_env$draws)
+  fold <- list(draws = fit_env$draws, options = fit_env$model_options,
+                x_cells_init = fit_env$x_cells_init)
   rm(fit_env)
   invisible(gc())
 

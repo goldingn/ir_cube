@@ -164,7 +164,8 @@ if (length(types_to_fit) > 0) {
          nrow(df))
 
   # dynamical_predictions() only needs `draws` from a fold
-  fold <- list(draws = fit_env$draws)
+  fold <- list(draws = fit_env$draws, options = fit_env$model_options,
+                x_cells_init = fit_env$x_cells_init)
   rm(fit_env)
   invisible(gc())
 

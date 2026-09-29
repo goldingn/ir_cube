@@ -41,7 +41,8 @@ build <- function(train_df) {
                         cell_years_index = cell_years_index,
                         classes_index = classes_index,
                         types = types,
-                        options = model_options)
+                        options = model_options,
+                        x_cells_init = x_cells_init)
 }
 
 built <- build(df)
@@ -71,6 +72,7 @@ stopifnot(identical(unname(trace),
                       matrix(free, nrow = 1)))))
 fold <- list(draws = coda::mcmc.list(coda::mcmc(trace)),
              options = model_options)
+# the plain-R path takes the covariates as an argument here, not from the fold
 
 # greta, at these values: calculate() on a one-draw greta_mcmc_list, as on a
 # fitted model's draws
@@ -88,7 +90,8 @@ rho_greta <- greta_values[1, grep("^rho\\[", colnames(greta_values))]
 # plain R
 p_r <- c(dynamical_predictions(fold, select(df, -country_id), df,
                                x_cell_years, cell_years_index, classes_index,
-                               types, draw_index = 1))
+                               types, draw_index = 1,
+                               x_cells_init = x_cells_init))
 rho_r <- c(dynamical_parameter_draws(fold, df, classes_index, types,
                                      draw_index = 1)$rho_types)
 
@@ -129,7 +132,8 @@ map_difference <- 0
 for (k in seq_along(types)) {
   dyn <- dynamical_logit_chunk(
     effect = matrix(parameters$effect_type[, , k], nrow = 1),
-    logit_init = matrix(logit_init_all[, cell_country_index, k], ncol = 1),
+    logit_init = map_cell_logit_init(logit_init_all, cell_country_index, k,
+                                     covariates$init),
     time_varying = covariates$time_varying,
     flat = covariates$flat,
     years = baseline_year:max(map_years), years_keep = map_years,
@@ -139,7 +143,8 @@ for (k in seq_along(types)) {
                    year_id = y - baseline_year + 1)
     p_rows <- c(dynamical_predictions(fold, rows, df, x_cell_years,
                                       cell_years_index, classes_index, types,
-                                      draw_index = 1))
+                                      draw_index = 1,
+                                      x_cells_init = x_cells_init))
     l_rows <- qlogis(pmin(pmax(p_rows, 1e-12), 1 - 1e-12))
     l_map <- pmin(pmax(c(dyn[[as.character(y)]]), qlogis(1e-12)),
                   qlogis(1 - 1e-12))

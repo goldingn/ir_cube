@@ -104,6 +104,7 @@ elapsed <- system.time(
     df = df,
     classes_index = classes_index,
     types = types,
+    x_cells_init = x_cells_init,
     n_chains = n_chains,
     warmup = warmup,
     n_samples = n_samples
@@ -134,6 +135,8 @@ saveRDS(
        # the model options (dynamical_model_options()), which the plain-R
        # predictions need to rebuild the model's terms
        options = fit$options,
+       # the initial-state covariates at each cell (#19), for the same
+       x_cells_init = fit$x_cells_init,
        test_df = fit$test_df,
        p_draws_before = fit$p_draws_before,
        before_df = fit$before_df,

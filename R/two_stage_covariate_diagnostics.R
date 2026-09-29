@@ -116,7 +116,8 @@ if (!file.exists(dynamical_file)) {
     isTRUE(all.equal(fit_env$x_cell_years, x_cell_years)),
     isTRUE(all.equal(fit_env$cell_years_index, cell_years_index))
   )
-  fold <- list(draws = fit_env$draws)
+  fold <- list(draws = fit_env$draws, options = fit_env$model_options,
+                x_cells_init = fit_env$x_cells_init)
   rm(fit_env)
   invisible(gc())
 
