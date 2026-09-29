@@ -1,6 +1,6 @@
 # Fit the dynamical model to a single cross-validation fold and save the draws.
 #
-#   Rscript R/run_one_fold.R <experiment> <fold> [n_chains] [threads]
+#   Rscript R/run_one_fold.R <experiment> <fold> [n_chains|default] [threads]
 #
 # e.g. Rscript R/run_one_fold.R spatial_blocks 1 4 4
 #      Rscript R/run_one_fold.R temporal_forecasting 2014 4 4
@@ -17,7 +17,7 @@ threads <- if (length(arguments) >= 4) as.integer(arguments[4]) else 4L
 # R/dynamical_model.R): the number of chains, and for smoke-testing the path
 # without a real fit, warmup and samples
 setting_overrides <- list()
-if (length(arguments) >= 3) {
+if (length(arguments) >= 3 && arguments[3] != "default") {
   setting_overrides$n_chains <- as.integer(arguments[3])
 }
 if (length(arguments) >= 5) {

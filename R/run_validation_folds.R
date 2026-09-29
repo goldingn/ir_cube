@@ -178,8 +178,10 @@ for (fold in folds) {
 # 2,000 + 5,000 iterations, against 62 h with the greta.dynamics loop. Memory
 # was the constraint on concurrency under the loop; check free memory before
 # raising n_concurrent.
+# The number of chains and the rest of the sampler settings are
+# dynamical_mcmc_settings() (R/dynamical_model.R), which run_one_fold.R uses
+# when passed "default".
 n_concurrent <- 2
-chains_per_fold <- 4
 threads_per_fold <- 4
 
 log_dir <- "outputs/cv_logs"
@@ -194,8 +196,8 @@ pending <- Filter(
   folds
 )
 
-cat(sprintf("\n%i folds to fit, %i at a time, %i chains and %i threads each\n",
-            length(pending), n_concurrent, chains_per_fold, threads_per_fold))
+cat(sprintf("\n%i folds to fit, %i at a time, %i threads each\n",
+            length(pending), n_concurrent, threads_per_fold))
 cat(sprintf("progress logs: %s/\n\n", log_dir))
 
 running <- list()
@@ -209,7 +211,7 @@ launch <- function(fold) {
   process <- processx::process$new(
     "Rscript",
     c("R/run_one_fold.R", fold$experiment, fold$fold,
-      as.character(chains_per_fold), as.character(threads_per_fold)),
+      "default", as.character(threads_per_fold)),
     stdout = log_file,
     stderr = "2>&1"
   )
