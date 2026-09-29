@@ -172,7 +172,8 @@ init_range <- 1 - init_frac_min
 n_chains <- 8
 
 # used cached posterior means as inits
-inits_one <- dynamical_inits(readRDS("temporary/inits.RDS"), built$variables)
+inits_one <- dynamical_inits(readRDS("temporary/inits.RDS"), built$variables,
+                             columns = colnames(x_cell_years))
 inits <- replicate(n_chains,
                    inits_one,
                    simplify = FALSE)

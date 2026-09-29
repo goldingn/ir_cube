@@ -104,6 +104,8 @@ elapsed <- system.time(
     df = df,
     classes_index = classes_index,
     types = types,
+    # dynamical_model_options(), set in validation_covariates.R
+    options = model_options,
     x_cells_init = x_cells_init,
     n_chains = n_chains,
     warmup = warmup,

@@ -56,6 +56,9 @@ map_covariates <- function(cells, baseline_year = 1995, end_year = 2030,
 # with the covariates' coefficients (draws x n_init_covs x types) as attribute
 # "init_coef"; map_cell_logit_init() takes either and gives logit q_0 at cells.
 #
+# `options` are the fit's model options: fold_options(fold), or the full fit's
+# model_options.
+#
 # emulate_predict_fill = TRUE reproduces what predict.R actually computed, for
 # checking against its saved maps only. `logit_init_mean` is needed only for
 # fits whose draws do not name it (see logit_init_mean_draws()); classes_index
@@ -75,7 +78,7 @@ map_logit_init <- function(draws_matrix,
                            lookup = country_region_lookup(),
                            seed = 1,
                            emulate_predict_fill = FALSE,
-                           options = dynamical_model_options()) {
+                           options) {
 
   n_draws <- nrow(draws_matrix)
   n_types <- length(types)
@@ -84,6 +87,10 @@ map_logit_init <- function(draws_matrix,
   all_regions <- unique(lookup$region)
 
   variables <- variable_draws(draws_matrix, logit_init_mean)
+  # the fit's options (fold_options()), which say whether the draws include
+  # initial-state covariates
+  stopifnot(identical(!is.null(variables$init_coef),
+                      !is.null(options$init_covariates)))
   init_region_raw <- variables$init_region_raw
   init_country_raw <- variables$init_country_raw
 

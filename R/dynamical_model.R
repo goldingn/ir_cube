@@ -22,9 +22,13 @@ source("R/model_covariates.R")
 
 # model options ------------------------------------------------------------
 
-# Switches for model terms. The defaults are the current model; the others are
-# placeholders for terms still to be added, and build_dynamical_model() refuses
-# them until they are implemented:
+# Switches for model terms. The defaults are the model for the refit: rho per
+# type, the mortality floor and both initial-state covariates on; raw
+# population and no hinges in the selection design, pending the choice of
+# design; no reversion, pending the identifiability simulation. The fits
+# before these terms were added had rho = "class", mortality_floor = FALSE,
+# init_covariates = NULL (see fold_options()). build_dynamical_model() refuses
+# settings that are not implemented:
 #   rho               "class": one overdispersion per insecticide class;
 #                     "type": one per insecticide type, types nested in
 #                     class (#20)
@@ -42,9 +46,9 @@ source("R/model_covariates.R")
 #                     "estimated" for one rate per class, or fixed values of
 #                     kappa (<= 0, one, or one per class) for sensitivity
 #                     analysis. See reversion_kappa().
-dynamical_model_options <- function(rho = c("class", "type"),
-                                    mortality_floor = FALSE,
-                                    init_covariates = NULL,
+dynamical_model_options <- function(rho = c("type", "class"),
+                                    mortality_floor = TRUE,
+                                    init_covariates = init_covariate_names,
                                     selection_columns = selection_design(),
                                     reversion = FALSE) {
   list(rho = match.arg(rho),
@@ -58,7 +62,9 @@ check_dynamical_model_options <- function(options) {
   defaults <- dynamical_model_options()
   stopifnot(setequal(names(options), names(defaults)))
   implemented <- list(rho = list("class", "type"),
-                      mortality_floor = list(FALSE, TRUE))
+                      mortality_floor = list(FALSE, TRUE),
+                      init_covariates = list(NULL),
+                      reversion = list(FALSE))
   reversion <- options$reversion
   if (identical(reversion, "estimated") ||
       (is.numeric(reversion) && length(reversion) > 0 &&
@@ -71,7 +77,7 @@ check_dynamical_model_options <- function(options) {
     stopifnot(is.character(options$init_covariates),
               !anyDuplicated(options$init_covariates),
               all(options$init_covariates %in% init_covariate_names))
-    implemented$init_covariates <- list(options$init_covariates)
+    implemented$init_covariates <- list(NULL, options$init_covariates)
   }
   for (name in names(defaults)) {
     allowed <- if (name %in% names(implemented)) implemented[[name]] else
@@ -344,11 +350,32 @@ logit_init_from_relative <- function(l, min) {
 
 # Initial values for the model's `variables` from a cached set
 # (temporary/inits.RDS, posterior means from an earlier fit): the cached values
-# of the variables the model has, and, for rho = "type", a start for rho_mu
-# from the cached class-level rho. Variables with neither start where greta
-# puts them.
-dynamical_inits <- function(cached, variables) {
+# of the variables the model has (where the dimensions match), for
+# rho = "type" a start for rho_mu from the cached class-level rho, and starts
+# for the floor, the initial-state coefficients and the reversion rate. Other
+# variables start where greta puts them. `columns` are the columns of the
+# selection design matrix, to match the selection coefficients to the cached
+# fit's (cached_columns, the default design).
+dynamical_inits <- function(cached, variables, columns = NULL,
+                            cached_columns = selection_column_names()) {
   cached <- unclass(cached)
+  # the selection coefficients, by covariate (row): the cached values where
+  # the column is in the cached fit's design, and weak selection (a log effect
+  # of -4, no deviations) for new columns. The cached pop coefficients put on
+  # log population, which is near 0.8 where raw population is near 0, drove p
+  # to 0 and stalled a short run at its initial values
+  if (!is.null(columns)) {
+    selection_starts <- c(beta_overall = -4, beta_class_raw = 0,
+                          beta_type_raw = 0, sigma_overall = 0.5,
+                          sigma_class = 0.5)
+    for (name in intersect(names(selection_starts), names(cached))) {
+      old <- as.matrix(cached[[name]])
+      new <- matrix(selection_starts[[name]], length(columns), ncol(old))
+      shared <- match(columns, cached_columns)
+      new[!is.na(shared), ] <- old[shared[!is.na(shared)], ]
+      cached[[name]] <- new
+    }
+  }
   out <- cached[intersect(names(cached), names(variables))]
   # only where the dimensions match (a different selection design changes the
   # number of covariates)
@@ -359,6 +386,14 @@ dynamical_inits <- function(cached, variables) {
   out <- out[matches]
   if ("rho_mu" %in% names(variables) && !is.null(cached$rho_classes)) {
     out$rho_mu <- mean(qlogis(c(cached$rho_classes)))
+  }
+  # the other new terms start near the model without them. Left to greta, the
+  # reversion rate starts around 1 per year, which drives p to 1 at most
+  # assays and stalled a short run at its initial values
+  starts <- c(mortality_floor = 0.02, init_coef = 0, reversion_rate = 0.01)
+  for (name in intersect(names(starts), setdiff(names(variables),
+                                                names(out)))) {
+    out[[name]] <- array(starts[[name]], dim(variables[[name]]))
   }
   do.call(greta::initials, out)
 }

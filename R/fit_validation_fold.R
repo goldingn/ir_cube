@@ -47,7 +47,8 @@ fit_fold <- function(train_df,
   list2env(built$variables, environment())
 
   # use cached posterior means as inits
-  inits_one <- dynamical_inits(readRDS(inits_file), built$variables)
+  inits_one <- dynamical_inits(readRDS(inits_file), built$variables,
+                               columns = colnames(x_cell_years))
   inits <- replicate(n_chains,
                      inits_one,
                      simplify = FALSE)
