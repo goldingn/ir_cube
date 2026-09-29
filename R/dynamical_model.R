@@ -204,9 +204,10 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
 #   types             type names, in type_id order
 #
 # Returns a list with the model, its variables (as passed to model()), the
-# derived terms, and a function mortality(rows) that returns the greta array of
-# predicted bioassay mortality at the (cell_id, type_id, year_id) of `rows`,
-# for predictions after sampling.
+# derived terms, and two functions for predictions after sampling:
+# mortality(rows) returns the greta array of predicted bioassay mortality at the
+# (cell_id, type_id, year_id) of `rows`, and all_states() the states at every
+# cell, type and year.
 build_dynamical_model <- function(train_df,
                                   df,
                                   x_cell_years,
@@ -248,23 +249,30 @@ build_dynamical_model <- function(train_df,
                            types = types,
                            options = options)
 
-  # fraction susceptible for every cell, type and year
-  effect_type <- exp(terms$beta_type)
-  fitness_cell_years <- 1 + x_cell_years %*% effect_type
-  fitness_array <- fitness_cell_years
-  dim(fitness_array) <- c(n_times, n_unique_cells, n_types, 1)
-  init_array <- ilogit(terms$logit_init_country)[lookups$cell_country_lookup, ]
-  dim(init_array) <- c(dim(init_array), 1)
-  dynamic_cells <- iterate_dynamic_function(
-    transition_function = haploid_next,
-    initial_state = init_array,
-    niter = n_times,
-    w = fitness_array,
-    parameter_is_time_varying = c("w"),
-    tol = 0)
-
+  # predicted mortality (the fraction susceptible) at the (cell_id, type_id,
+  # year_id) of `rows`, computing the states only for the cell-type pairs there
   mortality <- function(rows) {
-    dynamic_cells$all_states[cbind(rows$cell_id, rows$type_id, rows$year_id)]
+    pairs <- distinct(tibble(cell_id = as.integer(rows$cell_id),
+                             type_id = as.integer(rows$type_id)))
+    states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
+                                 pairs$type_id, lookups$cell_country_lookup,
+                                 n_times)
+    pair_index <- match(paste(rows$cell_id, rows$type_id),
+                        paste(pairs$cell_id, pairs$type_id))
+    states[cbind(pair_index, rows$year_id)]
+  }
+
+  # the states at every cell, type and year, as n_unique_cells x n_types x
+  # n_times, for predictions after sampling. (Creating this before model() would
+  # put it in the model's graph.)
+  all_states <- function() {
+    pairs <- expand.grid(cell_id = seq_len(n_unique_cells),
+                         type_id = seq_len(n_types))
+    states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
+                                 pairs$type_id, lookups$cell_country_lookup,
+                                 n_times)
+    dim(states) <- c(n_unique_cells, n_types, n_times)
+    states
   }
 
   # likelihood
@@ -283,18 +291,98 @@ build_dynamical_model <- function(train_df,
   list(model = m,
        variables = variables,
        terms = terms,
-       effect_type = effect_type,
        population_mortality_vec = population_mortality_vec,
-       dynamic_cells = dynamic_cells,
        mortality = mortality,
+       all_states = all_states,
        lookups = lookups,
        options = options)
 }
 
-# haploid selection: state = fraction with the susceptible allele, w = relative
-# fitness of the resistant phenotype
-haploid_next <- function(state, iter, w) {
-  q <- state
-  p <- 1 - q
-  q / (q + p * w)
+
+# the selection recursion ---------------------------------------------------
+
+# Haploid selection: with q the fraction susceptible and w the relative fitness
+# of the resistant phenotype,
+#   q_t = q_{t-1} / (q_{t-1} + (1 - q_{t-1}) w_t),
+# which divides the odds of susceptibility by w_t each year, so it is exactly
+# additive on the logit scale:
+#   logit q_t = logit q_0 - sum_{s <= t} log w_s,  w_s = 1 + x_s' exp(beta).
+# The state recorded for year t has had the fitness of years 1..t applied (as
+# greta.dynamics recorded it). This is computed by one greta op (#25).
+#
+# log w is computed from the linear predictor as
+#   m + log(exp(-m) + x' exp(beta - m)),  m = max(0, max_k beta_k)
+# per type, with the gradient stopped through m. That is exact for any m, and
+# cannot overflow in float64. The covariates are all non-negative.
+
+# The TensorFlow side. Arguments are tensors with a leading batch dimension B
+# (greta's), then the constants:
+#   beta_type            (B, n_covs, n_types)
+#   logit_init_country   (B, n_countries, n_types)
+#   x_pairs              (J, n_times, n_covs) covariates of each pair's cell
+#   pair_type            (J) 0-based type of each pair
+#   pair_init            (J) 0-based index of each pair's (country, type) in
+#                        the row-major flattened logit_init_country
+# Returns (B, J, n_times): the fraction susceptible for each pair and year.
+tf_closed_form_states <- function(beta_type, logit_init_country,
+                                  x_pairs, pair_type, pair_init) {
+  tf <- tensorflow::tf
+  dtype <- beta_type$dtype
+  pair_type <- tf$constant(pair_type, dtype = tf$int32)
+  pair_init <- tf$constant(pair_init, dtype = tf$int32)
+  x_pairs <- tf$constant(x_pairs, dtype = dtype)
+
+  # log fitness, (B, J, n_times)
+  m <- tf$stop_gradient(tf$maximum(tf$reduce_max(beta_type, axis = 1L,
+                                                  keepdims = TRUE),
+                                   tf$constant(0, dtype = dtype)))
+  effect <- tf$gather(tf$exp(beta_type - m), pair_type, axis = 2L)
+  m <- tf$transpose(tf$gather(m, pair_type, axis = 2L), c(0L, 2L, 1L))
+  selection <- tf$einsum("jtp,bpj->bjt", x_pairs, effect)
+  log_w <- m + tf$math$log(tf$exp(-m) + selection)
+
+  # initial state of each pair, (B, J, 1)
+  n_init <- as.integer(prod(dim(logit_init_country)[-1]))
+  logit_q0 <- tf$gather(tf$reshape(logit_init_country, c(-1L, n_init)),
+                        pair_init, axis = 1L)
+
+  tf$sigmoid(tf$expand_dims(logit_q0, 2L) - tf$cumsum(log_w, axis = 2L))
+}
+
+# The greta side: the fraction susceptible for the cell-type pairs
+# (pair_cell, pair_type), as a J x n_times greta array. `terms` is the output of
+# dynamical_terms(); `x_cell_years` has one row per (cell, year), cell-major;
+# each cell takes the initial state of country cell_country_lookup[cell].
+closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
+                               cell_country_lookup, n_times) {
+  n_covs <- ncol(x_cell_years)
+  n_countries <- nrow(terms$logit_init_country)
+  stopifnot(nrow(x_cell_years) %% n_times == 0,
+            length(pair_cell) == length(pair_type))
+
+  # (cells, years, covariates) and each pair's slice of it
+  x_cells <- aperm(array(x_cell_years,
+                         c(n_times, nrow(x_cell_years) / n_times, n_covs)),
+                   c(2, 1, 3))
+  x_pairs <- x_cells[pair_cell, , , drop = FALSE]
+  pair_country <- cell_country_lookup[pair_cell]
+  stopifnot(!anyNA(pair_country))
+
+  # the TensorFlow function is found in this small environment, which is saved
+  # with the node, so a reloaded draws object can still calculate() through it
+  op_env <- new.env(parent = globalenv())
+  op_env$tf_closed_form_states <- tf_closed_form_states
+
+  greta:::op("closed_form_states",
+             terms$beta_type,
+             terms$logit_init_country,
+             operation_args = list(
+               x_pairs = x_pairs,
+               pair_type = as.integer(pair_type - 1),
+               pair_init = as.integer((pair_country - 1) *
+                                        ncol(terms$logit_init_country) +
+                                        pair_type - 1)),
+             tf_operation = "tf_closed_form_states",
+             tf_function_env = op_env,
+             dim = c(length(pair_cell), n_times))
 }

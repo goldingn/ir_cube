@@ -73,7 +73,9 @@ map_covariates <- function(cells, baseline_year = 1995, end_year = 2030) {
 # the two agree for every observed country (checked in two_stage_maps.R).
 #
 # emulate_predict_fill = TRUE reproduces what predict.R actually computed, for
-# checking against its saved maps only. There, the observed countries' (and
+# checking against its saved maps only. `logit_init_mean` is needed only for
+# fits whose draws do not name it (see logit_init_mean_draws()); classes_index
+# is needed by dynamical_terms(), which also computes the selection effects. There, the observed countries' (and
 # regions') n x types matrix of raw deviations is assigned into the rows of a
 # greta zeros() array with `pred[index, ] <- raw`; greta fills the target
 # elements in column-major order from the source's elements in row-major
@@ -83,6 +85,7 @@ map_covariates <- function(cells, baseline_year = 1995, end_year = 2030) {
 map_logit_init <- function(draws_matrix,
                            logit_init_mean,
                            types,
+                           classes_index,
                            countries,
                            regions,
                            lookup = country_region_lookup(),
@@ -91,16 +94,13 @@ map_logit_init <- function(draws_matrix,
 
   n_draws <- nrow(draws_matrix)
   n_types <- length(types)
-  init_frac_min <- ifelse(types == "DDT", 0.75, 0.9)
-  init_range <- 1 - init_frac_min
 
   all_countries <- unique(lookup$country_name)
   all_regions <- unique(lookup$region)
 
-  init_region_sd <- extract_parameter(draws_matrix, "init_region_sd")
-  init_country_sd <- extract_parameter(draws_matrix, "init_country_sd")
-  init_region_raw <- extract_parameter(draws_matrix, "init_region_raw")
-  init_country_raw <- extract_parameter(draws_matrix, "init_country_raw")
+  variables <- variable_draws(draws_matrix, logit_init_mean)
+  init_region_raw <- variables$init_region_raw
+  init_country_raw <- variables$init_country_raw
 
   if (emulate_predict_fill) {
     # row-major values into column-major positions, draw by draw
@@ -123,22 +123,20 @@ map_logit_init <- function(draws_matrix,
                       c(n_draws, length(all_regions), n_types))
   country_raw[, match(countries, all_countries), ] <- init_country_raw
   region_raw[, match(regions, all_regions), ] <- init_region_raw
+  variables$init_country_raw <- country_raw
+  variables$init_region_raw <- region_raw
 
   country_region <- match(lookup$region[match(all_countries,
                                               lookup$country_name)],
                           all_regions)
 
-  logit_init <- array(NA_real_, c(n_draws, length(all_countries), n_types),
-                      dimnames = list(NULL, all_countries, types))
-  for (k in seq_len(n_types)) {
-    l <- country_raw[, , k] * init_country_sd[, k] +
-      region_raw[, country_region, k] * init_region_sd[, k] +
-      logit_init_mean[, k]
-    # logit of min + range * ilogit(l), without rounding q_0 to 1 (as in
-    # dynamical_parameter_draws())
-    logit_init[, , k] <- log(init_frac_min[k] + init_range[k] * plogis(l)) -
-      log(init_range[k]) - plogis(-l, log.p = TRUE)
-  }
+  # the model's own transform (R/dynamical_model.R), over all countries
+  logit_init <- dynamical_terms_draws(variables,
+                                      classes_index = classes_index,
+                                      country_region_index = country_region,
+                                      types = types,
+                                      terms = "logit_init_country")[[1]]
+  dimnames(logit_init) <- list(NULL, all_countries, types)
   logit_init
 }
 

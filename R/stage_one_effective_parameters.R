@@ -126,10 +126,13 @@ if (!is.null(fold$rho_class_draws)) {
   rm(stored_rho)
 }
 
-# nominal parameter count: every named sampled quantity (689), plus the
-# n_types elements of logit_init_mean, which were sampled but not named (see
+# nominal parameter count: every named sampled quantity (689), plus, in fits
+# that did not name it, the n_types elements of logit_init_mean (see
 # logit_init_mean_draws())
-n_nominal <- ncol(draws_matrix) + length(types)
+logit_init_mean_named <- any(grepl("^logit_init_mean\\[",
+                                   colnames(draws_matrix)))
+n_nominal <- ncol(draws_matrix) +
+  if (logit_init_mean_named) 0 else length(types)
 
 # Repeated draws. Some chains stick at a state for longer than the thinning
 # interval (HMC rejections in a row), so a few percent of the paired draws are

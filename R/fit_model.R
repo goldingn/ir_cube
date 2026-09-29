@@ -243,8 +243,10 @@ m <- built$model
 # which the figure and prediction scripts read
 list2env(built$variables, globalenv())
 list2env(built$terms, globalenv())
-effect_type <- built$effect_type
-dynamic_cells <- built$dynamic_cells
+effect_type <- exp(beta_type)
+# the states at every cell, type and year, as cells x types x years (created
+# after model(), so they are not computed while sampling)
+dynamic_cells <- list(all_states = built$all_states())
 population_mortality_vec <- built$population_mortality_vec
 country_region_index <- built$lookups$country_region_index
 cell_country_lookup <- built$lookups$cell_country_lookup

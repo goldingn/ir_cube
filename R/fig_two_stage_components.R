@@ -119,7 +119,7 @@ if (!file.exists(cache_file)) {
 
   lookup <- country_region_lookup()
   logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
-                                   countries, regions, lookup)
+                                   classes_index, countries, regions, lookup)
   logit_init_k <- logit_init_all[, , k]
   effect_k <- parameters$effect_type[, , k]
   rm(fold, draws_matrix, parameters, logit_init_all)

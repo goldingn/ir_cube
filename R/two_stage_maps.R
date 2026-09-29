@@ -225,7 +225,7 @@ if (length(types_to_fit) > 0) {
   cell_country <- as.character(terra::extract(country_raster,
                                               cells)$country_name)
   logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
-                                   countries, regions, lookup)
+                                   classes_index, countries, regions, lookup)
   cell_country_index <- match(cell_country, dimnames(logit_init_all)[[2]])
   report("%i of %i grid cells are in countries outside the UNSD lookup (NA)",
          sum(is.na(cell_country_index)), n_cells)
@@ -259,7 +259,8 @@ if (length(types_to_fit) > 0) {
   check_cells <- sort(sample(which(!is.na(cell_country_index)), 5000))
   check_years <- c(2000, 2010, 2020, 2030)
   logit_init_predict <- map_logit_init(draws_matrix, logit_init_mean, types,
-                                       countries, regions, lookup,
+                                       classes_index, countries, regions,
+                                       lookup,
                                        emulate_predict_fill = TRUE)
   check_rows <- list()
   for (k in seq_along(types)) {
