@@ -58,7 +58,8 @@ x_cell_years <- selection$x_cell_years
 rm(selection)
 
 # the initial-state covariates (#19) at each cell, one row per cell_id
-x_cells_init <- init_covariate_matrix(unique_cells)
+x_cells_init <- init_covariate_matrix(unique_cells,
+                                      model_options$selection_columns)
 
 # dimensions of things in the fitting stage
 n_covs <- ncol(x_cell_years)

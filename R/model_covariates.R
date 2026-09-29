@@ -9,29 +9,56 @@
 # initial state vary within a country. Each is standardised over every cell of
 # the mask, so the values at a cell do not depend on which cells have data, and
 # the fits, folds and maps share them:
-#   log_pop_2000  log population per cell in 2000, the earliest layer of the
-#                 population cube (there is none before 2000)
+#   population    population in 2000, the earliest layer of the population
+#                 cube (there is none before 2000), transformed as
+#                 design$init_pop says (selection_design()): "log", log
+#                 population per cell, named log_pop_2000 (the fits to date);
+#                 otherwise pop_2000, the transform of the selection design's
+#                 pop column ("encounter", "saturating" or "raw";
+#                 init_pop_layer()), with no trend
 #   all_crops     agricultural productivity: the "all crops" yield layer of
 #                 crop_group_scaled.tif, as log(x + 1e-4). The layer is 0-1
 #                 scaled and very skewed (56% zeros, mean 0.003, sd 0.012), so
 #                 standardised untransformed it reaches 47 sd at the data
 #                 cells; 1e-4 is about the 10th percentile of its non-zero
 #                 values, and on this scale the data cells span -0.7 to 4.1 sd
-init_covariate_names <- c("log_pop_2000", "all_crops")
+init_covariate_names <- function(design = selection_design()) {
+  design <- complete_selection_design(design)
+  c(if (design$init_pop == "log") "log_pop_2000" else "pop_2000", "all_crops")
+}
 
-init_covariate_layers <- function() {
+# The unstandardised population layer of the initial-state covariates
+init_pop_layer <- function(design) {
+  pop <- rast("data/clean/pop_cube.tif")[["pop_2000"]]
+  if (design$init_pop == "log") {
+    return(log(pop))
+  }
+  if (design$init_pop == "raw") {
+    return(pop)
+  }
+  d <- pop_zero_filled(pop) /
+    terra::cellSize(rast("data/clean/raster_mask.tif"), unit = "km")
+  switch(design$init_pop,
+         encounter = 1 - exp(-d * log(2) / design$pop_d_half),
+         saturating = d / (d + design$pop_d_half))
+}
+
+init_covariate_layers <- function(design = selection_design()) {
+  design <- complete_selection_design(design)
   mask <- rast("data/clean/raster_mask.tif")
-  log_pop <- log(rast("data/clean/pop_cube.tif")[["pop_2000"]])
+  pop <- init_pop_layer(design)
   crops <- log(rast("data/clean/crop_group_scaled.tif")[["all crops"]] + 1e-4)
-  layers <- terra::mask(c(log_pop, crops), mask)
-  names(layers) <- init_covariate_names
+  layers <- terra::mask(c(pop, crops), mask)
+  names(layers) <- init_covariate_names(design)
   moments <- terra::global(layers, c("mean", "sd"), na.rm = TRUE)
   (layers - moments$mean) / moments$sd
 }
 
 # The standardised initial-state covariates at mask cells `cells`, as a
-# cells x covariates matrix with named columns.
-init_covariate_matrix <- function(cells, layers = init_covariate_layers()) {
+# cells x covariates matrix with named columns, for the selection design
+# `design` (its init_pop).
+init_covariate_matrix <- function(cells, design = selection_design(),
+                                  layers = init_covariate_layers(design)) {
   x <- as.matrix(terra::extract(layers, cells))
   colnames(x) <- names(layers)
   x
@@ -62,6 +89,10 @@ init_covariate_matrix <- function(cells, layers = init_covariate_layers()) {
 #                min-max scaled (write_log_pop_cubes())
 #   pop_d_half   the density (people per km2) at which "encounter" and
 #                "saturating" are 0.5; not used by the others
+#   init_pop     the transform of the initial-state population covariate
+#                (#19; init_covariate_layers()), one of those of pop, the
+#                same as pop by default. Designs saved without it read as
+#                "log", the covariate of the fits to date
 #   hinges       named list of knots, e.g. list(nets = c(0.18, 0.35)): hinge
 #                columns min(x, k) for any of nets, irs, pop (the last after
 #                its transform), knots k on the 0-1 scale. Each enters the
@@ -86,12 +117,14 @@ init_covariate_matrix <- function(cells, layers = init_covariate_layers()) {
 selection_design <- function(pop = c("encounter", "saturating", "raw",
                                      "log"),
                              pop_d_half = 50,
+                             init_pop = pop,
                              hinges = list(),
                              trend_pop = "linear_0_1",
                              trend_crops = "linear_0_1",
                              trend_years = c(1995, 2025),
                              trend_after = c("continue", "cap")) {
   pop <- match.arg(pop)
+  init_pop <- match.arg(init_pop, c("encounter", "saturating", "raw", "log"))
   trend_after <- match.arg(trend_after)
   stopifnot(is.list(hinges),
             all(names(hinges) %in% c("nets", "irs", "pop")),
@@ -110,20 +143,27 @@ selection_design <- function(pop = c("encounter", "saturating", "raw",
       stopifnot(length(trend) == 1, trend %in% c("none", "linear_0_1"))
     }
   }
-  list(pop = pop, pop_d_half = pop_d_half, hinges = hinges, trend_pop = trend_pop,
+  list(pop = pop, pop_d_half = pop_d_half, init_pop = init_pop, hinges = hinges, trend_pop = trend_pop,
        trend_crops = trend_crops, trend_years = trend_years,
        trend_after = trend_after)
 }
 
-# The design of the fits before the trend and the saturating population (raw
-# population, no hinges, no trend), e.g. for matching the cached inits
+# The design of the fits before the trends and the density transforms (raw
+# population, no hinges, no trend, log population in the initial state), e.g.
+# for matching the cached inits
 selection_design_untrended <- function() {
-  selection_design(pop = "raw", trend_pop = "none", trend_crops = "none")
+  selection_design(pop = "raw", init_pop = "log", trend_pop = "none",
+                   trend_crops = "none")
 }
 
 # A saved design, completed as selection_design() would build it. Designs
-# saved before the trends were added have only pop and hinges, and meant none.
+# saved before the trends were added have only pop and hinges, and meant none;
+# those saved before init_pop was added had log population in the initial
+# state.
 complete_selection_design <- function(design) {
+  if (is.null(design$init_pop)) {
+    design$init_pop <- "log"
+  }
   for (name in c("trend_pop", "trend_crops")) {
     if (is.null(design[[name]])) {
       design[[name]] <- "none"
@@ -191,7 +231,14 @@ read_padded_cube <- function(cube, cells, baseline_year, end_year) {
 # these are set back to 0. The fill is each layer's most common value near 1
 # (51,408 pixels in every year, against at most 3 for any other value there).
 pop_density_matrix <- function(cells, baseline_year, end_year) {
-  pop <- rast("data/clean/pop_cube.tif")
+  pop <- pop_zero_filled(rast("data/clean/pop_cube.tif"))
+  area <- terra::cellSize(rast("data/clean/raster_mask.tif"), unit = "km")
+  area_cells <- terra::extract(area, cells)[, 1]
+  read_padded_cube(pop, cells, baseline_year, end_year) / area_cells
+}
+
+# Layers of pop_cube.tif with the fill for empty pixels set back to 0
+pop_zero_filled <- function(pop) {
   fill <- vapply(seq_len(terra::nlyr(pop)), function(i) {
     v <- terra::values(pop[[i]], mat = FALSE)
     v <- v[!is.na(v) & v > 0.99 & v < 1.01]
@@ -200,11 +247,9 @@ pop_density_matrix <- function(cells, baseline_year, end_year) {
     stopifnot(max(n) > 10000)
     u[which.max(n)]
   }, numeric(1))
-  pop <- pop * (pop != fill)
-  names(pop) <- names(rast("data/clean/pop_cube.tif"))
-  area <- terra::cellSize(rast("data/clean/raster_mask.tif"), unit = "km")
-  area_cells <- terra::extract(area, cells)[, 1]
-  read_padded_cube(pop, cells, baseline_year, end_year) / area_cells
+  out <- pop * (pop != fill)
+  names(out) <- names(pop)
+  out
 }
 
 # The population column s(x, t) of the design, cells x years

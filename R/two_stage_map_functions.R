@@ -35,7 +35,7 @@ map_covariates <- function(cells, baseline_year = 1995, end_year = 2030,
   list(time_varying = selection_time_varying(cells, baseline_year, end_year,
                                              design),
        flat = selection_static(cells, design),
-       init = init_covariate_matrix(cells))
+       init = init_covariate_matrix(cells, design))
 }
 
 

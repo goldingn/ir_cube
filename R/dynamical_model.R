@@ -38,7 +38,8 @@ source("R/model_covariates.R")
 #   mortality_floor   TRUE for an estimated floor on bioassay mortality, the
 #                     mortality of a fully resistant population (#14)
 #   init_covariates   names of static covariates of the initial state, from
-#                     init_covariate_names (R/model_covariates.R), or NULL
+#                     init_covariate_names(selection_columns)
+#                     (R/model_covariates.R), or NULL
 #                     for none (#19)
 #   selection_columns how the selection design matrix is built:
 #                     selection_design() (R/model_covariates.R), the
@@ -52,7 +53,8 @@ source("R/model_covariates.R")
 #                     analysis. See reversion_kappa().
 dynamical_model_options <- function(rho = c("type", "class"),
                                     mortality_floor = TRUE,
-                                    init_covariates = init_covariate_names,
+                                    init_covariates =
+                                      init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
                                     reversion = FALSE) {
   list(rho = match.arg(rho),
@@ -85,7 +87,8 @@ check_dynamical_model_options <- function(options) {
   if (!is.null(options$init_covariates)) {
     stopifnot(is.character(options$init_covariates),
               !anyDuplicated(options$init_covariates),
-              all(options$init_covariates %in% init_covariate_names))
+              all(options$init_covariates %in%
+                    init_covariate_names(options$selection_columns)))
     implemented$init_covariates <- list(NULL, options$init_covariates)
   }
   for (name in names(defaults)) {
