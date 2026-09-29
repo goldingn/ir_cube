@@ -378,3 +378,31 @@ country_region_lookup <- function() {
     )
 }
 
+
+# the nine modelled insecticide types in plotting order (by class, then name),
+# and the colours the main figures use for them
+insecticides_plot_order <- c("Alpha-cypermethrin",
+                             "Deltamethrin",
+                             "Lambda-cyhalothrin",
+                             "Permethrin",
+                             "Fenitrothion",
+                             "Malathion",
+                             "Pirimiphos-methyl",
+                             "DDT",
+                             "Bendiocarb")
+insecticide_colours <- function() {
+  setNames(rev(scales::hue_pal()(length(insecticides_plot_order))),
+           insecticides_plot_order)
+}
+
+# the observation overdispersion greta array for each bioassay, given its type
+# and class ids, from whichever rho the fitted model has in env: one per
+# insecticide type (rho_types or rho_type) or one per class (rho_classes)
+observation_rho <- function(type_id, class_id, env = parent.frame()) {
+  for (name in c("rho_types", "rho_type")) {
+    if (exists(name, envir = env)) {
+      return(get(name, envir = env)[type_id])
+    }
+  }
+  get("rho_classes", envir = env)[class_id]
+}
