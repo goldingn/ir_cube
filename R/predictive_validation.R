@@ -14,8 +14,7 @@ source("R/null_models.R")
 # analysis, and because the internal test set it tuned on - 100 records sampled
 # at random from training, a median 0 km from their nearest usable neighbour -
 # posed none of the problems the held-out records pose (#12). This is kept only
-# so that this superseded script, and dynamic_predictive_validation.R which
-# sources it, still run. Nothing on the live path reads outputs/optimal_nn.csv.
+# so that this superseded script still runs. Nothing on the live path reads outputs/optimal_nn.csv.
 
 # given tibbles of test and training data, return the test data tibble augmented
 # with observed and predicted values of the susceptibility fraction from a

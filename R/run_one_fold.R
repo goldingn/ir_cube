@@ -37,6 +37,7 @@ invisible(calculate(normal(0, 1), nsim = 1))
 source("R/validation_functions.R")
 source("R/validation_folds.R")
 source("R/validation_covariates.R")
+source("R/dynamical_model.R")
 source("R/fit_validation_fold.R")
 
 # find the requested fold
@@ -106,16 +107,10 @@ elapsed <- system.time(
     test_df = test,
     before_df = before,
     x_cell_years = x_cell_years,
+    cell_years_index = cell_years_index,
     df = df,
     classes_index = classes_index,
     types = types,
-    n_covs = n_covs,
-    n_times = n_times,
-    n_unique_cells = n_unique_cells,
-    n_classes = n_classes,
-    n_types = n_types,
-    n_regions = n_regions,
-    n_countries = n_countries,
     n_chains = n_chains,
     warmup = warmup,
     n_samples = n_samples
