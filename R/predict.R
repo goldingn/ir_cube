@@ -47,9 +47,14 @@ n_draws <- 500
 # year
 end_year <- 2030
 
-# cells per chunk, and parallel workers (one output each at a time)
-chunk_size <- 2000
-n_workers <- 4
+# cells per chunk, and parallel workers (one output each at a time), or the
+# environment variables IR_CUBE_PREDICT_CHUNK and IR_CUBE_PREDICT_WORKERS. The
+# parent holds about 4 GB, most of it shared with the workers, and each worker
+# about 2-2.5 GB more at chunks of 1000 cells (a cells x years mean and SD is
+# 0.85 GB of that). Total memory (PSS) peaks at about 9 GB with 2 workers and
+# 12.5 GB with 3; the whole run takes about 110 and 75 minutes
+chunk_size <- as.integer(Sys.getenv("IR_CUBE_PREDICT_CHUNK", "1000"))
+n_workers <- as.integer(Sys.getenv("IR_CUBE_PREDICT_WORKERS", "2"))
 
 output_dir <- "outputs/ir_maps"
 
@@ -104,11 +109,7 @@ stopifnot(isTRUE(all.equal(
 
 predict_draws <- round(seq(1, length(draw_index), length.out = n_draws))
 effect <- parameters$effect_type[predict_draws, , , drop = FALSE]
-logit_init <- logit_init_all[predict_draws, , , drop = FALSE]
-if (init_covariates) {
-  attr(logit_init, "init_coef") <-
-    attr(logit_init_all, "init_coef")[predict_draws, , , drop = FALSE]
-}
+logit_init <- subset_logit_init(logit_init_all, predict_draws)
 mortality_floor <- parameters$mortality_floor[predict_draws]
 kappa_type <- parameters$kappa_type[predict_draws, , drop = FALSE]
 rm(parameters, logit_init_all, draws_matrix, fold)
@@ -141,8 +142,9 @@ chunks <- split(seq_len(n_cells), ceiling(seq_len(n_cells) / chunk_size))
 # each output as the weights of the types it combines
 ingredient_weights <- unlist(readRDS("temporary/ingredient_weights.RDS"))
 stopifnot(all(names(ingredient_weights) %in% types))
-outputs <- c(lapply(setNames(types, types), function(type) setNames(1, type)),
-             list(llin_effective = ingredient_weights))
+# llin_effective first, as it takes longest
+outputs <- c(list(llin_effective = ingredient_weights),
+             lapply(setNames(types, types), function(type) setNames(1, type)))
 
 # posterior mean and SD of one output at every cell and year, written as one
 # raster per year
@@ -155,16 +157,9 @@ predict_output <- function(output) {
     p <- NULL
     for (type in names(weights)) {
       k <- match(type, types)
-      dyn <- dynamical_logit_chunk(
-        effect = effect[, , k],
-        logit_init = map_cell_logit_init(
-          logit_init, cell_country_index[ok], k,
-          covariates$init[ok, , drop = FALSE]),
-        time_varying = covariates$time_varying[ok, , , drop = FALSE],
-        flat = covariates$flat[ok, , drop = FALSE],
-        years = years_predict, years_keep = years_predict,
-        floor = mortality_floor,
-        kappa = if (!is.null(kappa_type)) kappa_type[, k])
+      dyn <- map_type_logit(k, ok, cell_country_index[ok], effect,
+                            logit_init, covariates, years_predict,
+                            years_predict, mortality_floor, kappa_type)
       p_type <- lapply(dyn, function(x) weights[[type]] * plogis(x))
       p <- if (is.null(p)) p_type else Map(`+`, p, p_type)
       rm(dyn, p_type)
