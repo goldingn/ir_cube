@@ -27,10 +27,9 @@ source("R/windowed_hmc.R")
 # type, the mortality floor and both initial-state covariates on; in the
 # selection design, population by the encounter transform of density
 # (d_half = 50 per km2, not yet confirmed) times g_dom, and the crops times
-# g_ag, both linear, 0 in 1995 and 1 in 2025, and no hinges
-# (selection_design()); no reversion, pending the identifiability simulation.
-# The fits
-# before these terms were added had rho = "class", mortality_floor = FALSE,
+# g_ag, both linear, 0 in 1995 and 1 in 2025, nets as MITN run 06 use times
+# the pyrethroid-only share (w = 0.25), and no hinges (selection_design());
+# and reversion estimated, one rate per class (#24). The fits before these terms were added had rho = "class", mortality_floor = FALSE,
 # init_covariates = NULL (see fold_options()). build_dynamical_model() refuses
 # settings that are not implemented:
 #   rho               "class": one overdispersion per insecticide class;
@@ -62,7 +61,7 @@ dynamical_model_options <- function(rho = c("type", "class"),
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
-                                    reversion = FALSE,
+                                    reversion = "estimated",
                                     init_centred = c("none", "country",
                                                      "all")) {
   list(rho = match.arg(rho),
@@ -242,13 +241,13 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
 
   # Reversion to susceptibility (#24), estimated: a per-year rate per class,
   # constrained to move towards susceptibility; see reversion_kappa() for the
-  # sign convention. Half-normal with sd 0.1 on the logit scale per year: at
-  # 0.1 the odds of resistance halve in 7 years without selection, and the
-  # 97.5% prior quantile (0.22) halves them in 3 years. Net use rarely falls
-  # in these data, so there are few periods of relaxed selection to estimate
-  # the rate from, and this prior may largely determine it.
+  # sign convention. Half-normal with sd 0.3 on the logit scale per year: at
+  # 0.1 the odds of resistance halve in 7 years without selection, and at the
+  # 97.5% prior quantile (0.67) in one year. The simulation of #24 found the
+  # rate recovered, with the data dominating a prior of sd 0.1, and trading
+  # off mildly with the selection effects and the mortality floor.
   reversion <- if (identical(options$reversion, "estimated")) {
-    list(reversion_rate = normal(0, 0.1, truncation = c(0, Inf),
+    list(reversion_rate = normal(0, 0.3, truncation = c(0, Inf),
                                  dim = n_classes))
   }
 
