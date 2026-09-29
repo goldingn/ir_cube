@@ -66,8 +66,9 @@ country_raster <- rast("data/clean/country_raster.tif")
 years_predict <- baseline_year:2030
 n_times_predict <- length(years_predict)
 
-# cells to predict to
-cells_predict <- terra::cells(mask)
+# cells to predict to: those with a country, for the initial condition. The
+# 306 mask cells more than 5 km from any country (prep_admin.R) are left NA
+cells_predict <- terra::cells(country_raster)
 n_cells_predict <- length(cells_predict)
 
 # pad out the nets cube, repeating the final year into the future
@@ -507,8 +508,8 @@ for (this_insecticide in types_save) {
                                     prediction_data_this_year)
     
     
-    # create a raster for this year
-    this_ir_raster <- mask
+    # create a raster for this year, NA at the cells not predicted to
+    this_ir_raster <- terra::mask(mask, country_raster)
     
     # insert all the values in it
     this_ir_raster[prediction_this_year$cell] <- prediction_this_year$mean
