@@ -8,7 +8,9 @@
 #     of the other assays
 # and print the log density itself, for regression checks between versions.
 #
-#   Rscript R/check_dynamical_model.R '<options>' [seed]
+#   Rscript R/check_dynamical_model.R '<options>' [seed] [sd]
+# (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
+# where p rounds to 1 at assays with survivors, and the log density is NaN)
 # e.g.
 #   Rscript R/check_dynamical_model.R 'dynamical_model_options(rho = "type")'
 #
@@ -18,6 +20,7 @@ arguments <- commandArgs(trailingOnly = TRUE)
 options_text <- if (length(arguments) >= 1) arguments[1] else
   "dynamical_model_options()"
 seed <- if (length(arguments) >= 2) as.integer(arguments[2]) else 1L
+free_sd <- if (length(arguments) >= 3) as.numeric(arguments[3]) else 0.5
 
 source("R/greta_setup.R")
 start_greta(threads = 4)
@@ -59,7 +62,32 @@ n_free <- length(unlist(built$model$dag$example_parameters(free = TRUE)))
 stopifnot(n_free == length(unlist(
   built_one$model$dag$example_parameters(free = TRUE))))
 set.seed(seed)
-free <- rnorm(n_free, 0, 0.5)
+free <- rnorm(n_free, 0, free_sd)
+
+# the free-state elements of a variable, located as in logit_init_mean_draws()
+free_columns <- function(model, name) {
+  dag <- model$dag
+  free_list <- dag$example_parameters(free = TRUE)
+  sizes <- vapply(free_list, length, integer(1))
+  ends <- cumsum(sizes)
+  node_names <- vapply(dag$node_list, function(node) node$unique_name,
+                       character(1))
+  node <- greta:::get_node(model$target_greta_arrays[[name]])$unique_name
+  i <- match(dag$get_tf_names()[match(node, node_names)], names(free_list))
+  (ends[i] - sizes[i] + 1):ends[i]
+}
+
+# A random reversion rate is on the scale of its free state, around 1 per year,
+# which drives p to 1 at most assays by the end of the series; so it is set to
+# 0.05 per year (its free state is the log of the rate) and checked
+if (identical(model_options$reversion, "estimated")) {
+  columns <- free_columns(built$model, "reversion_rate")
+  free[columns] <- log(0.05)
+  trace <- built$model$dag$trace_values(matrix(free, nrow = 1))
+  stopifnot(isTRUE(all.equal(
+    unname(trace[1, grep("^reversion_rate", colnames(trace))]),
+    rep(0.05, length(columns)))))
+}
 
 ld_all <- log_density(built$model, free)
 ld_one <- log_density(built_one$model, free)
@@ -137,7 +165,8 @@ for (k in seq_along(types)) {
     time_varying = covariates$time_varying,
     flat = covariates$flat,
     years = baseline_year:max(map_years), years_keep = map_years,
-    floor = parameters$mortality_floor)
+    floor = parameters$mortality_floor,
+    kappa = if (!is.null(parameters$kappa_type)) parameters$kappa_type[, k])
   for (y in map_years) {
     rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
                    year_id = y - baseline_year + 1)

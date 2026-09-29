@@ -190,13 +190,17 @@ map_cell_logit_init <- function(logit_init, cell_country, k, init = NULL,
 #                map_covariates(), for this chunk
 #   floor        draws: the floor on mortality (parameters$mortality_floor
 #                from dynamical_parameter_draws()), or NULL for none
+#   kappa        draws: the reversion kappa of this type
+#                (parameters$kappa_type[, k]), or NULL for none
 #
 # logit q_t = logit q_0 - sum_{s <= t} log w_s, with the fitness of year 1
 # (the baseline year) already applied to the year-1 state, exactly as
-# dynamical_predictions() and greta.dynamics do. Mortality is q_t, or with a
-# floor f, f + (1 - f) q_t.
+# dynamical_predictions() and greta.dynamics do; with reversion, less t kappa
+# (reversion_kappa()), t = 1 in the first of `years`, which must be the
+# baseline year. Mortality is q_t, or with a floor f, f + (1 - f) q_t.
 dynamical_logit_chunk <- function(effect, logit_init, time_varying, flat,
-                                  years, years_keep, floor = NULL) {
+                                  years, years_keep, floor = NULL,
+                                  kappa = NULL) {
   stopifnot(all(years_keep %in% years))
   last <- max(match(years_keep, years))
   effect_t <- t(effect)
@@ -205,6 +209,9 @@ dynamical_logit_chunk <- function(effect, logit_init, time_varying, flat,
   for (t in seq_len(last)) {
     x_t <- cbind(time_varying[, t, ], flat)
     cumulative <- cumulative + log1p(x_t %*% effect_t)
+    if (!is.null(kappa)) {
+      cumulative <- cumulative + rep(kappa, each = nrow(logit_init))
+    }
     if (years[t] %in% years_keep) {
       out[[as.character(years[t])]] <- floored_logit_mortality(
         logit_init - cumulative,

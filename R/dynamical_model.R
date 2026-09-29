@@ -34,7 +34,10 @@ source("R/model_covariates.R")
 #                     init_covariate_names (R/model_covariates.R), or NULL
 #                     for none (#19)
 #   selection_columns extra columns of the selection design matrix (#23)
-#   reversion         a per-class reversion rate to susceptibility (#24)
+#   reversion         reversion to susceptibility (#24): FALSE for none,
+#                     "estimated" for one rate per class, or fixed values of
+#                     kappa (<= 0, one, or one per class) for sensitivity
+#                     analysis. See reversion_kappa().
 dynamical_model_options <- function(rho = c("class", "type"),
                                     mortality_floor = FALSE,
                                     init_covariates = NULL,
@@ -52,6 +55,12 @@ check_dynamical_model_options <- function(options) {
   stopifnot(setequal(names(options), names(defaults)))
   implemented <- list(rho = list("class", "type"),
                       mortality_floor = list(FALSE, TRUE))
+  reversion <- options$reversion
+  if (identical(reversion, "estimated") ||
+      (is.numeric(reversion) && length(reversion) > 0 &&
+         all(is.finite(reversion)) && all(reversion <= 0))) {
+    implemented$reversion <- list(FALSE, reversion)
+  }
   if (!is.null(options$init_covariates)) {
     stopifnot(is.character(options$init_covariates),
               !anyDuplicated(options$init_covariates),
@@ -188,7 +197,43 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     list(init_coef = normal(0, 1, dim = c(n_init_covs, n_types)))
   }
 
-  c(variables, rho, floor, init_covariates)
+  # Reversion to susceptibility (#24), estimated: a per-year rate per class,
+  # constrained to move towards susceptibility; see reversion_kappa() for the
+  # sign convention. Half-normal with sd 0.1 on the logit scale per year: at
+  # 0.1 the odds of resistance halve in 7 years without selection, and the
+  # 97.5% prior quantile (0.22) halves them in 3 years. Net use rarely falls
+  # in these data, so there are few periods of relaxed selection to estimate
+  # the rate from, and this prior may largely determine it.
+  reversion <- if (identical(options$reversion, "estimated")) {
+    list(reversion_rate = normal(0, 0.1, truncation = c(0, Inf),
+                                 dim = n_classes))
+  }
+
+  c(variables, rho, floor, init_covariates, reversion)
+}
+
+# Reversion to susceptibility (#24). A fitness cost c of resistance, paid
+# whatever the selection, makes the relative fitness of the resistant phenotype
+# w = (1 - c)(1 + x' exp(beta)), so on the logit scale
+#   logit q_t = logit q_0 - sum_{s <= t} log(1 + x_s' exp(beta)) - t kappa,
+#   kappa = log(1 - c) <= 0,
+# i.e. without selection, logit resistance changes by kappa per year and logit
+# susceptibility by -kappa. The selection terms stay strictly positive. kappa
+# is per class (kdr gives resistance to both DDT and the pyrethroids), expanded
+# here to types: n_types, -reversion_rate when estimated, the fixed values
+# when options$reversion is numeric, and NULL for none. For greta arrays or one
+# draw in plain R.
+reversion_kappa <- function(v, classes_index, options) {
+  reversion <- options$reversion
+  if (isFALSE(reversion)) {
+    return(NULL)
+  }
+  if (identical(reversion, "estimated")) {
+    return(-v$reversion_rate[classes_index])
+  }
+  n_classes <- max(classes_index)
+  stopifnot(length(reversion) %in% c(1, n_classes))
+  rep_len(reversion, n_classes)[classes_index]
 }
 
 # Deterministic transforms from the variables `v` to the quantities the dynamics
@@ -203,6 +248,8 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
 #                       (above init_frac_min) of each country, to which the
 #                       initial-state covariates are added at each cell
 #   init_coef           n_init_covs x n_types, their coefficients, or NULL
+#   kappa_type          n_types, the per-year change in logit resistance from
+#                       reversion (<= 0), or NULL for none (reversion_kappa())
 # and some intermediate quantities. logit_init_country is the initial state
 # without covariates, i.e. at a cell whose covariates are all 0 (the mean).
 #
@@ -263,6 +310,7 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
        mortality_floor = v$mortality_floor,
        logit_init_relative = logit_init_relative,
        init_coef = v$init_coef,
+       kappa_type = reversion_kappa(v, classes_index, options),
        # intermediate quantities, which the figure scripts read
        beta_class = beta_class,
        init_region_effect = init_region_effect,
@@ -500,15 +548,18 @@ logit_init_relative_rows <- function(terms, country, type, x_init = NULL) {
 # (greta's), then the constants:
 #   beta_type            (B, n_covs, n_types)
 #   logit_init           (B, J, 1) logit q_0 of each pair
+#   kappa_type           (B, n_types, 1) reversion kappa per type (optional)
 #   x_pairs              (J, n_times, n_covs) covariates of each pair's cell
 #   pair_type            (J) 0-based type of each pair
 # Returns (B, J, n_times): the fraction susceptible for each pair and year.
-tf_closed_form_states <- function(beta_type, logit_init, x_pairs, pair_type) {
+tf_closed_form_states <- function(beta_type, logit_init, kappa_type = NULL,
+                                  x_pairs, pair_type) {
   tf <- tensorflow::tf
   dtype <- beta_type$dtype
   # reshaped to a vector, since reticulate passes a length-one R vector as a
   # scalar
   pair_type <- tf$reshape(tf$constant(pair_type, dtype = tf$int32), list(-1L))
+  n_times <- dim(x_pairs)[2]
   x_pairs <- tf$constant(x_pairs, dtype = dtype)
 
   # log fitness, (B, J, n_times)
@@ -520,7 +571,16 @@ tf_closed_form_states <- function(beta_type, logit_init, x_pairs, pair_type) {
   selection <- tf$einsum("jtp,bpj->bjt", x_pairs, effect)
   log_w <- m + tf$math$log(tf$exp(-m) + selection)
 
-  tf$sigmoid(logit_init - tf$cumsum(log_w, axis = 2L))
+  logit_q <- logit_init - tf$cumsum(log_w, axis = 2L)
+
+  # reversion: - t kappa in year t (see reversion_kappa())
+  if (!is.null(kappa_type)) {
+    years <- tf$reshape(tf$range(1, n_times + 1, dtype = dtype),
+                        c(1L, 1L, -1L))
+    logit_q <- logit_q - tf$gather(kappa_type, pair_type, axis = 1L) * years
+  }
+
+  tf$sigmoid(logit_q)
 }
 
 # The greta side: the fraction susceptible for the cell-type pairs
@@ -556,13 +616,22 @@ closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
   op_env <- new.env(parent = globalenv())
   op_env$tf_closed_form_states <- tf_closed_form_states
 
-  greta:::op("closed_form_states",
-             terms$beta_type,
-             logit_init,
-             operation_args = list(
-               x_pairs = x_pairs,
-               pair_type = as.integer(pair_type - 1)),
-             tf_operation = "tf_closed_form_states",
-             tf_function_env = op_env,
-             dim = c(length(pair_cell), n_times))
+  # the reversion kappa of each type, if any, is a greta array when estimated
+  # and data when fixed
+  kappa <- if (!is.null(terms$kappa_type)) {
+    list(if (inherits(terms$kappa_type, "greta_array")) terms$kappa_type else
+      as_data(terms$kappa_type))
+  }
+
+  do.call(greta:::op, c(
+    list("closed_form_states",
+         terms$beta_type,
+         logit_init),
+    kappa,
+    list(operation_args = list(
+           x_pairs = x_pairs,
+           pair_type = as.integer(pair_type - 1)),
+         tf_operation = "tf_closed_form_states",
+         tf_function_env = op_env,
+         dim = c(length(pair_cell), n_times))))
 }

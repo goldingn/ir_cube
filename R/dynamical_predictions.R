@@ -190,6 +190,9 @@ dynamical_terms_draws <- function(variables, classes_index,
 #   rho_types        draws x n_types, the observation overdispersion
 #   mortality_floor  draws, the floor on mortality (NULL for none)
 #   logit_init_relative  draws x n_countries x n_types, and
+#   kappa_type       draws x n_types, the per-year change in logit resistance
+#                    from reversion (<= 0; NULL for none, see
+#                    reversion_kappa())
 #   init_coef        draws x n_init_covs x n_types (NULL for none): the parts
 #                    of the initial state when it has covariates (#19), the
 #                    logit relative initial state of each country and the
@@ -223,7 +226,8 @@ dynamical_parameter_draws <- function(fold,
     country_region_index = dynamical_lookups(df)$country_region_index,
     types = types,
     terms = c("beta_type", "logit_init_country", "rho_types",
-              "logit_init_relative"),
+              "logit_init_relative",
+              if (!isFALSE(options$reversion)) "kappa_type"),
     options = options)
 
   effect_type <- exp(terms$beta_type)
@@ -237,6 +241,9 @@ dynamical_parameter_draws <- function(fold,
          c(variables$mortality_floor)
        },
        logit_init_relative = terms$logit_init_relative,
+       kappa_type = if (!isFALSE(options$reversion)) {
+         matrix(terms$kappa_type, n_draws)
+       },
        init_coef = if (!is.null(options$init_covariates)) {
          array(variables$init_coef,
                c(n_draws, length(options$init_covariates), n_types))
@@ -358,6 +365,11 @@ dynamical_predictions <- function(fold,
           matrix(parameters$init_coef[, , k], nrow = n_draws) %*%
           t(x_init[target$cell_id, , drop = FALSE])
         logit_init_from_relative(relative, init_min[k])
+      }
+      # reversion: - t kappa in year t (see reversion_kappa())
+      if (!is.null(parameters$kappa_type)) {
+        cumulative <- cumulative +
+          outer(parameters$kappa_type[, k], target$year_id)
       }
       # mortality is the fraction susceptible, with the floor applied (one
       # per draw, down the rows)
