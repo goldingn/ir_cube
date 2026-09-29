@@ -6,7 +6,7 @@
 # been sourced already, for `df`, `unique_cells`, `classes`, `types`, `regions`
 # and `countries`.
 
-source("R/model_covariates.R")
+source("R/dynamical_model.R")
 
 # build covariate rasters for the proper model
 
@@ -42,67 +42,20 @@ type_concentrations <- df %>%
   pull(concentration)
 
 
-# create design matrix at all unique cells and for all years
+# the model terms (R/dynamical_model.R): the defaults, unless the calling
+# script has set model_options before sourcing this file
+if (!exists("model_options")) {
+  model_options <- dynamical_model_options()
+}
 
-# pull out temporally-static covariates for all cells
-flat_extract <- covs_flat %>%
-  extract(unique_cells) %>%
-  mutate(
-    cell = unique_cells,
-    .before = everything()
-  )
-
-# extract spatiotemporal covariates from the cube
-all_extract <- bind_cols(
-  terra::extract(nets_cube, unique_cells),
-  terra::extract(irs_cube, unique_cells),
-  terra::extract(pop_cube, unique_cells)
-) %>%
-  mutate(
-    cell = unique_cells,
-    .before = everything()
-  ) %>%
-  # this stacks all the different cubes in long format, but we want wide on the
-  # variable but long on year, so pivot_wider immediately after
-  pivot_longer(
-    cols = -one_of("cell"),
-    names_sep = "_",
-    names_to = c("variable", "year"),
-    values_to = "value"
-  ) %>%
-  pivot_wider(
-    names_from = "variable",
-    values_from = "value"
-  ) %>%
-  mutate(
-    year = as.numeric(year)
-  ) %>%
-  left_join(
-    flat_extract,
-    by = "cell"
-  ) %>%
-  mutate(
-    cell_id = match(cell, unique_cells),
-    year_id = year - baseline_year + 1,
-    .before = everything()
-  ) %>%
-  filter(
-    year >= baseline_year
-  ) %>%
-  select(
-    -cell,
-    -year
-  )
-
-# pull out index to cells and years
-cell_years_index <- all_extract %>%
-  select(cell_id, year_id)
-
-# get covariates for these cell-years as a matrix
-x_cell_years <- all_extract %>%
-  select(-cell_id,
-         -year_id) %>%
-  as.matrix()
+# create design matrix at all unique cells and for all years, as the model
+# options' selection design asks (R/model_covariates.R)
+selection <- selection_design_matrix(unique_cells, baseline_year,
+                                     final_data_year,
+                                     model_options$selection_columns)
+cell_years_index <- selection$cell_years_index
+x_cell_years <- selection$x_cell_years
+rm(selection)
 
 # the initial-state covariates (#19) at each cell, one row per cell_id
 x_cells_init <- init_covariate_matrix(unique_cells)

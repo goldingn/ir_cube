@@ -17,48 +17,23 @@
 # x_cell_years_predict: the cubes are padded back to the baseline year and
 # forward to end_year by repeating their first and last layers.
 #
-# Returned as a cells x years x 3 array of the time-varying covariates (nets,
-# irs, pop, the column order of x_cell_years), a cells x 10 matrix of the
+# `design` is the fit's selection design (options$selection_columns, see
+# selection_design() in R/model_covariates.R).
+#
+# Returned as a cells x years x n array of the time-varying covariates (nets,
+# irs, pop and any hinge columns, the column order of x_cell_years), a
+# cells x 10 matrix of the
 # static crop covariates, and a cells x 2 matrix `init` of the initial-state
 # covariates (init_covariate_matrix(), R/model_covariates.R), rather than
 # predict.R's long (cell, year) matrix: the
 # long form is 53M rows x 13 columns (5.5 GB) for 1.48M cells and 36 years,
 # whereas this keeps the crops once per cell and lets a chunk of cells be
 # assembled one year at a time.
-map_covariates <- function(cells, baseline_year = 1995, end_year = 2030) {
-
-  read_cube <- function(file) {
-    cube <- rast(file)
-    cube <- pre_pad_cube(cube, baseline_year)
-    cube <- post_pad_cube(cube, end_year)
-    years <- as.numeric(str_sub(names(cube), start = -4L))
-    cube <- cube[[years >= baseline_year & years <= end_year]]
-    stopifnot(identical(as.numeric(str_sub(names(cube), start = -4L)),
-                        as.numeric(baseline_year:end_year)))
-    as.matrix(terra::extract(cube, cells))
-  }
-
-  nets <- read_cube("data/clean/net_use_cube.tif")
-  irs <- read_cube("data/clean/irs_coverage_scaled_cube.tif")
-  pop <- read_cube("data/clean/pop_scaled_cube.tif")
-
-  time_varying <- array(NA_real_, c(length(cells), ncol(nets), 3),
-                        dimnames = list(NULL, baseline_year:end_year,
-                                        c("nets", "irs", "pop")))
-  time_varying[, , 1] <- nets
-  time_varying[, , 2] <- irs
-  time_varying[, , 3] <- pop
-  rm(nets, irs, pop)
-
-  crops_group <- rast("data/clean/crop_group_scaled.tif")
-  crops_all <- rast("data/clean/crop_scaled.tif")
-  covs_flat <- c(crops_group,
-                 crops_all$cotton,
-                 crops_all$vegetables,
-                 crops_all$rice)
-  flat <- as.matrix(terra::extract(covs_flat, cells))
-
-  list(time_varying = time_varying, flat = flat,
+map_covariates <- function(cells, baseline_year = 1995, end_year = 2030,
+                           design = selection_design()) {
+  list(time_varying = selection_time_varying(cells, baseline_year, end_year,
+                                             design),
+       flat = selection_flat(cells),
        init = init_covariate_matrix(cells))
 }
 

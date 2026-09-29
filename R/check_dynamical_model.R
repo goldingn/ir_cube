@@ -24,6 +24,8 @@ free_sd <- if (length(arguments) >= 3) as.numeric(arguments[3]) else 0.5
 
 source("R/greta_setup.R")
 start_greta(threads = 4)
+source("R/dynamical_model.R")
+model_options <- eval(parse(text = options_text))
 suppressMessages({
   sink("/dev/null")
   source("R/validation_folds.R")
@@ -34,7 +36,6 @@ source("R/validation_functions.R")
 source("R/dynamical_predictions.R")
 source("R/two_stage_map_functions.R")
 
-model_options <- eval(parse(text = options_text))
 cat("options:", options_text, "\n")
 
 build <- function(train_df) {
@@ -148,7 +149,8 @@ map_rows <- df %>%
   distinct(cell, cell_id) %>%
   mutate(country_name = countries[
     built$lookups$cell_country_lookup[cell_id]])
-covariates <- map_covariates(map_rows$cell, baseline_year, max(map_years))
+covariates <- map_covariates(map_rows$cell, baseline_year, max(map_years),
+                             model_options$selection_columns)
 parameters <- dynamical_parameter_draws(fold, df, classes_index, types,
                                         draw_index = 1)
 logit_init_all <- map_logit_init(trace, NULL, types, classes_index, countries,

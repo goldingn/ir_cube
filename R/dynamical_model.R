@@ -33,7 +33,11 @@ source("R/model_covariates.R")
 #   init_covariates   names of static covariates of the initial state, from
 #                     init_covariate_names (R/model_covariates.R), or NULL
 #                     for none (#19)
-#   selection_columns extra columns of the selection design matrix (#23)
+#   selection_columns how the selection design matrix is built:
+#                     selection_design() (R/model_covariates.R), the
+#                     population transform and any hinge columns (#23). The
+#                     model takes the matrix as built; build_dynamical_model()
+#                     checks its columns against this
 #   reversion         reversion to susceptibility (#24): FALSE for none,
 #                     "estimated" for one rate per class, or fixed values of
 #                     kappa (<= 0, one, or one per class) for sensitivity
@@ -41,7 +45,7 @@ source("R/model_covariates.R")
 dynamical_model_options <- function(rho = c("class", "type"),
                                     mortality_floor = FALSE,
                                     init_covariates = NULL,
-                                    selection_columns = NULL,
+                                    selection_columns = selection_design(),
                                     reversion = FALSE) {
   list(rho = match.arg(rho),
        mortality_floor = mortality_floor,
@@ -61,6 +65,8 @@ check_dynamical_model_options <- function(options) {
          all(is.finite(reversion)) && all(reversion <= 0))) {
     implemented$reversion <- list(FALSE, reversion)
   }
+  implemented$selection_columns <- list(do.call(selection_design,
+                                               options$selection_columns))
   if (!is.null(options$init_covariates)) {
     stopifnot(is.character(options$init_covariates),
               !anyDuplicated(options$init_covariates),
@@ -344,6 +350,13 @@ logit_init_from_relative <- function(l, min) {
 dynamical_inits <- function(cached, variables) {
   cached <- unclass(cached)
   out <- cached[intersect(names(cached), names(variables))]
+  # only where the dimensions match (a different selection design changes the
+  # number of covariates)
+  matches <- vapply(names(out), function(name) {
+    identical(as.integer(dim(out[[name]])),
+              as.integer(dim(variables[[name]])))
+  }, logical(1))
+  out <- out[matches]
   if ("rho_mu" %in% names(variables) && !is.null(cached$rho_classes)) {
     out$rho_mu <- mean(qlogis(c(cached$rho_classes)))
   }
@@ -406,6 +419,10 @@ build_dynamical_model <- function(train_df,
 
   check_dynamical_model_options(options)
   check_greta_fill()
+  if (!is.null(colnames(x_cell_years))) {
+    stopifnot(identical(colnames(x_cell_years),
+                        selection_column_names(options$selection_columns)))
+  }
 
   n_covs <- ncol(x_cell_years)
   n_unique_cells <- max(df$cell_id)
