@@ -170,29 +170,17 @@ cell_country_lookup <- built$lookups$cell_country_lookup
 init_frac_min <- init_frac_constants(types)$min
 init_range <- 1 - init_frac_min
 
-n_chains <- 8
+# the sampler settings (R/dynamical_model.R), with 8 chains
+settings <- dynamical_mcmc_settings(n_chains = 8)
 
 # used cached posterior means as inits
 inits_one <- dynamical_inits(readRDS("temporary/inits.RDS"), built$variables,
                              columns = colnames(x_cell_years),
                              country_region_index = country_region_index)
-inits <- replicate(n_chains,
-                   inits_one,
-                   simplify = FALSE)
 
-Lmax <- 30
-Lmin <- round(Lmax / 2)
 system.time(
-  draws <- mcmc(m,
-                chains = n_chains,
-                initial_values = inits,
-                warmup = 2000,
-                sampler = hmc(Lmin = Lmin, Lmax = Lmax),
-                n_samples = 1000)
+  draws <- run_dynamical_mcmc(m, built$variables, inits_one, settings)
 )
-
-# user    system   elapsed 
-# 15596.230  6544.659  4148.049 
 
 # check convergence
 rhats <- coda::gelman.diag(draws,
@@ -202,19 +190,6 @@ summary(rhats$psrf)
 
 # save fitted model to use for plotting and predictions
 save.image(file = "temporary/fitted_model.RData")
-
-
-# add more samples and update saved model
-draws <- extra_samples(draws, 1000)
-rhats <- coda::gelman.diag(draws,
-                           autoburnin = FALSE,
-                           multivariate = FALSE)
-summary(rhats$psrf)
-
-# save fitted model to use for plotting and predictions
-save.image(file = "temporary/fitted_model.RData")
-
-
 
 
 # save posterior means as initial values for a future model run
