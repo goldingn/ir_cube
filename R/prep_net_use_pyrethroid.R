@@ -11,26 +11,32 @@
 # over months of all nets. w = 0.25 (main) or 0.47 (sensitivity), from
 # R/net_type_weight.R.
 #
-# Writes data/clean/net_use_pyrethroid_cube_w<w>.tif (layers nets_<year>,
-# 2000-2024, processed as net_use_cube.tif in prep_rasters.R) and
-# data/clean/net_pyrethroid_share_cube_w<w>.tif (layers share_<year>, the
-# share at each mask cell). Run after prep_rasters.R.
+# Net use from either of two sources (net_use_source in selection_design()):
+#   run06   the MITN run 06 use layers (data/raw/itn/net_use_20260929), of the
+#           same run as the net crop by type. The 2025 layer is omitted (it has
+#           an error), so the model carries 2024 forward. They are missing
+#           outside the 44 countries of the net crop (361,587 mask cells: North
+#           Africa, South Africa, Lesotho, small islands, and 5 cells of
+#           Equatorial Guinea, and up to 39 more cells in some years), and
+#           are set to 0 there. The legacy layers are 0 there too but for 166
+#           cell-years (150 in Egypt, 12 in Equatorial Guinea, 4 in
+#           Guinea-Bissau)
+#   legacy  the layers of net_use_cube.tif (prep_rasters.R), whose 2024 layer
+#           is a copy of 2023. They differ from run 06's by up to 0.96 at a
+#           cell (mean absolute difference 0.07-0.18 over the mask, by year)
+#
+# Writes, for each w, data/clean/net_use_pyrethroid_cube_w<w>.tif (run06) and
+# net_use_pyrethroid_legacy_cube_w<w>.tif (legacy), layers nets_<year>,
+# 2000-2024, processed as net_use_cube.tif is in prep_rasters.R;
+# data/clean/net_use_run06_cube.tif, all run 06 net use processed the same
+# way, and net_use_run06_filled.tif, 1 at the cells set to 0; and data/clean/net_pyrethroid_share_cube_w<w>.tif (layers
+# share_<year>, the share at each mask cell). Run after prep_rasters.R.
 
 source("R/packages.R")
 source("R/functions.R")
 
 net_type_w <- c(0.25, 0.47)
 years <- 2000:2024
-
-# The use layers are those of net_use_cube.tif (prep_rasters.R). The net crop
-# by type is from the MITN run 06 (data/raw/itn/net_use_20260929/README.txt),
-# whose own use layers (use_<year>_mean.tif there) are not the same as these:
-# they differ by up to 0.9 at a cell (mean absolute difference 0.07-0.18 over
-# the mask, by year), and are missing outside the 44 countries of the net crop.
-# To build from them instead, set use_files to
-# sprintf("data/raw/itn/net_use_20260929/use_%d_mean.tif", years), which omits
-# the 2025 layer (it has an error); the model carries 2024 forward
-use_files <- sprintf("data/raw/itn/net_use/ITN_%d_use_mean.tif", years)
 
 mask <- rast("data/clean/raster_mask.tif")
 
@@ -127,22 +133,48 @@ print(cell_admin %>% filter(source == "nearest admin 1") %>% count(admin0_id) %>
 # share and pyrethroid-only net use cubes -------------------------------------
 
 # as prep_rasters.R does for net use: crop, impute the misaligned coast, and
-# mask. From the current layers this is net_use_cube.tif, to float precision
-use <- terra::crop(rast(use_files), mask)
-use <- terra::focal(use,
-                    w = 9,
-                    fun = "mean",
-                    na.policy = "only",
-                    na.rm = TRUE)
-use <- terra::mask(use, mask)
-names(use) <- paste0("nets_", years)
-if (identical(use_files,
-              sprintf("data/raw/itn/net_use/ITN_%d_use_mean.tif", years))) {
-  net_use <- rast("data/clean/net_use_cube.tif")
-  stopifnot(identical(names(net_use), names(use)),
-            all(terra::global(abs(net_use - use), "max",
-                              na.rm = TRUE)[[1]] < 1e-6))
+# mask
+process_use <- function(files) {
+  use <- terra::extend(terra::crop(rast(files), mask), mask)
+  use <- terra::focal(use,
+                      w = 9,
+                      fun = "mean",
+                      na.policy = "only",
+                      na.rm = TRUE)
+  use <- terra::mask(use, mask)
+  names(use) <- paste0("nets_", years)
+  use
 }
+
+# legacy: net_use_cube.tif, to float precision
+use_legacy <- process_use(sprintf("data/raw/itn/net_use/ITN_%d_use_mean.tif",
+                                  years))
+net_use <- rast("data/clean/net_use_cube.tif")
+stopifnot(identical(names(net_use), names(use_legacy)),
+          all(terra::global(abs(net_use - use_legacy), "max",
+                            na.rm = TRUE)[[1]] < 1e-6))
+
+# run 06, 0 at the cells it lacks
+use_run06 <- process_use(
+  sprintf("data/raw/itn/net_use_20260929/use_%d_mean.tif", years))
+run06_missing <- is.na(use_run06) & !is.na(use_legacy)
+legacy_fill <- terra::values(use_legacy, mat = TRUE)[mask_cells, ]
+missing <- terra::values(run06_missing, mat = TRUE)[mask_cells, ] == 1
+cat("run 06 use missing at mask cells, by year:", colSums(missing), "\n")
+cat("of which with legacy use > 0.01, by country (cell-years):\n")
+country <- terra::values(rast("data/clean/country_raster.tif"),
+                         dataframe = TRUE)[mask_cells, 1]
+print(table(rep(as.character(country), length(years))[
+  missing & legacy_fill > 0.01]))
+use_run06 <- terra::cover(use_run06, use_legacy * 0)
+terra::writeRaster(run06_missing, "data/clean/net_use_run06_filled.tif",
+                   overwrite = TRUE)
+stopifnot(!anyNA(terra::values(use_run06, mat = TRUE)[mask_cells, ]))
+terra::writeRaster(use_run06, "data/clean/net_use_run06_cube.tif",
+                   overwrite = TRUE)
+
+uses <- list(run06 = use_run06, legacy = use_legacy)
+cube_suffix <- c(run06 = "", legacy = "_legacy")
 
 for (w in net_type_w) {
   country_share <- country_crop %>%
@@ -184,9 +216,12 @@ for (w in net_type_w) {
                              w),
                      overwrite = TRUE)
 
-  net_use_pyrethroid <- use * share_cube
-  names(net_use_pyrethroid) <- paste0("nets_", years)
-  terra::writeRaster(net_use_pyrethroid,
-                     sprintf("data/clean/net_use_pyrethroid_cube_w%.2f.tif", w),
-                     overwrite = TRUE)
+  for (source in names(uses)) {
+    net_use_pyrethroid <- uses[[source]] * share_cube
+    names(net_use_pyrethroid) <- paste0("nets_", years)
+    terra::writeRaster(net_use_pyrethroid,
+                       sprintf("data/clean/net_use_pyrethroid%s_cube_w%.2f.tif",
+                               cube_suffix[[source]], w),
+                       overwrite = TRUE)
+  }
 }

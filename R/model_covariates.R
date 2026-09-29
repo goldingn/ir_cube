@@ -115,13 +115,16 @@ init_covariate_matrix <- function(cells, design = selection_design(),
 #                line (g > 1, e.g. 1.17 in 2030); "cap", held at 1
 #   nets         the net use column: "pyrethroid", use times the share of
 #                nets that are pyrethroid-only, conventional ITNs weighted by
-#                net_w (#26; net_use_pyrethroid_cube_w<net_w>.tif, from
-#                R/prep_net_use_pyrethroid.R); "all", all net use
-#                (net_use_cube.tif). Designs saved without it read as "all",
-#                the covariate of the fits to date
+#                net_w (#26; R/prep_net_use_pyrethroid.R); "all", all net
+#                use. Designs saved without it read as "all", the covariate
+#                of the fits to date
 #   net_w        the exposure of a conventional ITN relative to an LLIN
 #                (R/net_type_weight.R): 0.25, or 0.47 for the sensitivity
 #                analysis; not used by nets = "all"
+#   net_use_source  the net use layers: "run06", MITN run 06, of the same
+#                run as the net crop by type; "legacy", those of
+#                net_use_cube.tif. Designs saved without it read as
+#                "legacy" (net_use_file())
 # Net use, IRS and their hinges have no trend.
 selection_design <- function(pop = c("encounter", "saturating", "raw",
                                      "log"),
@@ -133,9 +136,11 @@ selection_design <- function(pop = c("encounter", "saturating", "raw",
                              trend_years = c(1995, 2025),
                              trend_after = c("continue", "cap"),
                              nets = c("pyrethroid", "all"),
-                             net_w = 0.25) {
+                             net_w = 0.25,
+                             net_use_source = c("run06", "legacy")) {
   pop <- match.arg(pop)
   nets <- match.arg(nets)
+  net_use_source <- match.arg(net_use_source)
   init_pop <- match.arg(init_pop, c("encounter", "saturating", "raw", "log"))
   trend_after <- match.arg(trend_after)
   stopifnot(is.list(hinges),
@@ -158,27 +163,32 @@ selection_design <- function(pop = c("encounter", "saturating", "raw",
   }
   list(pop = pop, pop_d_half = pop_d_half, init_pop = init_pop, hinges = hinges, trend_pop = trend_pop,
        trend_crops = trend_crops, trend_years = trend_years,
-       trend_after = trend_after, nets = nets, net_w = net_w)
+       trend_after = trend_after, nets = nets, net_w = net_w,
+       net_use_source = net_use_source)
 }
 
 # The design of the fits before the trends, the density transforms and the
 # net types (raw population, no hinges, no trend, log population in the
-# initial state, all net use), e.g. for matching the cached inits
+# initial state, all legacy net use), e.g. for matching the cached inits
 selection_design_untrended <- function() {
   selection_design(pop = "raw", init_pop = "log", trend_pop = "none",
-                   trend_crops = "none", nets = "all")
+                   trend_crops = "none", nets = "all",
+                   net_use_source = "legacy")
 }
 
 # A saved design, completed as selection_design() would build it. Designs
 # saved before the trends were added have only pop and hinges, and meant none;
 # those saved before init_pop was added had log population in the initial
-# state, and those saved before nets was added had all net use.
+# state, and those saved before nets was added had all legacy net use.
 complete_selection_design <- function(design) {
   if (is.null(design$init_pop)) {
     design$init_pop <- "log"
   }
   if (is.null(design$nets)) {
     design$nets <- "all"
+  }
+  if (is.null(design$net_use_source)) {
+    design$net_use_source <- "legacy"
   }
   for (name in c("trend_pop", "trend_crops")) {
     if (is.null(design[[name]])) {
@@ -382,13 +392,19 @@ selection_time_varying <- function(cells, baseline_year, end_year,
   out
 }
 
-# The net use cube of the design (design$nets, design$net_w)
+# The net use cube of the design (design$nets, design$net_w,
+# design$net_use_source)
 net_use_file <- function(design) {
-  if (design$nets == "all") {
+  if (design$nets == "all" && design$net_use_source == "legacy") {
     return("data/clean/net_use_cube.tif")
   }
-  file <- sprintf("data/clean/net_use_pyrethroid_cube_w%.2f.tif",
-                  design$net_w)
+  file <- if (design$nets == "all") {
+    "data/clean/net_use_run06_cube.tif"
+  } else {
+    sprintf("data/clean/net_use_pyrethroid%s_cube_w%.2f.tif",
+            if (design$net_use_source == "legacy") "_legacy" else "",
+            design$net_w)
+  }
   if (!file.exists(file)) {
     stop(file, " not found; run R/prep_net_use_pyrethroid.R")
   }
