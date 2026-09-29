@@ -52,7 +52,7 @@ end_year <- 2030
 # parent holds about 4 GB, most of it shared with the workers, and each worker
 # about 2-2.5 GB more at chunks of 1000 cells (a cells x years mean and SD is
 # 0.85 GB of that). Total memory (PSS) peaks at about 9 GB with 2 workers and
-# 12.5 GB with 3; the whole run takes about 110 and 75 minutes
+# 12.6 GB with 3; the whole run takes about 95 and 67 minutes
 chunk_size <- as.integer(Sys.getenv("IR_CUBE_PREDICT_CHUNK", "1000"))
 n_workers <- as.integer(Sys.getenv("IR_CUBE_PREDICT_WORKERS", "2"))
 
