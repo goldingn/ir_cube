@@ -1023,6 +1023,64 @@ ir_distinct_gambiae <- ir_distinct %>% filter(species_complex == "gambiae comple
 ir_distinct_gambiae <- ir_distinct_gambiae %>% 
   select(-c(lat_round:mortality_round))
 
+# check the country labels against the coordinates. The model takes each
+# pixel's country (and so its initial condition) from this label, so a record
+# whose coordinates lie in another country is relabelled to that country. A
+# label is kept if the point is within country_tolerance_km of the labelled
+# country: 195 records sit in a neighbouring country's polygon, 139 of them
+# within 3.5 km of their labelled country's border (GADM generalisation and
+# coordinate rounding) and the other 56 at 7.8 km or more, with nothing in
+# between. 47 of those 56 are Rwanda records at whole-degree coordinates, now
+# in DR Congo and Uganda. Records outside every polygon take their nearest country if within
+# the tolerance (106 of 126, all within 4 km of their label) and are dropped
+# otherwise (20 records 40 km offshore of Madagascar, outside the mask).
+# Records labelled with a country that has no mask cells, and so no border
+# polygon (8 in Cabo Verde), are left alone. See issue #13
+country_tolerance_km <- 5
+country_borders <- readRDS("data/clean/country_borders.RDS")
+record_points <- ir_distinct_gambiae %>%
+  st_as_sf(coords = c("longitude", "latitude"),
+           crs = st_crs(country_borders))
+polygon_index <- st_intersects(record_points, country_borders) %>%
+  vapply(function(i) i[1], integer(1))
+nearest_index <- st_nearest_feature(record_points, country_borders)
+label_index <- match(ir_distinct_gambiae$country_name,
+                     country_borders$country_name)
+km_from_label <- as.numeric(st_distance(record_points,
+                                        country_borders[label_index, ],
+                                        by_element = TRUE)) / 1000
+km_from_nearest <- as.numeric(st_distance(record_points,
+                                          country_borders[nearest_index, ],
+                                          by_element = TRUE)) / 1000
+country_geometry <- country_borders$country_name[
+  ifelse(is.na(polygon_index), nearest_index, polygon_index)]
+country_check <- tibble(
+  country_label = ir_distinct_gambiae$country_name,
+  country_geometry = country_geometry,
+  km_from_label = km_from_label,
+  km_outside_polygons = ifelse(is.na(polygon_index), km_from_nearest, 0),
+  action = case_when(
+    is.na(label_index) ~ "keep",
+    km_from_label <= country_tolerance_km ~ "keep",
+    km_outside_polygons <= country_tolerance_km ~ "relabel",
+    .default = "drop"
+  )
+)
+
+dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
+ir_distinct_gambiae %>%
+  select(longitude, latitude, year_start, insecticide_type, source, citation) %>%
+  bind_cols(country_check) %>%
+  filter(action != "keep") %>%
+  write.csv("outputs/review/bioassay_country_relabels.csv", row.names = FALSE)
+print(count(country_check, action, country_label, country_geometry))
+
+ir_distinct_gambiae <- ir_distinct_gambiae %>%
+  mutate(country_name = if_else(country_check$action == "relabel",
+                                country_check$country_geometry,
+                                country_name)) %>%
+  filter(country_check$action != "drop")
+
 # add on region information
 ir_distinct_gambiae <- ir_distinct_gambiae %>%
   left_join(
