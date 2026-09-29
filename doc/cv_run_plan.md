@@ -90,8 +90,12 @@ afterwards, or the real fold will be skipped.
 ### Sampling settings
 
 4 chains, 2,000 warmup, 5,000 post-warmup samples, `hmc(Lmin = 15, Lmax = 30)`,
-initialised from `temporary/inits.RDS`. Roughly 62 h per fold at four threads,
-two folds at a time.
+initialised from `temporary/inits.RDS`. With the closed-form recursion, about
+1.1 s per iteration at four chains and four threads, so about 2 h per fold
+(measured over 100 iterations on the interpolation fold, machine partly
+loaded); it was roughly 62 h with the greta.dynamics loop. The full fit (8
+chains, full data, four threads) runs at about 3.9 s per iteration, so about
+4.3 h for `fit_model.R`'s 2,000 warmup and 2,000 samples.
 
 Four chains rather than two because greta pools information across chains when
 adapting during warmup: at two chains the Kenya fold reached Rhat 7.6, and at

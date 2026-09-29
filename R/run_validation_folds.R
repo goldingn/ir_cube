@@ -172,13 +172,12 @@ for (fold in folds) {
 #
 # Folds whose draws are already on disk are skipped, so the run resumes.
 #
-# Two folds at a time, four threads each. Measured on this machine: two
-# concurrent at four threads is 62 h per fold, three at three threads is 95 h,
-# so with only the two forecast origins left to fit, two concurrent is the whole
-# run in about 62 h. Memory is the real constraint — three concurrent took
-# available memory down to 3 GB — and the five-year folds ask for four times as
-# many predictions as the three-year one did, which is why fit_fold() now thins
-# the stored draws and splits the calculate() in two.
+# Two folds at a time, four threads each. With the closed-form recursion (#25)
+# a fold at four chains and four threads samples at about 1.1 s per iteration
+# (interpolation fold, September 2026, machine partly loaded), so about 2 h for
+# 2,000 + 5,000 iterations, against 62 h with the greta.dynamics loop. Memory
+# was the constraint on concurrency under the loop; check free memory before
+# raising n_concurrent.
 n_concurrent <- 2
 chains_per_fold <- 4
 threads_per_fold <- 4
