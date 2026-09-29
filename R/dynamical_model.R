@@ -18,6 +18,7 @@
 
 source("R/greta_setup.R")
 source("R/model_covariates.R")
+source("R/windowed_hmc.R")
 
 
 # model options ------------------------------------------------------------
@@ -501,16 +502,35 @@ dynamical_inits <- function(cached, variables, columns = NULL,
 # The sampler settings for the dynamical model, used by fit_fold()
 # (R/fit_validation_fold.R) and fit_model.R. The arguments override single
 # settings, e.g. for a smoke test.
+#   sampler        "hmc", greta's hmc(), or "windowed", windowed_hmc()
+#                  (R/windowed_hmc.R), which adapts the mass matrix in windows
+#   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
+#                  burst of iterations
+#   accept_target  target acceptance of the step-size adaptation ("windowed"
+#                  only; hmc() fixes it at 0.5)
+#   pb_update      iterations per burst while sampling, so how often the
+#                  number of leapfrog steps is redrawn. With it fixed for a
+#                  burst, a parameter whose trajectory returns near its start
+#                  hardly moves for the whole burst
+#   one_by_one     TRUE to redraw it every iteration (a burst of one)
 dynamical_mcmc_settings <- function(n_chains = 4,
                                     warmup = 2000,
                                     n_samples = 5000,
+                                    sampler = c("hmc", "windowed"),
                                     Lmin = 15,
-                                    Lmax = 30) {
+                                    Lmax = 30,
+                                    accept_target = 0.5,
+                                    pb_update = 50,
+                                    one_by_one = FALSE) {
   list(n_chains = n_chains,
        warmup = warmup,
        n_samples = n_samples,
+       sampler = match.arg(sampler),
        Lmin = Lmin,
-       Lmax = Lmax)
+       Lmax = Lmax,
+       accept_target = accept_target,
+       pb_update = pb_update,
+       one_by_one = one_by_one)
 }
 
 # Sample the model `m` with `settings` (dynamical_mcmc_settings()), with all
@@ -521,12 +541,23 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
                                settings = dynamical_mcmc_settings()) {
   list2env(variables, environment())
   inits <- replicate(settings$n_chains, inits_one, simplify = FALSE)
+  sampler <- switch(
+    settings$sampler %||% "hmc",
+    hmc = {
+      stopifnot(settings$accept_target %||% 0.5 == 0.5)
+      hmc(Lmin = settings$Lmin, Lmax = settings$Lmax)
+    },
+    windowed = windowed_hmc(Lmin = settings$Lmin, Lmax = settings$Lmax,
+                            accept_target = settings$accept_target)
+  )
   mcmc(m,
        chains = settings$n_chains,
        initial_values = inits,
        warmup = settings$warmup,
-       sampler = hmc(Lmin = settings$Lmin, Lmax = settings$Lmax),
-       n_samples = settings$n_samples)
+       sampler = sampler,
+       n_samples = settings$n_samples,
+       pb_update = settings$pb_update %||% 50,
+       one_by_one = settings$one_by_one %||% FALSE)
 }
 
 
