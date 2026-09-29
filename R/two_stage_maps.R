@@ -582,7 +582,7 @@ report("tables written; %.0f min so far",
 # to the limits of Pf transmission and water bodies, one panel per year in two
 # rows with the legend in the eighth slot
 
-borders <- readRDS("data/clean/gadm_polys.RDS")
+borders <- readRDS("data/clean/country_borders.RDS")
 pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 
 africa_bg <- geom_sf(data = borders,

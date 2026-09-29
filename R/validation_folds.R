@@ -32,12 +32,6 @@ ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
-# an Africa polygon for plotting
-gadm_polys <- readRDS("data/clean/gadm_polys.RDS")
-africa <- gadm_polys %>%
-  # st_combine() %>%
-  st_union()
-
 baseline_year <- 1995
 final_data_year <- 2024
 

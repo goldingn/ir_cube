@@ -7,12 +7,12 @@ source("R/functions.R")
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
 
-gadm_polys <- readRDS("data/clean/gadm_polys.RDS")
+country_borders <- readRDS("data/clean/country_borders.RDS")
 country_raster <- rast("data/clean/country_raster.tif")
 region_raster <- rast("data/clean/region_raster.tif")
 
 # expand out the country-level random effects with the unobserved countries
-all_countries <- gadm_polys$country_name
+all_countries <- country_borders$country_name
 n_countries_all <- length(all_countries)
 unobserved_countries <- setdiff(all_countries, countries)
 n_countries_unobserved <- length(unobserved_countries)
@@ -31,7 +31,7 @@ init_country_raw_all[countries_unobserved_index, ] <- init_country_raw_unobserve
 # countries
 init_country_effect_all <- sweep(init_country_raw_all, 2, init_country_sd, FUN = "*")
 
-country_region_index_all <- gadm_polys %>%
+country_region_index_all <- country_borders %>%
   as_tibble() %>%
   mutate(
     all_country_id = match(country_name, all_countries),
@@ -91,7 +91,7 @@ country_init_sims <- sim$init_country_all_vec[, , 1] %>%
     insecticide = types[type_id]
   )
 
-init_polys <- gadm_polys %>%
+init_polys <- country_borders %>%
   left_join(
     country_init_sims,
     by = join_by(country_name)
