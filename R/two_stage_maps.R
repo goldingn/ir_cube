@@ -1,7 +1,7 @@
 # Maps of the two-stage model (#21): the final correction model (stage B, PQL
-# on the beta-binomial counts, omega_xi_u plus the static pixel effect p; no
-# survey effect; doc/two_stage_plan.md, "Final model") fitted per insecticide
-# type to ALL the bioassay data, on top of the full dynamical fit
+# on the beta-binomial counts, omega_xi_u plus the static pixel effect p;
+# doc/two_stage_plan.md, "Final model") fitted per insecticide type to ALL the
+# bioassay data, on top of the full dynamical fit
 # (R/fit_model.R), projected onto the full prediction grid for the years the
 # dynamical-model map figures show (R/fig_ir_maps.R).
 #
@@ -51,11 +51,9 @@
 #   5. figures in figures/two_stage/, in the layout of R/fig_ir_maps.R.
 #
 # Beyond T (2024 for most types, 2023 for Fenitrothion and Malathion) xi is an
-# AR(1) forecast. Undamped, its mean is xi_T + eta_T phi (1 - phi^h) / (1 - phi),
-# which plateaus at a rate set by phi, and its SD grows without bound with the
-# horizon h. With damped xi (model_config "..._psi_pql", doc/two_stage_plan.md,
-# "Damped accumulation"), xi_{T+h} = psi xi_{T+h-1} + eta_{T+h}: the mean decays
-# to 0 (the dynamical model) and the SD to the stationary SD of xi.
+# AR(1) forecast. Its mean is xi_T + eta_T phi (1 - phi^h) / (1 - phi), which
+# plateaus at a rate set by phi, and its SD grows without bound with the
+# horizon h.
 #
 # Steps 3-4 skip a type whose rasters already exist and were made with the
 # current mesh_config and model_config, unless `overwrite` is TRUE, so the figures can be
@@ -69,11 +67,8 @@ overwrite <- FALSE
 mesh_config <- "omega5000_xi2500"
 
 # the final model: stage B (PQL) of omega_xi_u with the static pixel effect p
-# (doc/two_stage_plan.md, "Final model and headline results"). The survey
-# effect (fit_correction(survey_effect = TRUE)) is not in it
+# (doc/two_stage_plan.md, "Final model and headline results")
 model_config <- "omega_xi_u_p_pql"
-# damped xi, xi_t = psi xi_{t-1} + eta_t, if the model_config says so
-damped_xi <- grepl("_psi", model_config)
 
 report <- function(...) {
   cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "|", sprintf(...), "\n")
@@ -380,7 +375,7 @@ if (length(types_to_fit) > 0) {
     time_fit <- system.time({
       fit_a <- fit_correction(train_k, variant = "omega_xi_u", t0 = t0,
                               T = T_k, mesh = mesh, mesh_xi = mesh_xi,
-                              pixel_effect = TRUE, damped_xi = damped_xi)
+                              pixel_effect = TRUE)
       stopifnot(fit_a$opt$convergence == 0)
       fit <- fit_correction_pql(fit_a, train_k)
     })
@@ -396,13 +391,12 @@ if (length(types_to_fit) > 0) {
     report(paste("%-18s n=%5i T=%i nodes=%i/%i conv=%i |grad|=%.1e",
                  "range_omega=%.0f sigma_omega=%.2f range_eta=%.0f",
                  "sigma_eta=%.3f phi=%.2f tau=%.3f sigma_p=%.2f",
-                 "psi=%s | PQL passes %i+%s, RMS move %.2f, refit %s |",
+                 "| PQL passes %i+%s, RMS move %.2f, refit %s |",
                  "fit %.0f s"),
            type, nrow(train_k), T_k, mesh$n, mesh_xi$n, fit$opt$convergence,
            max_gradient, fit$hyper$range_omega, fit$hyper$sigma_omega,
            fit$hyper$range_eta, fit$hyper$sigma_eta, fit$hyper$phi,
            fit$hyper$tau, fit$hyper$sigma_p,
-           if (damped_xi) sprintf("%.3f", fit$hyper$psi) else "1 (undamped)",
            fit$stage_b$passes_first,
            fit$stage_b$passes_second, fit$stage_b$rms_move,
            fit$stage_b$refit, time_fit[["elapsed"]])
@@ -509,8 +503,6 @@ if (length(types_to_fit) > 0) {
     stage_b_light <- fit$stage_b[setdiff(names(fit$stage_b),
                                          c("lambda_a", "lambda"))]
     saveRDS(list(model_config = model_config, hyper = fit$hyper,
-                 damped_xi = isTRUE(fit$damped_xi),
-                 psi_se_logit = fit$psi_se_logit,
                  mode = fit$mode, blocks = fit$blocks,
                  mesh = fit$mesh, mesh_xi = fit$mesh_xi, t0 = fit$t0,
                  T = fit$T, n_years = fit$n_years,
@@ -531,8 +523,6 @@ if (length(types_to_fit) > 0) {
       sigma_eta = fit$hyper$sigma_eta,
       phi = fit$hyper$phi, persistence_years = fit$hyper$persistence,
       tau = fit$hyper$tau, sigma_p = fit$hyper$sigma_p,
-      psi = if (damped_xi) fit$hyper$psi else NA_real_,
-      psi_se_logit = if (damped_xi) fit$psi_se_logit else NA_real_,
       convergence = fit$opt$convergence,
       max_gradient = max_gradient,
       stage_a_objective = stage_a_objective,
@@ -678,9 +668,9 @@ sd_limit <- ceiling(pooled_quantile("correction_sd", 1) * 10) / 10
 # the header)
 forecast_note <- function(type) {
   T_k <- hyperparameters$T[hyperparameters$insecticide_type == type]
-  sprintf(paste("final model (stage B, omega + xi + u + p%s), mapped without",
+  sprintf(paste("final model (stage B, omega + xi + u + p), mapped without",
                 "u and p; data to %i; later years are the AR(1) forecast of",
-                "xi"), if (damped_xi) ", damped xi" else "", T_k)
+                "xi"), T_k)
 }
 
 for (type in insecticides_plot) {
@@ -787,8 +777,7 @@ ggplot() +
   theme(plot.margin = unit(c(0.3, 0, 0, 0), "cm"),
         legend.ticks = element_blank()) +
   labs(title = sprintf("Second-stage correction in %i", compare_year),
-       subtitle = paste(if (damped_xi) "Final model (stage B, +p, damped ξ):" else
-                          "Final model (stage B, +p):", "posterior mean of",
+       subtitle = paste("Final model (stage B, +p): posterior mean of",
                         "omega + xi, logit scale (u and p not mapped)"))
 ggsave(file.path(figure_dir,
                  sprintf("correction_all_types_%i.png", compare_year)),
@@ -803,8 +792,7 @@ hyperparameters %>%
          `eta SD` = sigma_eta,
          `phi` = phi,
          `tau` = tau,
-         `sigma_p` = sigma_p,
-         any_of(c(psi = "psi"))) %>%
+         `sigma_p` = sigma_p) %>%
   pivot_longer(-insecticide_type) %>%
   mutate(name = factor(name, levels = unique(name)),
          insecticide_type = factor(insecticide_type,

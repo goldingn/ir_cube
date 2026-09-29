@@ -1,22 +1,19 @@
-# Checks of the optional error-structure terms of the two-stage correction
-# (#21; doc/two_stage_plan.md, "Error structure"): the static pixel effect p
-# and the survey effect s.
+# Checks of the optional static pixel effect p of the two-stage correction
+# (#21; doc/two_stage_plan.md, "Error structure").
 #
 #   Rscript R/check_two_stage_error_structure.R
 #
-# 1. Defaults unchanged: the template and R code as committed before these
-#    terms (ERROR_STRUCTURE_REF) and the current code, fitted to the
-#    same simulated data with the defaults (no p, no s), give the same
-#    objective, hyperparameters, latent mode, stage-B (PQL) fit and predictive
-#    draws. The old code is taken from `git show <ref>:<file>`
-#    (ERROR_STRUCTURE_REF, default HEAD) and compiled under another name.
-# 2. Recovery: data simulated with omega + xi + u + p + s; the +p+s fit
-#    recovers sigma_p, sigma_s and the other hyperparameters, the cut-posterior
-#    shift still matches a refit, and prediction intervals cover:
-#    - the target lambda = m + omega + xi + u + p (survey = "none") at held-out
-#      points: new pixels, and new years at training pixels (where p is known);
-#    - a new assay's latent lambda + s (survey = "fresh") in new surveys.
-#    The model without p and s is fitted to the same data for comparison.
+# 1. Unchanged against committed code: the template and R code at
+#    ERROR_STRUCTURE_REF (default HEAD, taken with `git show <ref>:<file>` and
+#    compiled under another name) and the current code, fitted to the same
+#    simulated data without and with p, give the same objective,
+#    hyperparameters, latent mode, stage-B (PQL) fit and predictive draws.
+# 2. Recovery: data simulated with omega + xi + u + p; the +p fit recovers
+#    sigma_p and the other hyperparameters, the cut-posterior shift still
+#    matches a refit, and prediction intervals cover the target
+#    lambda = m + omega + xi + u + p at held-out points: new pixels, and new
+#    years at training pixels (where p is known). The model without p is fitted
+#    to the same data for comparison.
 
 source("R/two_stage_correction.R")
 source("R/two_stage_pql.R")
@@ -39,13 +36,9 @@ n_sites <- nrow(sites_km)
 t0 <- 2000
 T_data <- 2020
 truth <- list(sigma_omega = 0.5, range_omega = 500, sigma_eta = 0.1,
-              range_eta = 300, phi = 0.7, tau = 0.2, sigma_p = 0.5,
-              sigma_s = 0.4)
+              range_eta = 300, phi = 0.7, tau = 0.2, sigma_p = 0.5)
 rho <- 0.15
 
-# surveys: a spatial cluster of sites (k-means, 80 clusters) in one year, so a
-# survey spans several pixels and a pixel is visited by several surveys
-site_cluster <- kmeans(sites_km, centers = 80, nstart = 5)$cluster
 # a subset of sites is revisited often, so p is identified from repeat years
 revisited <- sample.int(n_sites, 150)
 pixel_years <- tibble(
@@ -55,12 +48,10 @@ pixel_years <- tibble(
 ) %>%
   distinct()
 train <- pixel_years[sample.int(nrow(pixel_years), 2000, replace = TRUE), ] %>%
-  mutate(x_km = sites_km[site, 1], y_km = sites_km[site, 2], cell = site,
-         survey = paste(site_cluster[site], year))
+  mutate(x_km = sites_km[site, 1], y_km = sites_km[site, 2], cell = site)
 
 # held-out: new pixels (sites jittered, fresh p), and new years at revisited
-# training pixels (p known), both in surveys not seen in training (odd
-# cluster-years are relabelled as new surveys)
+# training pixels (p known)
 n_new <- 600
 new <- bind_rows(
   tibble(site = sample.int(n_sites, n_new / 2, replace = TRUE),
@@ -76,8 +67,7 @@ new <- bind_rows(
 ) %>%
   mutate(x_km = sites_km[site, 1] + jitter_x,
          y_km = sites_km[site, 2] + jitter_y,
-         cell = ifelse(type == "new pixel", -row_number(), site),
-         survey = paste("new", site_cluster[site], year))
+         cell = ifelse(type == "new pixel", -row_number(), site))
 # new-year rows must not reuse a training pixel-year (u would be known)
 new <- new %>% filter(!paste(cell, year) %in% paste(train$cell, train$year))
 
@@ -111,10 +101,8 @@ all_cells <- unique(c(train$cell, new$cell))
 p_true <- setNames(rnorm(length(all_cells), 0, truth$sigma_p), all_cells)
 all_py <- unique(c(paste(train$cell, train$year), paste(new$cell, new$year)))
 u_true <- setNames(rnorm(length(all_py), 0, truth$tau), all_py)
-all_surveys <- unique(c(train$survey, new$survey))
-s_true <- setNames(rnorm(length(all_surveys), 0, truth$sigma_s), all_surveys)
 
-# the target lambda (no survey effect) and the assay latent lambda + s
+# the target lambda
 latent_truth <- function(d) {
   A <- mesh_basis(mesh, cbind(d$x_km, d$y_km))
   A_xi <- mesh_basis(mesh_xi, cbind(d$x_km, d$y_km))
@@ -127,26 +115,24 @@ latent_truth <- function(d) {
 train <- train %>%
   mutate(m = m_fun(x_km, y_km, year),
          lambda = latent_truth(.),
-         lambda_assay = lambda + s_true[survey],
          mosquito_number = sample(20:100, n(), replace = TRUE),
-         died = rbinom(n(), mosquito_number, plogis(lambda_assay)),
+         died = rbinom(n(), mosquito_number, plogis(lambda)),
          rho = rho,
          v = empirical_logit(died, mosquito_number, rho)$v,
-         z = lambda_assay + rnorm(n(), 0, sqrt(v)))
+         z = lambda + rnorm(n(), 0, sqrt(v)))
 new <- new %>%
   mutate(m = m_fun(x_km, y_km, year),
-         lambda = latent_truth(.),
-         lambda_assay = lambda + s_true[survey])
-cat(sprintf(paste("simulated: %i assays, %i pixels (%i with >1 year),",
-                  "%i surveys; %i held-out points\n"),
+         lambda = latent_truth(.))
+cat(sprintf(paste("simulated: %i assays, %i pixels (%i with >1 year);",
+                  "%i held-out points\n"),
             nrow(train), n_distinct(train$cell),
             sum(table(unique(train[, c("cell", "year")])$cell) > 1),
-            n_distinct(train$survey), nrow(new)))
+            nrow(new)))
 
 
-# 1. defaults unchanged ---------------------------------------------------------------
+# 1. unchanged against committed code -----------------------------------------------
 
-cat("\n1. defaults against the code at", ref, "\n")
+cat("\n1. the current code against the code at", ref, "\n")
 old_dir <- file.path(scratch, "error_structure_head")
 dir.create(old_dir, showWarnings = FALSE, recursive = TRUE)
 git_show <- function(file, out) {
@@ -161,61 +147,58 @@ old <- new.env()
 sys.source(file.path(old_dir, "correction.R"), envir = old)
 assign("correction_template", old_cpp, envir = old)
 sys.source(file.path(old_dir, "pql.R"), envir = old)
-stopifnot(!isTRUE(grepl("include_p", paste(readLines(old_cpp),
-                                             collapse = "\n"))))
 
-train_default <- select(train, -survey)
-fits_default <- list(
-  old = old$fit_correction(train_default, "omega_xi_u", t0 = t0, T = T_data,
-                           mesh = mesh, mesh_xi = mesh_xi),
-  new = fit_correction(train_default, "omega_xi_u", t0 = t0, T = T_data,
-                       mesh = mesh, mesh_xi = mesh_xi)
-)
-fits_b <- list(
-  old = old$fit_correction_pql(fits_default$old, train_default),
-  new = fit_correction_pql(fits_default$new, train_default)
-)
-predict_both <- function(fits) {
-  set.seed(1)
-  draws_old <- old$predict_correction(fits$old, select(new, -survey),
-                                      n_draws = 200)
-  set.seed(1)
-  draws_new <- predict_correction(fits$new, select(new, -survey),
-                                  n_draws = 200)
-  list(old = draws_old, new = draws_new)
+compare_to_old <- function(pixel_effect) {
+  fits_a <- list(
+    old = old$fit_correction(train, "omega_xi_u", t0 = t0, T = T_data,
+                             mesh = mesh, mesh_xi = mesh_xi,
+                             pixel_effect = pixel_effect),
+    new = fit_correction(train, "omega_xi_u", t0 = t0, T = T_data,
+                         mesh = mesh, mesh_xi = mesh_xi,
+                         pixel_effect = pixel_effect)
+  )
+  fits_b <- list(
+    old = old$fit_correction_pql(fits_a$old, train),
+    new = fit_correction_pql(fits_a$new, train)
+  )
+  predict_both <- function(fits) {
+    set.seed(1)
+    draws_old <- old$predict_correction(fits$old, new, n_draws = 200)
+    set.seed(1)
+    draws_new <- predict_correction(fits$new, new, n_draws = 200)
+    list(old = draws_old, new = draws_new)
+  }
+  draws_a <- predict_both(fits_a)
+  draws_b <- predict_both(fits_b)
+  differences <- c(
+    objective_A = abs(fits_a$old$opt$objective - fits_a$new$opt$objective),
+    hyper_A = max(abs(unlist(fits_a$old$hyper) - unlist(fits_a$new$hyper))),
+    mode_A = max(abs(fits_a$old$mode - fits_a$new$mode)),
+    hessian_A = max(abs(fits_a$old$H - fits_a$new$H)),
+    hyper_B = max(abs(unlist(fits_b$old$hyper) - unlist(fits_b$new$hyper))),
+    mode_B = max(abs(fits_b$old$mode - fits_b$new$mode)),
+    draws_A = max(abs(draws_a$old - draws_a$new)),
+    draws_B = max(abs(draws_b$old - draws_b$new))
+  )
+  cat(if (pixel_effect) "with p:\n" else "without p:\n")
+  print(signif(differences, 3))
+  stopifnot(identical(names(fits_a$old$blocks), names(fits_a$new$blocks)),
+            all(differences == 0))
+  fits_a$new
 }
-draws_a <- predict_both(fits_default)
-draws_b <- predict_both(fits_b)
-differences <- c(
-  objective_A = abs(fits_default$old$opt$objective -
-                      fits_default$new$opt$objective),
-  hyper_A = max(abs(unlist(fits_default$old$hyper) -
-                      unlist(fits_default$new$hyper))),
-  mode_A = max(abs(fits_default$old$mode - fits_default$new$mode)),
-  hessian_A = max(abs(fits_default$old$H - fits_default$new$H)),
-  hyper_B = max(abs(unlist(fits_b$old$hyper) - unlist(fits_b$new$hyper))),
-  mode_B = max(abs(fits_b$old$mode - fits_b$new$mode)),
-  draws_A = max(abs(draws_a$old - draws_a$new)),
-  draws_B = max(abs(draws_b$old - draws_b$new))
-)
-print(signif(differences, 3))
-stopifnot(identical(names(fits_default$old$blocks),
-                    names(fits_default$new$blocks)),
-          all(differences == 0))
-cat("defaults reproduce the old code exactly\n")
+fit_default <- compare_to_old(FALSE)
+invisible(compare_to_old(TRUE))
+cat("the current code reproduces the old code exactly\n")
 
 
 # 2. recovery --------------------------------------------------------------------
 
-cat("\n2. fits to data simulated with p and s\n")
+cat("\n2. fits to data simulated with p\n")
 fits <- list(
-  omega_xi_u = fits_default$new,
+  omega_xi_u = fit_default,
   omega_xi_u_p = fit_correction(train, "omega_xi_u", t0 = t0, T = T_data,
                                 mesh = mesh, mesh_xi = mesh_xi,
-                                pixel_effect = TRUE),
-  omega_xi_u_p_s = fit_correction(train, "omega_xi_u", t0 = t0, T = T_data,
-                                  mesh = mesh, mesh_xi = mesh_xi,
-                                  pixel_effect = TRUE, survey_effect = TRUE)
+                                pixel_effect = TRUE)
 )
 hyper_table <- tibble(parameter = names(truth), truth = unlist(truth))
 for (name in names(fits)) {
@@ -229,12 +212,10 @@ cat("convergence:", vapply(fits, function(f) f$opt$convergence, 0), "\n")
 cat("objective:", round(vapply(fits, function(f) f$opt$objective, 0), 2), "\n")
 
 # latent effects against the truth at the training data
-f <- fits$omega_xi_u_p_s
+f <- fits$omega_xi_u_p
 p_hat <- f$mode[f$blocks$p]
-s_hat <- f$mode[f$blocks$s]
-cat(sprintf("cor(p-hat, p) = %.2f over %i pixels, cor(s-hat, s) = %.2f over %i surveys\n",
-            cor(p_hat, p_true[as.character(f$pixels$cell)]), length(p_hat),
-            cor(s_hat, s_true[f$surveys$survey]), length(s_hat)))
+cat(sprintf("cor(p-hat, p) = %.2f over %i pixels\n",
+            cor(p_hat, p_true[as.character(f$pixels$cell)]), length(p_hat)))
 
 # the cut-posterior shift against a refit with the hyperparameters fixed
 m_perturbed <- train$m + 0.3 * sin(train$x_km / 400)
@@ -244,7 +225,7 @@ data$m <- m_perturbed
 obj <- correction_adfun(data, f$par_list, f$variant, fix_hyper = TRUE)
 invisible(obj$fn(obj$par))
 shift_error <- max(abs(shifted - obj$env$last.par[obj$env$random]))
-cat(sprintf("cut-posterior shift vs refit, +p+s: max |difference| = %.2e\n",
+cat(sprintf("cut-posterior shift vs refit, +p: max |difference| = %.2e\n",
             shift_error))
 stopifnot(shift_error < 1e-8)
 
@@ -260,18 +241,10 @@ coverage <- function(draws, target, group) {
                       function(x) sqrt(mean(x))),
         mean_sd = tapply(apply(draws, 2, sd), group, mean))
 }
-cat("\ncoverage of the target lambda (no s), survey = \"none\":\n")
+cat("\ncoverage of the target lambda:\n")
 for (name in names(fits)) {
   set.seed(3)
   draws <- predict_correction(fits[[name]], new, n_draws = 1000)
   cat(name, "\n")
   print(round(coverage(draws, new$lambda, new$type), 3))
-}
-cat("\ncoverage of a new assay's latent lambda + s:\n")
-set.seed(3)
-draws <- predict_correction(f, new, n_draws = 1000,
-                            survey = c("none", "fresh"))
-for (mode in names(draws)) {
-  cat("+p+s, survey =", mode, "\n")
-  print(round(coverage(draws[[mode]], new$lambda_assay, new$type), 3))
 }

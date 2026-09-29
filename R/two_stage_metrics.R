@@ -33,20 +33,11 @@
 # The headline (cv_headline_two_stage.csv and the figures) is the final model
 # (stage B, omega_xi_u + p) and stage A omega_xi_u, both on the omega5000_xi2500
 # meshes, beside the dynamical model and the nulls; every other variant and
-# mesh configuration is in cv_summary_two_stage.csv. term_inclusion_two_stage.csv is omega_xi_u against
-# omega_u, stage_b_two_stage.csv stage B (PQL) against stage A for omega_xi_u,
-# and cv_horizon_two_stage.csv the scores by forecast horizon.
-# damped_xi_two_stage.csv is the final model with damped xi against the
-# final model (doc/two_stage_plan.md, "Damped accumulation"), overall and by
-# forecast horizon.
-#
-# TWO_STAGE_RHO=own scores each two-stage model at its own rho instead (the
-# rho_draws saved with its draws: the replicate-based per-type rho it was fitted
-# with, or its per-type estimate for the joint-rho model, doc/two_stage_plan.md,
-# "Joint rho"); the dynamical model and the nulls stay at the replicate-based
-# rho, and so does the noise floor. Only files whose own rho differs are
-# rescored. Every CSV is then written with the suffix _own_rho, and no figures
-# are written, so the default outputs are untouched.
+# mesh configuration is in cv_summary_two_stage.csv.
+# term_inclusion_two_stage.csv is omega_xi_u against omega_u,
+# stage_b_two_stage.csv stage B (PQL) against stage A for omega_xi_u,
+# error_structure_two_stage.csv stage B with p against stage B without it, and
+# cv_horizon_two_stage.csv the scores by forecast horizon.
 #
 # Only the five #12 folds are scored: spatial_interpolation/all,
 # spatial_blocks/1 and 2, temporal_forecasting/2014 and 2018. Leave-one-country
@@ -76,12 +67,6 @@ dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(cache_dir, showWarnings = FALSE, recursive = TRUE)
 
-rho_scoring <- Sys.getenv("TWO_STAGE_RHO", "external")
-stopifnot(rho_scoring %in% c("external", "own"))
-output_suffix <- if (rho_scoring == "own") "_own_rho" else ""
-output_csv <- function(name) {
-  file.path(output_dir, sub("\\.csv$", paste0(output_suffix, ".csv"), name))
-}
 
 n_pit_reps <- 100
 n_bootstrap <- 2000
@@ -128,10 +113,9 @@ null_models <- c("intercept", "nearest_neighbour", "nearest_neighbour_oracle")
 # of omega_xi_u with the static pixel effect p (doc/two_stage_plan.md, "Final
 # model and headline results"): the headline tables and figures show it and
 # stage A omega_xi_u beside the dynamical model and the nulls. The stage-A
-# omega_u variant, stage B without p, the survey-effect variants, the
-# base-mesh runs (unsuffixed model names) and the other mesh configurations
-# are scored too, and are in the full summary tables, labelled with their
-# variant and mesh.
+# omega_u variant, stage B without p, the base-mesh runs (unsuffixed model
+# names) and the other mesh configurations are scored too, and are in the full
+# summary tables, labelled with their variant and mesh.
 reported_mesh <- "omega5000_xi2500"
 reported_model <- function(variant) {
   paste0("two_stage_", variant, "_mesh-", reported_mesh)
@@ -139,10 +123,6 @@ reported_model <- function(variant) {
 # the two stage-A variants, for the term-inclusion comparison
 two_stage_reported <- reported_model(c("omega_u", "omega_xi_u"))
 final_model <- reported_model("omega_xi_u_p_pql")
-# the final model with rho estimated jointly (doc/two_stage_plan.md, "Joint rho")
-joint_rho_model <- reported_model("omega_xi_u_p_rho_pql")
-# the final model with damped xi (doc/two_stage_plan.md, "Damped accumulation")
-damped_model <- reported_model("omega_xi_u_p_psi_pql")
 two_stage_headline <- c(reported_model("omega_xi_u"), final_model)
 headline_models <- c("dynamical", "intercept", "nearest_neighbour",
                      "nearest_neighbour_oracle", two_stage_headline)
@@ -166,14 +146,7 @@ variant_labels <- c(
   two_stage_omega_u_loo = "two-stage ω+u (leave-out m)",
   two_stage_omega_xi_u_loo = "two-stage ω+ξ+u (leave-out m)",
   two_stage_omega_xi_u_pql = "two-stage ω+ξ+u, stage B (PQL)",
-  two_stage_omega_xi_u_p_pql = "two-stage ω+ξ+u+p, stage B",
-  two_stage_omega_xi_u_p_s_pql = "two-stage ω+ξ+u+p+s, stage B",
-  two_stage_omega_xi_u_p_s_snone_pql =
-    "two-stage ω+ξ+u+p+s, stage B, no s in held-out draws",
-  two_stage_omega_xi_u_p_s_spost_pql =
-    "two-stage ω+ξ+u+p+s, stage B, posterior s for training surveys",
-  two_stage_omega_xi_u_p_rho_pql = "two-stage ω+ξ+u+p, stage B, joint rho",
-  two_stage_omega_xi_u_p_psi_pql = "two-stage ω+ξ+u+p, stage B, damped ξ"
+  two_stage_omega_xi_u_p_pql = "two-stage ω+ξ+u+p, stage B"
 )
 mesh_tag_pattern <- "_mesh-([A-Za-z0-9_]+)$"
 label_for <- function(model) {
@@ -322,8 +295,7 @@ extract_fold <- function(file) {
   out
 }
 
-score_fold <- function(file, model, experiment, fold, label,
-                       rho_mode = "external") {
+score_fold <- function(file, model, experiment, fold, label) {
 
   x <- extract_fold(file)
   test <- x$test_df
@@ -332,8 +304,7 @@ score_fold <- function(file, model, experiment, fold, label,
   # randomisation and simulated replicates
   set.seed(2026 + sum(utf8ToInt(paste(model, experiment, fold))))
 
-  rho <- if (rho_mode == "own") x$rho_fitted else
-    rho_for_type(test$insecticide_type)
+  rho <- rho_for_type(test$insecticide_type)
   stopifnot(!anyNA(rho))
   # byrow: ppd_summary would recycle a bare vector down the draws, not across
   # the records
@@ -381,15 +352,12 @@ score_fold <- function(file, model, experiment, fold, label,
 
 # cached per fold, keyed on the source file's size and time and on the scoring
 # version, so a regenerated draws file is always rescored
-score_or_load <- function(file, model, experiment, fold, label,
-                          rho_mode = "external") {
+score_or_load <- function(file, model, experiment, fold, label) {
   info <- file.info(file)
   key <- list(version = scoring_version, size = info$size,
               mtime = as.numeric(info$mtime))
-  cache_file <- file.path(cache_dir, sprintf("%s__%s__%s%s.rds", model,
-                                             experiment, fold,
-                                             if (rho_mode == "own")
-                                               "__own_rho" else ""))
+  cache_file <- file.path(cache_dir, sprintf("%s__%s__%s.rds", model,
+                                             experiment, fold))
   if (file.exists(cache_file)) {
     cached <- readRDS(cache_file)
     if (identical(cached$key, key)) {
@@ -397,9 +365,9 @@ score_or_load <- function(file, model, experiment, fold, label,
       return(cached$value)
     }
   }
-  report("scoring  %s / %s / %s%s (%.2f GB)", model, experiment, fold,
-         if (rho_mode == "own") " at its own rho" else "", info$size / 1e9)
-  value <- score_fold(file, model, experiment, fold, label, rho_mode)
+  report("scoring  %s / %s / %s (%.2f GB)", model, experiment, fold,
+         info$size / 1e9)
+  value <- score_fold(file, model, experiment, fold, label)
   saveRDS(list(key = key, value = value), cache_file)
   value
 }
@@ -411,13 +379,6 @@ for (i in order(file.size(inventory$file))) {
   entry <- inventory[i, ]
   scored[[i]] <- score_or_load(entry$file, entry$model, entry$experiment,
                                entry$fold, entry$label)
-  # at its own rho, if that is not the replicate-based rho it was scored at
-  own <- scored[[i]]$scores$rho_fitted
-  if (rho_scoring == "own" && startsWith(entry$model, "two_stage_") &&
-      !anyNA(own) && max(abs(own - scored[[i]]$scores$rho)) > 1e-12) {
-    scored[[i]] <- score_or_load(entry$file, entry$model, entry$experiment,
-                                 entry$fold, entry$label, rho_mode = "own")
-  }
 }
 names(scored) <- with(inventory, paste(model, label, fold, sep = "|"))
 
@@ -537,7 +498,7 @@ all_scores <- all_scores %>%
   select(-a, -b)
 
 write.csv(all_scores %>% mutate(model_label = label_for(model), .after = model),
-          output_csv("cv_scores_two_stage.csv"), row.names = FALSE)
+          file.path(output_dir, "cv_scores_two_stage.csv"), row.names = FALSE)
 report("wrote cv_scores_two_stage.csv (%i rows)", nrow(all_scores))
 
 
@@ -738,7 +699,7 @@ summary_table <- bind_rows(
   mutate(model_label = label_for(model), .after = model) %>%
   rename(fold = fold_level)
 
-write.csv(summary_table, output_csv("cv_summary_two_stage.csv"),
+write.csv(summary_table, file.path(output_dir, "cv_summary_two_stage.csv"),
           row.names = FALSE)
 report("wrote cv_summary_two_stage.csv (%i rows)", nrow(summary_table))
 
@@ -751,7 +712,7 @@ headline <- summary_table %>%
   mutate(model = factor(model, headline_models)) %>%
   arrange(experiment, fold != "pooled", fold, model) %>%
   mutate(model = as.character(model))
-write.csv(headline, output_csv("cv_headline_two_stage.csv"),
+write.csv(headline, file.path(output_dir, "cv_headline_two_stage.csv"),
           row.names = FALSE)
 
 cat("\nheadline (per-type rho):\n")
@@ -790,7 +751,8 @@ term_inclusion <- all_scores %>%
   select(experiment, folds, n, n_pixels, starts_with("diff_"),
          starts_with("prob_better_"))
 if (nrow(term_inclusion) > 0) {
-  write.csv(term_inclusion, output_csv("term_inclusion_two_stage.csv"),
+  write.csv(term_inclusion,
+            file.path(output_dir, "term_inclusion_two_stage.csv"),
             row.names = FALSE)
   cat("\nterm inclusion, omega_xi_u - omega_u (paired pixel bootstrap):\n")
   print(as.data.frame(term_inclusion %>%
@@ -830,7 +792,7 @@ if (nrow(stage_b_table) > 0) {
     select(experiment, folds, stage, model, n, n_pixels, elpd, crps, explained,
            coverage_50, coverage_95, starts_with("diff_"),
            starts_with("prob_better_"))
-  write.csv(stage_b_table, output_csv("stage_b_two_stage.csv"),
+  write.csv(stage_b_table, file.path(output_dir, "stage_b_two_stage.csv"),
             row.names = FALSE)
   cat("\nstage B - stage A, omega_xi_u (paired pixel bootstrap):\n")
   print(as.data.frame(stage_b_table %>%
@@ -854,19 +816,11 @@ if (nrow(stage_b_table) > 0) {
 
 # error structure ---------------------------------------------------------------
 
-# The optional static pixel effect p and survey effect s (doc/two_stage_plan.md,
-# "Error structure"), on stage B and the reported meshes, against stage B
-# without them; diff_* columns are model - stage B. The +p+s model is scored
-# three ways, from the same latent draws: with a fresh survey draw per held-out
-# survey (the predictive distribution of a new assay), with no survey term
-# (_snone: what a map gives), and with the posterior survey draw where the
-# held-out assay's survey has training data (_spost)
-error_structure_models <- paste0(
-  "two_stage_omega_xi_u",
-  c("_p", "_p_s", "_p_s_snone", "_p_s_spost"),
-  "_pql_mesh-", reported_mesh)
+# The static pixel effect p (doc/two_stage_plan.md, "Error structure"): the
+# final model (stage B with p, the reported meshes) against stage B without
+# it; diff_* columns are final - stage B
 error_structure_table <- all_scores %>%
-  filter(model %in% c(stage_b_model, error_structure_models)) %>%
+  filter(model %in% c(stage_b_model, final_model)) %>%
   pool_forecasting() %>%
   group_by(experiment) %>%
   group_modify(function(d, key) {
@@ -885,7 +839,7 @@ if (nrow(error_structure_table) > 0) {
            explained, coverage_50, coverage_95, starts_with("diff_"),
            starts_with("prob_better_"))
   write.csv(error_structure_table,
-            output_csv("error_structure_two_stage.csv"),
+            file.path(output_dir, "error_structure_two_stage.csv"),
             row.names = FALSE)
   cat("\nerror structure, model - stage B (paired pixel bootstrap):\n")
   print(as.data.frame(error_structure_table %>%
@@ -900,57 +854,6 @@ if (nrow(error_structure_table) > 0) {
               d_explained = sprintf("%+.2f [%+.2f, %+.2f]", diff_explained,
                                     diff_explained_lower,
                                     diff_explained_upper),
-              cover = sprintf("%.3f / %.3f", coverage_50, coverage_95))),
-    row.names = FALSE)
-}
-
-
-# joint rho ---------------------------------------------------------------------
-
-# The final model with rho estimated per type inside the correction
-# (doc/two_stage_plan.md, "Joint rho") against the final model (rho fixed at
-# the replicate-based estimate); diff_* columns are joint rho - final, paired by
-# pixel, including the 50% and 95% coverage (cover50, cover95). Per experiment
-# and forecasting origin. Under TWO_STAGE_RHO=own the joint-rho model is scored
-# at its estimated rho (joint_rho_two_stage_own_rho.csv)
-joint_rho_table <- all_scores %>%
-  filter(model %in% c(final_model, joint_rho_model)) %>%
-  pool_forecasting() %>%
-  group_by(experiment) %>%
-  group_modify(function(d, key) {
-    d <- models_complete(d)
-    if (n_distinct(d$model) < 2) return(tibble())
-    summarise_group(d, pit_matrices, reference = final_model) %>%
-      mutate(folds = paste(sort(unique(d$fold)), collapse = "+"))
-  }) %>%
-  ungroup()
-if (nrow(joint_rho_table) > 0) {
-  joint_rho_table <- joint_rho_table %>%
-    mutate(model_label = label_for(model), rho_scoring = rho_scoring,
-           .after = model) %>%
-    select(experiment, folds, model, model_label, rho_scoring, n, n_pixels,
-           elpd, crps, explained, coverage_50, coverage_95,
-           starts_with("diff_"), starts_with("prob_better_"))
-  write.csv(joint_rho_table, output_csv("joint_rho_two_stage.csv"),
-            row.names = FALSE)
-  interval_text <- function(x, lower, upper, scale = 1, digits = 3) {
-    sprintf(paste0("%+.", digits, "f [%+.", digits, "f, %+.", digits, "f]"),
-            scale * x, scale * lower, scale * upper)
-  }
-  cat(sprintf("\njoint rho - final model (rho scoring: %s):\n", rho_scoring))
-  print(as.data.frame(joint_rho_table %>%
-    filter(model == joint_rho_model) %>%
-    transmute(experiment, n,
-              d_elpd = interval_text(diff_elpd, diff_elpd_lower,
-                                     diff_elpd_upper),
-              d_crps_1e3 = interval_text(diff_crps, diff_crps_lower,
-                                         diff_crps_upper, 1e3, 2),
-              d_explained = interval_text(diff_explained, diff_explained_lower,
-                                          diff_explained_upper, 1, 2),
-              d_cover50 = interval_text(diff_cover50, diff_cover50_lower,
-                                        diff_cover50_upper),
-              d_cover95 = interval_text(diff_cover95, diff_cover95_lower,
-                                        diff_cover95_upper),
               cover = sprintf("%.3f / %.3f", coverage_50, coverage_95))),
     row.names = FALSE)
 }
@@ -974,7 +877,7 @@ coverage_table <- bind_rows(lapply(
   ungroup() %>%
   mutate(model_label = label_for(model), .after = model)
 
-write.csv(coverage_table, output_csv("cv_coverage_two_stage.csv"),
+write.csv(coverage_table, file.path(output_dir, "cv_coverage_two_stage.csv"),
           row.names = FALSE)
 
 
@@ -997,71 +900,8 @@ if (nrow(horizon_table) > 0) {
     }) %>%
     ungroup() %>%
     mutate(model_label = label_for(model), .after = model)
-  write.csv(horizon_table, output_csv("cv_horizon_two_stage.csv"),
+  write.csv(horizon_table, file.path(output_dir, "cv_horizon_two_stage.csv"),
             row.names = FALSE)
-}
-
-
-# damped xi ---------------------------------------------------------------------
-
-# The final model with damped xi (xi_t = psi xi_{t-1} + eta_t, psi estimated
-# per type; doc/two_stage_plan.md, "Damped accumulation") against the final
-# model (undamped); diff_* columns are damped - undamped, paired by pixel, per
-# experiment and forecasting origin, and per forecast horizon. It comes after
-# the other bootstraps so that adding it leaves their random draws unchanged
-damped_other <- if (final_model == damped_model) {
-  reported_model("omega_xi_u_p_pql")
-} else {
-  final_model
-}
-damped_pair <- c(damped_other, damped_model)
-damped_compare <- function(d) {
-  d <- models_complete(d)
-  if (n_distinct(d$model) < 2) return(tibble())
-  summarise_group(d, pit_matrices, reference = damped_other) %>%
-    mutate(folds = paste(sort(unique(d$fold)), collapse = "+"))
-}
-damped_table <- all_scores %>%
-  filter(model %in% damped_pair) %>%
-  pool_forecasting() %>%
-  group_by(experiment) %>%
-  group_modify(function(d, key) damped_compare(d)) %>%
-  ungroup()
-if (nrow(damped_table) > 0) {
-  damped_horizon <- all_scores %>%
-    filter(model %in% damped_pair, !is.na(horizon)) %>%
-    pool_forecasting() %>%
-    group_by(experiment, horizon) %>%
-    group_modify(function(d, key) damped_compare(d)) %>%
-    ungroup()
-  damped_table <- bind_rows(damped_table %>% mutate(horizon = NA_real_),
-                            damped_horizon) %>%
-    mutate(model_label = label_for(model), .after = model) %>%
-    select(experiment, horizon, folds, model, model_label, n, n_pixels,
-           elpd, crps, explained, coverage_50, coverage_95,
-           starts_with("diff_"), starts_with("prob_better_"))
-  write.csv(damped_table, output_csv("damped_xi_two_stage.csv"),
-            row.names = FALSE)
-  interval_text <- function(x, lower, upper, scale = 1, digits = 3) {
-    sprintf(paste0("%+.", digits, "f [%+.", digits, "f, %+.", digits, "f]"),
-            scale * x, scale * lower, scale * upper)
-  }
-  cat("\ndamped xi - undamped final model (paired pixel bootstrap):\n")
-  print(as.data.frame(damped_table %>%
-    filter(model == damped_model) %>%
-    transmute(experiment, horizon, n,
-              d_elpd = interval_text(diff_elpd, diff_elpd_lower,
-                                     diff_elpd_upper),
-              d_crps_1e3 = interval_text(diff_crps, diff_crps_lower,
-                                         diff_crps_upper, 1e3, 2),
-              d_explained = interval_text(diff_explained, diff_explained_lower,
-                                          diff_explained_upper, 1, 2),
-              d_cover50 = interval_text(diff_cover50, diff_cover50_lower,
-                                        diff_cover50_upper),
-              d_cover95 = interval_text(diff_cover95, diff_cover95_lower,
-                                        diff_cover95_upper),
-              cover = sprintf("%.3f / %.3f", coverage_50, coverage_95))),
-    row.names = FALSE)
 }
 
 
@@ -1095,8 +935,6 @@ as_experiment_factor <- function(experiment) {
 }
 
 save_figure <- function(plot, name, width, height) {
-  # the figures are the default (replicate-based rho) scoring only
-  if (rho_scoring != "external") return(invisible())
   ggsave(file.path(figure_dir, name), plot, width = width, height = height,
          dpi = 200, bg = "white")
   report("wrote %s", file.path(figure_dir, name))
@@ -1390,11 +1228,7 @@ read_residuals <- function(file) {
   # selection effect rather than a calibrated test.
   if (!is.na(columns$type)) {
     size <- rep(n, n_residual_sims)
-    # the model's own rho if the file records it (the joint-rho model: its v
-    # is at that rho too), otherwise the replicate-based rho it was fitted at
-    rho_record <- if ("rho" %in% names(x)) x$rho else
-      rho_for_type(x[[columns$type]])
-    rho <- rep(rho_record, n_residual_sims)
+    rho <- rep(rho_for_type(x[[columns$type]]), n_residual_sims)
     fitted <- rep(x[[columns$m_ref]] + x[[columns$latent]], n_residual_sims)
     simulated_died <- rbetabinom(length(size), size, plogis(fitted), rho)
     simulated <- empirical_logit_z(simulated_died, size, rho)
@@ -1528,7 +1362,7 @@ residual_files <- residual_files[grepl(
 # scores
 residual_files <- residual_files[
   vapply(strsplit(basename(residual_files), "__"), `[`, "", 2) %in%
-    c(two_stage_reported, stage_b_model, final_model, joint_rho_model)]
+    c(two_stage_reported, stage_b_model, final_model)]
 
 set.seed(2026 - 9 - 26)
 if (length(residual_files) == 0) {
@@ -1537,7 +1371,7 @@ if (length(residual_files) == 0) {
   diagnostics <- residual_diagnostics(residual_files)
   if (!is.null(diagnostics)) {
     write.csv(diagnostics$table,
-              output_csv("train_residual_extremes.csv"),
+              file.path(output_dir, "train_residual_extremes.csv"),
               row.names = FALSE)
     report("wrote train_residual_extremes.csv")
 

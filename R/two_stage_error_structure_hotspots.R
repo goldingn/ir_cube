@@ -1,11 +1,11 @@
-# Do the static pixel effect p and the survey effect s take over the omega
-# hotspots? (#21; doc/two_stage_plan.md, "Error structure")
+# Does the static pixel effect p take over the omega hotspots? (#21;
+# doc/two_stage_plan.md, "Error structure")
 #
 #   Rscript R/two_stage_error_structure_hotspots.R [types]
 #
 # Fits omega_xi_u to all of a type's data (as R/two_stage_maps.R does, on the
 # adopted omega5000_xi2500 meshes, t0 = 1995, T = the last data year), stage A
-# then stage B, without and with the optional terms (+p, +p+s), and applies the
+# then stage B, without and with the static pixel effect p, and applies the
 # hotspot definition of R/two_stage_hotspot_diagnostics.R to each fit:
 #
 #   omega hotspots: omega-mesh nodes that are strict local extrema of omega-hat
@@ -15,8 +15,8 @@
 #   nodes, thresholded on its prominence over the 2-ring.
 #
 # Because the 2% threshold is relative, the count at it changes little by
-# construction; the count above the threshold of the fit without p and s (a
-# fixed |omega-hat|), and the size of the peaks, say whether the hotspots fall.
+# construction; the count above the threshold of the fit without p (a fixed
+# |omega-hat|), and the size of the peaks, say whether the hotspots fall.
 #
 # m (the dynamical model's posterior mean logit at each assay) is read from the
 # cache of R/two_stage_covariate_diagnostics.R, as in the hotspot diagnostics.
@@ -88,8 +88,6 @@ for (type in focus_types) {
   train$z <- stage_a$z
   train$v <- stage_a$v
   coords <- coords_km(train)
-  train$survey <- survey_id(df$citation[rows], df$country_name[rows],
-                            train$year, coords)
   T_k <- max(train$year)
   meshes <- suppressMessages(build_correction_meshes(coords,
                                                      "omega5000_xi2500"))
@@ -101,15 +99,14 @@ for (type in focus_types) {
   }, logical(1))
 
   base_threshold <- NULL
-  for (terms in list(character(0), "p", c("p", "s"))) {
-    label <- paste(c("omega_xi_u", terms), collapse = "_")
+  for (pixel_effect in c(FALSE, TRUE)) {
+    label <- if (pixel_effect) "omega_xi_u_p" else "omega_xi_u"
     set.seed(2026 + k)
     time <- system.time({
       fit_a <- fit_correction(train, "omega_xi_u", t0 = baseline_year,
                               T = T_k, mesh = meshes$omega,
                               mesh_xi = meshes$xi,
-                              pixel_effect = "p" %in% terms,
-                              survey_effect = "s" %in% terms)
+                              pixel_effect = pixel_effect)
       fit_b <- fit_correction_pql(fit_a, train)
     })[["elapsed"]]
     for (stage in c("A", "B")) {
@@ -139,12 +136,11 @@ for (type in focus_types) {
         range_omega = fit$hyper$range_omega,
         sigma_omega = fit$hyper$sigma_omega, tau = fit$hyper$tau,
         sigma_p = if (is.null(fit$hyper$sigma_p)) NA else fit$hyper$sigma_p,
-        sigma_s = if (is.null(fit$hyper$sigma_s)) NA else fit$hyper$sigma_s,
         range_eta = fit$hyper$range_eta, sigma_eta = fit$hyper$sigma_eta,
         sd_omega_hat_at_data = sd(omega_at_data),
         threshold = threshold,
         n_hotspots = length(hotspots),
-        # at the fixed |omega-hat| threshold of the stage-B fit without p, s
+        # at the fixed |omega-hat| threshold of the stage-B fit without p
         n_above_base_threshold = sum(peak & abs(w) >=
                                        if (is.null(base_threshold)) threshold
                                      else base_threshold),
@@ -155,11 +151,10 @@ for (type in focus_types) {
         median_map_prominence = median(abs(prom[map_peaks])),
         seconds = time
       )
-      report("%-13s %-16s %s conv=%i range_omega=%.0f sigma_omega=%.2f tau=%.3f sigma_p=%s sigma_s=%s | hotspots %i (threshold %.2f), above base %i, median |w| %.2f; map hotspots %i (prominence threshold %.2f) | %.0f s",
+      report("%-13s %-16s %s conv=%i range_omega=%.0f sigma_omega=%.2f tau=%.3f sigma_p=%s | hotspots %i (threshold %.2f), above base %i, median |w| %.2f; map hotspots %i (prominence threshold %.2f) | %.0f s",
              type, label, stage, fit$opt$convergence, fit$hyper$range_omega,
              fit$hyper$sigma_omega, fit$hyper$tau,
-             format(fit$hyper$sigma_p, digits = 3),
-             format(fit$hyper$sigma_s, digits = 3), length(hotspots),
+             format(fit$hyper$sigma_p, digits = 3), length(hotspots),
              threshold, tail(rows_out, 1)[[1]]$n_above_base_threshold,
              median(abs(w[hotspots])), length(map_peaks), prom_threshold,
              time)
