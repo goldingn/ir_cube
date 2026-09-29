@@ -63,33 +63,28 @@ save_fold <- function(fit, model, experiment, fold, label = experiment) {
 # oracle bound at whichever neighbour count minimises the null's own error on
 # the held-out records. See nn_null_draws() and nn_oracle_draws().
 
-# The folds still to fit. The six leave-one-country-out folds and the
-# interpolation fold from the September run are kept as they are: the review of
-# #12 found them informative, and refitting them would change nothing. What is
-# new is the sub-national block folds, which replace leave-one-country-out as
-# the test of spatial skill, and the forecasting fold, whose split was leaking
-# post-horizon data. Nulls are rebuilt for every fold either way, since they
-# cost minutes.
+# The folds to fit: the sub-national block folds (the test of spatial skill),
+# the interpolation fold, and the two five-year forecast origins. The six
+# leave-one-country-out folds and the 2020 three-year forecasting fold are
+# defunct and are not refitted. Nulls are rebuilt for every fold either way,
+# since they cost minutes.
 source("R/validation_blocks.R")
 
+forecast_folds <- temporal_forecasting_folds[as.character(forecast_cuts)]
+
 folds <- c(
-  lapply(
-    seq_along(countries_to_validate),
-    function(i) list(experiment = "spatial_extrapolation",
-                     fold = countries_to_validate[i],
-                     training = spatial_extrapolation$training[[i]],
-                     test = spatial_extrapolation$test[[i]])
-  ),
   lapply(
     seq_along(spatial_blocks),
     function(i) list(experiment = "spatial_blocks",
                      fold = as.character(i),
+                     label = "spatial_blocks",
                      training = spatial_blocks[[i]]$training,
                      test = spatial_blocks[[i]]$test)
   ),
   list(
     list(experiment = "spatial_interpolation",
          fold = "all",
+         label = "spatial_interpolation",
          training = spatial_interpolation$training,
          test = spatial_interpolation$test)
   ),
@@ -98,24 +93,17 @@ folds <- c(
   # forecasting fold reads the last two training years for every held-out
   # record, however far ahead it sits.
   lapply(
-    seq_along(temporal_forecasting_folds),
-    function(i) {
-      fold <- temporal_forecasting_folds[[i]]
+    names(forecast_folds),
+    function(name) {
+      fold <- forecast_folds[[name]]
       list(experiment = "temporal_forecasting",
            label = paste0("temporal_forecasting_", fold$cut_year),
-           fold = names(temporal_forecasting_folds)[i],
+           fold = name,
            training = fold$training,
            test = fold$test)
     }
   )
 )
-
-# the 2020 three-year fold was fitted and scored before the origins were
-# labelled, under experiment "temporal_forecasting" and fold "all"
-folds <- lapply(folds, function(fold) {
-  if (is.null(fold$label)) fold$label <- fold$experiment
-  fold
-})
 
 
 # null models --------------------------------------------------------------
