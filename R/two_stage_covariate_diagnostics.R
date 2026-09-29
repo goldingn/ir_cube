@@ -105,7 +105,9 @@ grid_country <- match(
 # cumulative sum of the mean annual selection, and the mean logit mortality is
 # init - S, up to the clamp m_ref applies where p rounds to 0 or 1
 dynamical_file <- file.path(cache_dir, "dynamical_components.rds")
-if (!file.exists(dynamical_file)) {
+# caches made before covariates_raw was stored are rebuilt
+if (!file.exists(dynamical_file) ||
+    is.null(readRDS(dynamical_file)$covariates_raw)) {
 
   fit_env <- new.env()
   load("temporary/fitted_model.RData", envir = fit_env)
@@ -135,6 +137,7 @@ if (!file.exists(dynamical_file)) {
                                    classes_index, types,
                                    draw_index = draw_index)
   m_ref <- colMeans(safe_logit(p_train))
+  design <- fold_options(fold)$selection_columns
   rm(p_train, fold)
   invisible(gc())
 
@@ -174,7 +177,13 @@ if (!file.exists(dynamical_file)) {
   names(map_sample) <- types
   sample_union <- sort(unique(unlist(map_sample)))
   covariates_map <- map_covariates(mask_cells[sample_union], baseline_year,
-                                   final_data_year)
+                                   final_data_year,
+                                   design)
+  # the covariates themselves (nets, irs, raw pop and the crops), whatever the
+  # fit's design, for the correlations below
+  covariates_raw <- map_covariates(mask_cells[sample_union], baseline_year,
+                                   final_data_year,
+                                   selection_design_untrended())
   map_selection <- lapply(seq_along(types), function(k) {
     rows <- match(map_sample[[k]], sample_union)
     effect_t <- t(parameters$effect_type[, , k])
@@ -190,6 +199,7 @@ if (!file.exists(dynamical_file)) {
   saveRDS(list(m_ref = m_ref, init_mean = init_mean, selection = selection,
                map_sample = map_sample, sample_union = sample_union,
                covariates_map = covariates_map,
+               covariates_raw = covariates_raw,
                map_selection = map_selection),
           dynamical_file)
   rm(parameters)
@@ -617,8 +627,8 @@ for (k in seq_along(types)) {
   xi <- xi[, -1]
   years_k <- (f$t0 + 1):f$T
   j <- years_k - baseline_year + 1
-  tv <- dynamical$covariates_map$time_varying[rows, , , drop = FALSE]
-  flat <- dynamical$covariates_map$flat[rows, , drop = FALSE]
+  tv <- dynamical$covariates_raw$time_varying[rows, , , drop = FALSE]
+  flat <- dynamical$covariates_raw$flat[rows, , drop = FALSE]
   init <- init_mean[grid_country[sample_k], k]
   S <- dynamical$map_selection[[type]]$S
   cumulative <- function(v) {

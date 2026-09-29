@@ -18,11 +18,8 @@
 #      recompute its 2000 paired posterior draws of logit p at every assay
 #      (R/dynamical_predictions.R), whose mean is m_ref;
 #   2. recompute the dynamical model's posterior mean mortality at a sample of
-#      mask cells and check it against the maps predict.R saved in
-#      outputs/ir_maps. Those maps have scrambled country initial conditions
-#      (a greta subassignment in predict.R, see map_logit_init()), so the check
-#      emulates that to confirm the draws and covariates are the ones behind
-#      them, and the maps here use the correct initial conditions;
+#      mask cells and check it against the maps R/predict.R saved in
+#      outputs/ir_maps, if they exist;
 #   3. per type, fit stage A (omega_xi_u + p, the omega5000_xi2500 meshes,
 #      per-type rho, t0 = 1995, T = the type's last data year) to all its
 #      assays, then stage B from it (fit_correction_pql(), R/two_stage_pql.R);
@@ -173,11 +170,13 @@ if (length(types_to_fit) > 0) {
   draw_index <- paired_draw_index(fold)
   draws_matrix <- as.matrix(fold$draws)[draw_index, , drop = FALSE]
   logit_init_mean <- logit_init_mean_draws(fold, draw_index)
+  options <- fold_options(fold)
   parameters <- dynamical_parameter_draws(fold, df = df,
                                           classes_index = classes_index,
                                           types = types,
                                           draw_index = draw_index,
-                                          logit_init_mean = logit_init_mean)
+                                          logit_init_mean = logit_init_mean,
+                                          options = options)
 
   # draws at every assay, with the country looked up from the cell as the fit
   # did (see R/run_two_stage_folds.R on border cells)
@@ -204,7 +203,8 @@ if (length(types_to_fit) > 0) {
 
   cells <- terra::cells(mask)
   n_cells <- length(cells)
-  covariates <- map_covariates(cells, baseline_year, end_year)
+  covariates <- map_covariates(cells, baseline_year, end_year,
+                               options$selection_columns)
 
   # the grid's covariates must be the model's at the data cells, 1995-2024
   data_cells <- match(unique_cells, cells)
@@ -227,16 +227,19 @@ if (length(types_to_fit) > 0) {
                                               cells)$country_name)
   logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
                                    classes_index, countries, regions, lookup,
-                                   options = fold_options(fold))
+                                   options = options)
   cell_country_index <- match(cell_country, dimnames(logit_init_all)[[2]])
   report("%i of %i grid cells are in countries outside the UNSD lookup (NA)",
          sum(is.na(cell_country_index)), n_cells)
 
   # for observed countries, the same initial state as the fit's (so the UNSD
-  # regions agree with the regions of the data)
+  # regions agree with the regions of the data); with initial-state
+  # covariates, its logit relative part (see map_logit_init())
   stopifnot(isTRUE(all.equal(
     logit_init_all[, countries, , drop = FALSE],
-    parameters$logit_init, check.attributes = FALSE)))
+    if (!is.null(options$init_covariates)) parameters$logit_init_relative else
+      parameters$logit_init,
+    check.attributes = FALSE)))
 
   xy <- terra::xyFromCell(mask, cells)
   coords_cells <- project_km(xy[, 1], xy[, 2])
@@ -244,91 +247,74 @@ if (length(types_to_fit) > 0) {
 
   # 2. check against the saved dynamical maps ---------------------------------
 
-  # predict.R's maps are posterior means over 500 random draws of the same fit;
-  # the recomputation uses the 2000 thinned draws, so the two can agree only up
-  # to Monte Carlo error, judged against the posterior SD.
-  #
-  # They do not agree as predict.R intended: its greta subassignment scrambles
-  # the country and region initial conditions (see map_logit_init()), so its
-  # saved maps have each country's initial state drawn from another country
-  # and type. Recomputed with the correct initial conditions, the maps agree
-  # with the observed mortality far better than the saved ones do (correlation
-  # at the assays about 0.4-0.67 per type, against -0.13-0.26 for the saved
-  # maps). So the check reproduces the saved maps with that scrambling
-  # emulated, which confirms that the draws, covariates and recursion here are
-  # the ones behind them; the maps below use the correct initial conditions
+  # predict.R's maps are posterior means over 500 of the same 2000 draws; the
+  # recomputation uses all 2000, so the two agree only up to Monte Carlo
+  # error, judged against the posterior SD
+  saved_file <- function(type, y) {
+    sprintf("outputs/ir_maps/%s/ir_%i_susceptibility.tif", type, y)
+  }
   set.seed(21)
   check_cells <- sort(sample(which(!is.na(cell_country_index)), 5000))
   check_years <- c(2000, 2010, 2020, 2030)
-  logit_init_predict <- map_logit_init(draws_matrix, logit_init_mean, types,
-                                       classes_index, countries, regions,
-                                       lookup,
-                                       emulate_predict_fill = TRUE,
-                                       options = fold_options(fold))
-  check_rows <- list()
-  for (k in seq_along(types)) {
-    for (initial in c("correct", "predict_fill")) {
-      init <- if (initial == "correct") logit_init_all else logit_init_predict
-      dyn <- dynamical_logit_chunk(
-        effect = parameters$effect_type[, , k],
-        logit_init = t(init[, cell_country_index[check_cells], k]),
-        time_varying = covariates$time_varying[check_cells, , , drop = FALSE],
-        flat = covariates$flat[check_cells, , drop = FALSE],
-        years = years_all, years_keep = check_years)
+  if (all(file.exists(saved_file(rep(types, length(check_years)),
+                                 rep(check_years, each = length(types)))))) {
+    check_rows <- list()
+    for (k in seq_along(types)) {
+      dyn <- map_type_logit(k, check_cells, cell_country_index[check_cells],
+                            parameters$effect_type, logit_init_all,
+                            covariates, years_all, check_years,
+                            parameters$mortality_floor,
+                            parameters$kappa_type)
       for (y in check_years) {
         p <- plogis(dyn[[as.character(y)]])
-        saved <- rast(sprintf("outputs/ir_maps/%s/ir_%i_susceptibility.tif",
-                              types[k], y))[cells[check_cells]][, 1]
+        saved <- rast(saved_file(types[k], y))[cells[check_cells]][, 1]
         check_rows[[length(check_rows) + 1]] <- tibble(
-          initial = initial, insecticide_type = types[k], year = y,
+          insecticide_type = types[k], year = y,
           cell = cells[check_cells], recomputed = rowMeans(p), saved = saved,
           posterior_sd = row_sds(p))
       }
     }
+    map_check <- bind_rows(check_rows) %>%
+      mutate(difference = recomputed - saved,
+             # SE of the difference of two Monte Carlo means (2000 and 500
+             # draws), floored so that cells where p is ~1 in every draw do not
+             # dominate. The 500 are among the 2000, so this overstates it
+             z = difference / (pmax(posterior_sd, 1e-3) *
+                                 sqrt(1 / 2000 + 1 / 500)))
+    map_check_summary <- map_check %>%
+      group_by(insecticide_type, year) %>%
+      summarise(n = n(),
+                n_na_saved = sum(is.na(saved)),
+                correlation = cor(recomputed, saved),
+                max_abs_difference = max(abs(difference), na.rm = TRUE),
+                mean_difference = mean(difference, na.rm = TRUE),
+                mean_z = mean(z, na.rm = TRUE),
+                sd_z = sd(z, na.rm = TRUE),
+                share_abs_z_above_4 = mean(abs(z) > 4, na.rm = TRUE),
+                .groups = "drop")
+    write.csv(map_check_summary,
+              file.path(output_dir, "dynamical_map_check.csv"),
+              row.names = FALSE)
+    report(paste("recomputed vs saved dynamical maps: max |diff| %.4f,",
+                 "mean z %.3f, sd z %.2f, |z| > 4 in %.2f%%"),
+           max(abs(map_check$difference)), mean(map_check$z),
+           sd(map_check$z), 100 * mean(abs(map_check$z) > 4))
+    # a mismatch in data, covariates or parameters would show as a bias or a
+    # spread of z far beyond Monte Carlo error, not as a few large values
+    stopifnot(all(map_check_summary$n_na_saved == 0),
+              abs(mean(map_check$z)) < 0.5,
+              sd(map_check$z) < 1.5,
+              mean(abs(map_check$z) > 4) < 0.005)
+    rm(map_check, check_rows, dyn)
+  } else {
+    report("no saved dynamical maps in outputs/ir_maps to check against")
   }
-  rm(logit_init_predict)
-  map_check <- bind_rows(check_rows) %>%
-    mutate(difference = recomputed - saved,
-           # SE of the difference of two Monte Carlo means (2000 and 500
-           # draws), floored so that cells where p is ~1 in every draw do not
-           # dominate
-           z = difference / (pmax(posterior_sd, 1e-3) *
-                               sqrt(1 / 2000 + 1 / 500)))
-  map_check_summary <- map_check %>%
-    group_by(initial, insecticide_type, year) %>%
-    summarise(n = n(),
-              n_na_saved = sum(is.na(saved)),
-              correlation = cor(recomputed, saved),
-              max_abs_difference = max(abs(difference), na.rm = TRUE),
-              mean_difference = mean(difference, na.rm = TRUE),
-              mean_z = mean(z, na.rm = TRUE),
-              sd_z = sd(z, na.rm = TRUE),
-              share_abs_z_above_4 = mean(abs(z) > 4, na.rm = TRUE),
-              .groups = "drop")
-  write.csv(map_check_summary, file.path(output_dir, "dynamical_map_check.csv"),
-            row.names = FALSE)
-  for (initial in c("correct", "predict_fill")) {
-    check_i <- map_check[map_check$initial == initial, ]
-    report(paste("recomputed (%s initial conditions) vs saved dynamical maps:",
-                 "max |diff| %.4f, mean z %.3f, sd z %.2f, |z| > 4 in %.2f%%"),
-           initial, max(abs(check_i$difference)), mean(check_i$z),
-           sd(check_i$z), 100 * mean(abs(check_i$z) > 4))
-  }
-  # a mismatch in data, covariates or parameters would show as a bias or a
-  # spread of z far beyond Monte Carlo error, not as a few large values. The
-  # saved maps share one set of 500 draws across all cells, so their Monte
-  # Carlo errors are correlated between cells and the mean z need not be 0
-  # (it is about 0.2)
-  check_fill <- map_check[map_check$initial == "predict_fill", ]
-  stopifnot(all(map_check_summary$n_na_saved == 0),
-            abs(mean(check_fill$z)) < 0.5,
-            sd(check_fill$z) < 1.5,
-            mean(abs(check_fill$z) > 4) < 0.005)
-  rm(map_check, check_rows, check_fill, dyn)
 
   # only the map draws are needed from here on
   effect_map <- parameters$effect_type[map_draws, , , drop = FALSE]
-  logit_init_map <- logit_init_all[map_draws, , , drop = FALSE]
+  logit_init_map <- subset_logit_init(logit_init_all, map_draws)
+  floor_map <- parameters$mortality_floor[map_draws]
+  kappa_map <- parameters$kappa_type[map_draws, , drop = FALSE]
   rm(parameters, logit_init_all, draws_matrix)
   invisible(gc())
 
@@ -451,12 +437,9 @@ if (length(types_to_fit) > 0) {
       for (chunk in chunks) {
         ok <- chunk[!is.na(cell_country_index[chunk])]
         if (length(ok) == 0) next
-        dyn <- dynamical_logit_chunk(
-          effect = effect_map[, , k],
-          logit_init = t(logit_init_map[, cell_country_index[ok], k]),
-          time_varying = covariates$time_varying[ok, , , drop = FALSE],
-          flat = covariates$flat[ok, , drop = FALSE],
-          years = years_all, years_keep = map_years)
+        dyn <- map_type_logit(k, ok, cell_country_index[ok], effect_map,
+                              logit_init_map, covariates, years_all,
+                              map_years, floor_map, kappa_map)
         A_omega <- mesh_basis(fit$mesh, coords_cells[ok, , drop = FALSE])
         A_xi <- mesh_basis(fit$mesh_xi, coords_cells[ok, , drop = FALSE])
         project <- function(nodes, y) {

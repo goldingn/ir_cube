@@ -88,7 +88,8 @@ rows_k <- which(df$type_id == k)
 
 # 1. the fit and the dynamical draws (cached) -----------------------------------
 
-if (!file.exists(cache_file)) {
+# caches made before the model options were stored are rebuilt
+if (!file.exists(cache_file) || is.null(readRDS(cache_file)$options)) {
 
   fit_env <- new.env()
   load("temporary/fitted_model.RData", envir = fit_env)
@@ -103,11 +104,13 @@ if (!file.exists(cache_file)) {
   draw_index <- paired_draw_index(fold)
   draws_matrix <- as.matrix(fold$draws)[draw_index, , drop = FALSE]
   logit_init_mean <- logit_init_mean_draws(fold, draw_index)
+  options <- fold_options(fold)
   parameters <- dynamical_parameter_draws(fold, df = df,
                                           classes_index = classes_index,
                                           types = types,
                                           draw_index = draw_index,
-                                          logit_init_mean = logit_init_mean)
+                                          logit_init_mean = logit_init_mean,
+                                          options = options)
 
   # m_ref over all assays, then this type's columns (as two_stage_maps.R)
   p_train <- dynamical_predictions(fold, select(df, -country_id), df,
@@ -121,9 +124,11 @@ if (!file.exists(cache_file)) {
   lookup <- country_region_lookup()
   logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
                                    classes_index, countries, regions, lookup,
-                                   options = fold_options(fold))
-  logit_init_k <- logit_init_all[, , k]
-  effect_k <- parameters$effect_type[, , k]
+                                   options = options)
+  dynamical <- list(effect = parameters$effect_type,
+                    logit_init = logit_init_all,
+                    floor = parameters$mortality_floor,
+                    kappa_type = parameters$kappa_type)
   rm(fold, draws_matrix, parameters, logit_init_all)
   invisible(gc())
 
@@ -171,10 +176,11 @@ if (!file.exists(cache_file)) {
 
   # drop the TMB object (external pointers) before caching
   fit$obj <- NULL
-  saveRDS(list(fit = fit, train = train_k, logit_train = logit_train_k,
-               effect = effect_k, logit_init = logit_init_k, rho = rho),
+  saveRDS(c(list(fit = fit, train = train_k, logit_train = logit_train_k,
+                 rho = rho, options = options),
+            dynamical),
           cache_file)
-  rm(fit, train_k, logit_train_k, effect_k, logit_init_k)
+  rm(fit, train_k, logit_train_k, dynamical)
   invisible(gc())
 }
 
@@ -280,15 +286,13 @@ if (!file.exists(draws_file) ||
   n_years_all <- length(years_all)
 
   # dynamical logit at the pixels, all years (years x pixels x draws)
-  covariates <- map_covariates(pixels$cell, baseline_year, end_year)
+  covariates <- map_covariates(pixels$cell, baseline_year, end_year,
+                               cache$options$selection_columns)
   pixel_country <- match(pixels$country, dimnames(cache$logit_init)[[2]])
   stopifnot(!anyNA(pixel_country))
-  dyn <- dynamical_logit_chunk(
-    effect = cache$effect,
-    logit_init = t(cache$logit_init[, pixel_country, drop = FALSE]),
-    time_varying = covariates$time_varying,
-    flat = covariates$flat,
-    years = years_all, years_keep = years_all)
+  dyn <- map_type_logit(k, seq_len(n_pix), pixel_country, cache$effect,
+                        cache$logit_init, covariates, years_all, years_all,
+                        cache$floor, cache$kappa_type)
   m <- aperm(simplify2array(dyn), c(3, 1, 2))
   m <- pmin(pmax(m, -logit_max), logit_max)
 
