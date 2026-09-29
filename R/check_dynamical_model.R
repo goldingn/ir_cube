@@ -51,6 +51,8 @@ build <- function(train_df) {
 
 built <- build(df)
 built_one <- build(df[1, ])
+# the options as built, with the centre of the initial-state covariates
+model_options <- built$options
 
 log_density <- function(model, free) {
   f <- model$dag$generate_log_prob_function(which = "adjusted")

@@ -90,7 +90,7 @@ map_logit_init <- function(draws_matrix,
                               regions)
   # centred deviations (#25), as the non-centred ones, on which the
   # deviations of countries and regions without data are drawn
-  variables <- init_noncentred_draws(variables, fit_country_region)
+  variables <- init_noncentred_draws(variables, fit_country_region, options)
   init_region_raw <- variables$init_region_raw
   init_country_raw <- variables$init_country_raw
 

@@ -155,6 +155,8 @@ built <- build_dynamical_model(train_df = df,
                                options = model_options,
                                x_cells_init = x_cells_init)
 m <- built$model
+# the options as built, with the centre of the initial-state covariates
+model_options <- built$options
 
 # the variables and derived quantities, as named objects in the saved image,
 # which the figure and prediction scripts read
@@ -176,7 +178,9 @@ settings <- dynamical_mcmc_settings(n_chains = 8)
 # used cached posterior means as inits
 inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built$variables,
                              columns = colnames(x_cell_years),
-                             country_region_index = country_region_index)
+                             country_region_index = country_region_index,
+                             init_covariate_centre =
+                               built$options$init_covariate_centre)
 
 system.time(
   draws <- run_dynamical_mcmc(m, built$variables, inits_one, settings)

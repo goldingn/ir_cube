@@ -45,7 +45,9 @@ fit_fold <- function(train_df,
   inits_one <- dynamical_inits(readRDS(inits_file), built$variables,
                                columns = colnames(x_cell_years),
                                country_region_index =
-                                 built$lookups$country_region_index)
+                                 built$lookups$country_region_index,
+                               init_covariate_centre =
+                                 built$options$init_covariate_centre)
   draws <- run_dynamical_mcmc(built$model, built$variables, inits_one,
                               settings)
 
