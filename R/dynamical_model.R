@@ -23,9 +23,12 @@ source("R/model_covariates.R")
 # model options ------------------------------------------------------------
 
 # Switches for model terms. The defaults are the model for the refit: rho per
-# type, the mortality floor and both initial-state covariates on; raw
-# population, no hinges and no trend in the selection design, pending the
-# choice of design; no reversion, pending the identifiability simulation. The fits
+# type, the mortality floor and both initial-state covariates on; in the
+# selection design, population by the encounter transform of density
+# (d_half = 50 per km2, not yet confirmed) times g_dom, and the crops times
+# g_ag, both linear, 0 in 1995 and 1 in 2025, and no hinges
+# (selection_design()); no reversion, pending the identifiability simulation.
+# The fits
 # before these terms were added had rho = "class", mortality_floor = FALSE,
 # init_covariates = NULL (see fold_options()). build_dynamical_model() refuses
 # settings that are not implemented:

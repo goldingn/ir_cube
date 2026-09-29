@@ -83,12 +83,12 @@ init_covariate_matrix <- function(cells, layers = init_covariate_layers()) {
 #   trend_after  a linear trend after trend_years[2]: "continue", on the same
 #                line (g > 1, e.g. 1.17 in 2030); "cap", held at 1
 # Net use, IRS and their hinges have no trend.
-selection_design <- function(pop = c("raw", "log", "encounter",
-                                     "saturating"),
+selection_design <- function(pop = c("encounter", "saturating", "raw",
+                                     "log"),
                              pop_d_half = 50,
                              hinges = list(),
-                             trend_pop = "none",
-                             trend_crops = "none",
+                             trend_pop = "linear_0_1",
+                             trend_crops = "linear_0_1",
                              trend_years = c(1995, 2025),
                              trend_after = c("continue", "cap")) {
   pop <- match.arg(pop)
