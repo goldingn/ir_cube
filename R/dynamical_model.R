@@ -16,22 +16,40 @@
 #
 # Source from the repo root, after R/packages.R and R/functions.R.
 
+source("R/greta_setup.R")
+source("R/model_covariates.R")
+
 
 # model options ------------------------------------------------------------
 
-# Switches for model terms. The defaults are the current model; the others are
-# placeholders for terms still to be added, and build_dynamical_model() refuses
-# them until they are implemented:
+# Switches for model terms. The defaults are the model for the refit: rho per
+# type, the mortality floor and both initial-state covariates on; raw
+# population and no hinges in the selection design, pending the choice of
+# design; no reversion, pending the identifiability simulation. The fits
+# before these terms were added had rho = "class", mortality_floor = FALSE,
+# init_covariates = NULL (see fold_options()). build_dynamical_model() refuses
+# settings that are not implemented:
 #   rho               "class": one overdispersion per insecticide class;
-#                     "type": one per insecticide type (#20)
-#   mortality_floor   an estimated floor on bioassay mortality (#14)
-#   init_covariates   names of static covariates for the initial state (#19)
-#   selection_columns extra columns of the selection design matrix (#23)
-#   reversion         a per-class reversion rate to susceptibility (#24)
-dynamical_model_options <- function(rho = c("class", "type"),
-                                    mortality_floor = FALSE,
-                                    init_covariates = NULL,
-                                    selection_columns = NULL,
+#                     "type": one per insecticide type, types nested in
+#                     class (#20)
+#   mortality_floor   TRUE for an estimated floor on bioassay mortality, the
+#                     mortality of a fully resistant population (#14)
+#   init_covariates   names of static covariates of the initial state, from
+#                     init_covariate_names (R/model_covariates.R), or NULL
+#                     for none (#19)
+#   selection_columns how the selection design matrix is built:
+#                     selection_design() (R/model_covariates.R), the
+#                     population transform and any hinge columns (#23). The
+#                     model takes the matrix as built; build_dynamical_model()
+#                     checks its columns against this
+#   reversion         reversion to susceptibility (#24): FALSE for none,
+#                     "estimated" for one rate per class, or fixed values of
+#                     kappa (<= 0, one, or one per class) for sensitivity
+#                     analysis. See reversion_kappa().
+dynamical_model_options <- function(rho = c("type", "class"),
+                                    mortality_floor = TRUE,
+                                    init_covariates = init_covariate_names,
+                                    selection_columns = selection_design(),
                                     reversion = FALSE) {
   list(rho = match.arg(rho),
        mortality_floor = mortality_floor,
@@ -43,7 +61,24 @@ dynamical_model_options <- function(rho = c("class", "type"),
 check_dynamical_model_options <- function(options) {
   defaults <- dynamical_model_options()
   stopifnot(setequal(names(options), names(defaults)))
-  implemented <- list(rho = "class")
+  implemented <- list(rho = list("class", "type"),
+                      mortality_floor = list(FALSE, TRUE),
+                      init_covariates = list(NULL),
+                      reversion = list(FALSE))
+  reversion <- options$reversion
+  if (identical(reversion, "estimated") ||
+      (is.numeric(reversion) && length(reversion) > 0 &&
+         all(is.finite(reversion)) && all(reversion <= 0))) {
+    implemented$reversion <- list(FALSE, reversion)
+  }
+  implemented$selection_columns <- list(do.call(selection_design,
+                                               options$selection_columns))
+  if (!is.null(options$init_covariates)) {
+    stopifnot(is.character(options$init_covariates),
+              !anyDuplicated(options$init_covariates),
+              all(options$init_covariates %in% init_covariate_names))
+    implemented$init_covariates <- list(NULL, options$init_covariates)
+  }
   for (name in names(defaults)) {
     allowed <- if (name %in% names(implemented)) implemented[[name]] else
       list(defaults[[name]])
@@ -106,7 +141,7 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
 
   init <- init_frac_constants(types)
 
-  list(
+  variables <- list(
     # initial fractions susceptible: a prior logit-mean per type, and IID
     # deviations by region and by country within region
     init_region_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
@@ -119,13 +154,98 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     beta_type_raw = normal(0, 1, dim = c(n_covs, n_types)),
     sigma_overall = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
     sigma_class = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
-    # observation overdispersion. With rho = 0.067 the 95% interval of a
-    # betabinomial at p = 0.5 is 0.5 wide, a range to treat as unlikely: the
-    # half-normal sd of 0.025 puts P(rho < 0.067) at about 0.99 (see the
-    # history of fit_model.R for the calculation)
-    rho_classes = normal(0, 0.025, truncation = c(0, 1), dim = n_classes),
     logit_init_mean = normal(qlogis(init$relative_prior), 1, dim = n_types)
   )
+
+  rho <- switch(
+    options$rho,
+    # observation overdispersion per class. With rho = 0.067 the 95% interval
+    # of a betabinomial at p = 0.5 is 0.5 wide, a range to treat as unlikely:
+    # the half-normal sd of 0.025 puts P(rho < 0.067) at about 0.99 (see the
+    # history of fit_model.R for the calculation)
+    class = list(
+      rho_classes = normal(0, 0.025, truncation = c(0, 1), dim = n_classes)
+    ),
+    # Per type, nested in class, on the logit scale and non-centred, as the
+    # replicate-assay estimate in R/fig_illustrate_bioassay_variability.R:
+    #   logit rho_type = rho_mu + rho_sigma_class z_class + rho_sigma_type z_type
+    # with the same priors. The prior centre is that of the replicate-assay
+    # rho (0.15); rho here also absorbs misfit of the model, and the class-level
+    # rho above reached posterior means of 0.24-0.38 despite its half-normal
+    # prior, so no stronger prior is put on it.
+    type = list(
+      rho_mu = normal(qlogis(0.15), 1),
+      rho_sigma_class = normal(0, 0.5, truncation = c(0, Inf)),
+      rho_sigma_type = normal(0, 0.5, truncation = c(0, Inf)),
+      rho_class_raw = normal(0, 1, dim = n_classes),
+      rho_type_raw = normal(0, 1, dim = n_types)
+    )
+  )
+
+  # Floor on bioassay mortality. Predicted mortality is the fraction susceptible
+  # q_t (a susceptible mosquito dies at the discriminating dose, a resistant
+  # one survives), so a floor f makes it f + (1 - f) q_t: f is the mortality
+  # of a fully resistant population, from resistance mechanisms that give
+  # finite protection at the discriminating dose, and from deaths by handling
+  # rather than insecticide. Beta(1, 9): the density is highest at 0 (no floor,
+  # the model without it), with mean 0.1, P(f < 0.2) = 0.87 and
+  # P(f < 0.3) = 0.96. WHO tests with control mortality above 20% are
+  # discarded and those at 5-20% Abbott-corrected, so handling mortality in the
+  # data should be below 0.2, and the discriminating doses are set to kill
+  # susceptible mosquitoes with a margin, not resistant ones.
+  floor <- if (isTRUE(options$mortality_floor)) {
+    list(mortality_floor = beta(1, 9))
+  }
+
+  # Coefficients of the standardised initial-state covariates on the logit
+  # relative initial state, per type. Independent N(0, 1) rather than
+  # hierarchical like the selection effects: the rest of the initial state
+  # (logit_init_mean, the region and country sds) is estimated per type with
+  # no pooling by class either, and a coefficient of 1 moves the initial state
+  # by less than the country deviations do (their sds were 1-3 in the last
+  # fit).
+  n_init_covs <- length(options$init_covariates)
+  init_covariates <- if (n_init_covs > 0) {
+    list(init_coef = normal(0, 1, dim = c(n_init_covs, n_types)))
+  }
+
+  # Reversion to susceptibility (#24), estimated: a per-year rate per class,
+  # constrained to move towards susceptibility; see reversion_kappa() for the
+  # sign convention. Half-normal with sd 0.1 on the logit scale per year: at
+  # 0.1 the odds of resistance halve in 7 years without selection, and the
+  # 97.5% prior quantile (0.22) halves them in 3 years. Net use rarely falls
+  # in these data, so there are few periods of relaxed selection to estimate
+  # the rate from, and this prior may largely determine it.
+  reversion <- if (identical(options$reversion, "estimated")) {
+    list(reversion_rate = normal(0, 0.1, truncation = c(0, Inf),
+                                 dim = n_classes))
+  }
+
+  c(variables, rho, floor, init_covariates, reversion)
+}
+
+# Reversion to susceptibility (#24). A fitness cost c of resistance, paid
+# whatever the selection, makes the relative fitness of the resistant phenotype
+# w = (1 - c)(1 + x' exp(beta)), so on the logit scale
+#   logit q_t = logit q_0 - sum_{s <= t} log(1 + x_s' exp(beta)) - t kappa,
+#   kappa = log(1 - c) <= 0,
+# i.e. without selection, logit resistance changes by kappa per year and logit
+# susceptibility by -kappa. The selection terms stay strictly positive. kappa
+# is per class (kdr gives resistance to both DDT and the pyrethroids), expanded
+# here to types: n_types, -reversion_rate when estimated, the fixed values
+# when options$reversion is numeric, and NULL for none. For greta arrays or one
+# draw in plain R.
+reversion_kappa <- function(v, classes_index, options) {
+  reversion <- options$reversion
+  if (isFALSE(reversion)) {
+    return(NULL)
+  }
+  if (identical(reversion, "estimated")) {
+    return(-v$reversion_rate[classes_index])
+  }
+  n_classes <- max(classes_index)
+  stopifnot(length(reversion) %in% c(1, n_classes))
+  rep_len(reversion, n_classes)[classes_index]
 }
 
 # Deterministic transforms from the variables `v` to the quantities the dynamics
@@ -133,7 +253,17 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
 #   beta_type           n_covs x n_types, log selection effect of each covariate
 #   logit_init_country  n_countries x n_types, logit of the initial fraction
 #                       susceptible q_0 in each country
-# and some intermediate quantities.
+#   rho_types           n_types, the observation overdispersion of each type
+#                       (with rho = "class", its class's)
+#   mortality_floor     the floor on bioassay mortality, or NULL for none
+#   logit_init_relative n_countries x n_types, the logit relative initial state
+#                       (above init_frac_min) of each country, to which the
+#                       initial-state covariates are added at each cell
+#   init_coef           n_init_covs x n_types, their coefficients, or NULL
+#   kappa_type          n_types, the per-year change in logit resistance from
+#                       reversion (<= 0), or NULL for none (reversion_kappa())
+# and some intermediate quantities. logit_init_country is the initial state
+# without covariates, i.e. at a cell whose covariates are all 0 (the mean).
 #
 # `v` is a named list of either greta arrays or plain R arrays for a single
 # posterior draw (dimensions as in dynamical_variables(), vectors as vectors or
@@ -146,11 +276,11 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
   is_greta <- inherits(v$beta_overall, "greta_array")
   if (is_greta) {
     inv_logit <- greta::ilogit
-    softplus <- greta::log1pe
   } else {
-    v <- lapply(v, function(x) if (is.matrix(x) && ncol(x) == 1) c(x) else x)
+    v <- lapply(v, function(x) {
+      if (length(dim(x)) <= 1 || (is.matrix(x) && ncol(x) == 1)) c(x) else x
+    })
     inv_logit <- stats::plogis
-    softplus <- function(x) -stats::plogis(-x, log.p = TRUE)
   }
 
   # selection effects: doubly hierarchical
@@ -170,25 +300,126 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
   logit_init_relative <- sweep(init_country_overall_effect, 2,
                                v$logit_init_mean, FUN = "+")
 
-  # q_0 = min + range * ilogit(l). Its logit is computed without forming q_0,
-  # which rounds to 1 in double precision when l is large: with
-  # 1 - q_0 = range * ilogit(-l),
-  #   logit q_0 = log(min + range * ilogit(l)) - log(range) + softplus(l)
-  init <- init_frac_constants(types)
-  init_range <- 1 - init$min
-  q0_scaled <- sweep(sweep(inv_logit(logit_init_relative), 2, init_range,
-                           FUN = "*"),
-                     2, init$min, FUN = "+")
-  logit_init_country <- sweep(log(q0_scaled) + softplus(logit_init_relative),
-                              2, log(init_range), FUN = "-")
+  init_min <- init_frac_constants(types)$min
+  logit_init_country <- logit_init_from_relative(
+    logit_init_relative,
+    matrix(init_min, nrow(logit_init_relative), length(types), byrow = TRUE))
+
+  # observation overdispersion per type
+  rho_types <- switch(
+    options$rho,
+    class = v$rho_classes[classes_index],
+    type = {
+      logit_rho_class <- v$rho_mu + v$rho_sigma_class * v$rho_class_raw
+      inv_logit(logit_rho_class[classes_index] +
+                  v$rho_sigma_type * v$rho_type_raw)
+    }
+  )
 
   list(beta_type = beta_type,
        logit_init_country = logit_init_country,
+       rho_types = rho_types,
+       mortality_floor = v$mortality_floor,
+       logit_init_relative = logit_init_relative,
+       init_coef = v$init_coef,
+       kappa_type = reversion_kappa(v, classes_index, options),
        # intermediate quantities, which the figure scripts read
        beta_class = beta_class,
        init_region_effect = init_region_effect,
-       init_country_effect = init_country_effect,
-       logit_init_relative = logit_init_relative)
+       init_country_effect = init_country_effect)
+}
+
+# The logit initial state from its logit relative position l above the minimum
+# init_frac_min (`min`, conformable with l): q_0 = min + range * ilogit(l). Its
+# logit is computed without forming q_0, which rounds to 1 in double precision
+# when l is large: with 1 - q_0 = range * ilogit(-l),
+#   logit q_0 = log(min + range * ilogit(l)) - log(range) + softplus(l)
+# For greta arrays or plain R.
+logit_init_from_relative <- function(l, min) {
+  if (inherits(l, "greta_array")) {
+    inv_logit <- greta::ilogit
+    softplus <- greta::log1pe
+  } else {
+    inv_logit <- stats::plogis
+    softplus <- function(x) -stats::plogis(-x, log.p = TRUE)
+  }
+  range <- 1 - min
+  log(min + range * inv_logit(l)) - log(range) + softplus(l)
+}
+
+
+# Initial values for the model's `variables` from a cached set
+# (temporary/inits.RDS, posterior means from an earlier fit): the cached values
+# of the variables the model has (where the dimensions match), for
+# rho = "type" a start for rho_mu from the cached class-level rho, and starts
+# for the floor, the initial-state coefficients and the reversion rate. Other
+# variables start where greta puts them. `columns` are the columns of the
+# selection design matrix, to match the selection coefficients to the cached
+# fit's (cached_columns, the default design).
+dynamical_inits <- function(cached, variables, columns = NULL,
+                            cached_columns = selection_column_names()) {
+  cached <- unclass(cached)
+  # the selection coefficients, by covariate (row): the cached values where
+  # the column is in the cached fit's design, and weak selection (a log effect
+  # of -4, no deviations) for new columns. The cached pop coefficients put on
+  # log population, which is near 0.8 where raw population is near 0, drove p
+  # to 0 and stalled a short run at its initial values
+  if (!is.null(columns)) {
+    selection_starts <- c(beta_overall = -4, beta_class_raw = 0,
+                          beta_type_raw = 0, sigma_overall = 0.5,
+                          sigma_class = 0.5)
+    for (name in intersect(names(selection_starts), names(cached))) {
+      old <- as.matrix(cached[[name]])
+      new <- matrix(selection_starts[[name]], length(columns), ncol(old))
+      shared <- match(columns, cached_columns)
+      new[!is.na(shared), ] <- old[shared[!is.na(shared)], ]
+      cached[[name]] <- new
+    }
+  }
+  out <- cached[intersect(names(cached), names(variables))]
+  # only where the dimensions match (a different selection design changes the
+  # number of covariates)
+  matches <- vapply(names(out), function(name) {
+    identical(as.integer(dim(out[[name]])),
+              as.integer(dim(variables[[name]])))
+  }, logical(1))
+  out <- out[matches]
+  if ("rho_mu" %in% names(variables) && !is.null(cached$rho_classes)) {
+    out$rho_mu <- mean(qlogis(c(cached$rho_classes)))
+  }
+  # the other new terms start near the model without them. Left to greta, the
+  # reversion rate starts around 1 per year, which drives p to 1 at most
+  # assays and stalled a short run at its initial values
+  starts <- c(mortality_floor = 0.02, init_coef = 0, reversion_rate = 0.01)
+  for (name in intersect(names(starts), setdiff(names(variables),
+                                                names(out)))) {
+    out[[name]] <- array(starts[[name]], dim(variables[[name]]))
+  }
+  do.call(greta::initials, out)
+}
+
+
+# Bioassay mortality from the fraction susceptible q, with the floor f (a
+# scalar, or one per draw conformable with q; NULL for none): f + (1 - f) q.
+# For greta arrays or plain R.
+floored_mortality <- function(q, floor) {
+  if (is.null(floor)) {
+    return(q)
+  }
+  floor + (1 - floor) * q
+}
+
+# The same on the logit scale: the logit of f + (1 - f) q from l = logit q,
+# computed without forming q, which rounds to 1 when l is large. With
+# 1 - p = (1 - f) ilogit(-l),
+#   logit p = log(f + (1 - f) ilogit(l)) - log(1 - f) + softplus(l)
+# which is l when f = 0. Plain R.
+floored_logit_mortality <- function(l, floor) {
+  if (is.null(floor)) {
+    return(l)
+  }
+  log(floor + (1 - floor) * plogis(l)) - log1p(-floor) -
+    plogis(-l, log.p = TRUE)
 }
 
 
@@ -202,21 +433,31 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
 #   cell_years_index  data frame of the cell_id and year_id of each row
 #   classes_index     class of each type
 #   types             type names, in type_id order
+#   x_cells_init      initial-state covariates, one row per cell_id, with
+#                     named columns (init_covariate_matrix()); needed when
+#                     options$init_covariates is set
 #
 # Returns a list with the model, its variables (as passed to model()), the
 # derived terms, and two functions for predictions after sampling:
 # mortality(rows) returns the greta array of predicted bioassay mortality at the
-# (cell_id, type_id, year_id) of `rows`, and all_states() the states at every
-# cell, type and year.
+# (cell_id, type_id, year_id) of `rows`, and all_states() the predicted
+# mortality at every cell, type and year. Mortality is the state (the fraction
+# susceptible) with the mortality floor applied, if there is one.
 build_dynamical_model <- function(train_df,
                                   df,
                                   x_cell_years,
                                   cell_years_index,
                                   classes_index,
                                   types,
-                                  options = dynamical_model_options()) {
+                                  options = dynamical_model_options(),
+                                  x_cells_init = NULL) {
 
   check_dynamical_model_options(options)
+  check_greta_fill()
+  if (!is.null(colnames(x_cell_years))) {
+    stopifnot(identical(colnames(x_cell_years),
+                        selection_column_names(options$selection_columns)))
+  }
 
   n_covs <- ncol(x_cell_years)
   n_unique_cells <- max(df$cell_id)
@@ -235,6 +476,7 @@ build_dynamical_model <- function(train_df,
   )
 
   lookups <- dynamical_lookups(df)
+  x_init <- select_init_covariates(x_cells_init, options, n_unique_cells)
 
   variables <- dynamical_variables(n_covs = n_covs,
                                    n_classes = n_classes,
@@ -256,28 +498,29 @@ build_dynamical_model <- function(train_df,
                              type_id = as.integer(rows$type_id)))
     states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
                                  pairs$type_id, lookups$cell_country_lookup,
-                                 n_times)
+                                 n_times, types, x_init)
     pair_index <- match(paste(rows$cell_id, rows$type_id),
                         paste(pairs$cell_id, pairs$type_id))
-    states[cbind(pair_index, rows$year_id)]
+    floored_mortality(states[cbind(pair_index, rows$year_id)],
+                      terms$mortality_floor)
   }
 
-  # the states at every cell, type and year, as n_unique_cells x n_types x
-  # n_times, for predictions after sampling. (Creating this before model() would
+  # the predicted mortality at every cell, type and year, as n_unique_cells x
+  # n_types x n_times, for predictions after sampling. (Creating this before model() would
   # put it in the model's graph.)
   all_states <- function() {
     pairs <- expand.grid(cell_id = seq_len(n_unique_cells),
                          type_id = seq_len(n_types))
     states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
                                  pairs$type_id, lookups$cell_country_lookup,
-                                 n_times)
+                                 n_times, types, x_init)
     dim(states) <- c(n_unique_cells, n_types, n_times)
-    states
+    floored_mortality(states, terms$mortality_floor)
   }
 
   # likelihood
   population_mortality_vec <- mortality(train_df)
-  rho <- variables$rho_classes[train_df$class_id]
+  rho <- terms$rho_types[train_df$type_id]
   distribution(train_df$died) <- betabinomial_p_rho(
     N = train_df$mosquito_number,
     p = population_mortality_vec,
@@ -296,6 +539,44 @@ build_dynamical_model <- function(train_df,
        all_states = all_states,
        lookups = lookups,
        options = options)
+}
+
+
+# The columns of the initial-state covariates the options ask for, as a
+# cells x covariates matrix, or NULL for none.
+select_init_covariates <- function(x_cells_init, options, n_cells = NULL) {
+  if (is.null(options$init_covariates)) {
+    return(NULL)
+  }
+  if (is.null(x_cells_init)) {
+    stop("the initial-state covariates ", toString(options$init_covariates),
+         " are needed (see init_covariate_matrix())")
+  }
+  stopifnot(all(options$init_covariates %in% colnames(x_cells_init)),
+            is.null(n_cells) || nrow(x_cells_init) >= n_cells)
+  x <- x_cells_init[, options$init_covariates, drop = FALSE]
+  stopifnot(!anyNA(x))
+  x
+}
+
+# The logit relative initial state (above init_frac_min) of rows with countries
+# `country` and types `type`, and covariates x_init (rows x covariates, NULL
+# for none), from dynamical_terms(): the country's value plus the covariate
+# effects of the type. For greta arrays (a column vector) or one draw in plain
+# R.
+logit_init_relative_rows <- function(terms, country, type, x_init = NULL) {
+  n_countries <- nrow(terms$logit_init_relative)
+  l <- terms$logit_init_relative[(type - 1) * n_countries + country]
+  if (!is.null(x_init)) {
+    stopifnot(nrow(x_init) == length(country))
+    coef_rows <- t(terms$init_coef)[type, , drop = FALSE]
+    # a sum over columns rather than rowSums(), which Matrix (attached by
+    # lme4) masks with a version that does not dispatch to greta
+    for (j in seq_len(ncol(x_init))) {
+      l <- l + x_init[, j] * coef_rows[, j]
+    }
+  }
+  l
 }
 
 
@@ -318,18 +599,19 @@ build_dynamical_model <- function(train_df,
 # The TensorFlow side. Arguments are tensors with a leading batch dimension B
 # (greta's), then the constants:
 #   beta_type            (B, n_covs, n_types)
-#   logit_init_country   (B, n_countries, n_types)
+#   logit_init           (B, J, 1) logit q_0 of each pair
+#   kappa_type           (B, n_types, 1) reversion kappa per type (optional)
 #   x_pairs              (J, n_times, n_covs) covariates of each pair's cell
 #   pair_type            (J) 0-based type of each pair
-#   pair_init            (J) 0-based index of each pair's (country, type) in
-#                        the row-major flattened logit_init_country
 # Returns (B, J, n_times): the fraction susceptible for each pair and year.
-tf_closed_form_states <- function(beta_type, logit_init_country,
-                                  x_pairs, pair_type, pair_init) {
+tf_closed_form_states <- function(beta_type, logit_init, kappa_type = NULL,
+                                  x_pairs, pair_type) {
   tf <- tensorflow::tf
   dtype <- beta_type$dtype
-  pair_type <- tf$constant(pair_type, dtype = tf$int32)
-  pair_init <- tf$constant(pair_init, dtype = tf$int32)
+  # reshaped to a vector, since reticulate passes a length-one R vector as a
+  # scalar
+  pair_type <- tf$reshape(tf$constant(pair_type, dtype = tf$int32), list(-1L))
+  n_times <- dim(x_pairs)[2]
   x_pairs <- tf$constant(x_pairs, dtype = dtype)
 
   # log fitness, (B, J, n_times)
@@ -341,22 +623,28 @@ tf_closed_form_states <- function(beta_type, logit_init_country,
   selection <- tf$einsum("jtp,bpj->bjt", x_pairs, effect)
   log_w <- m + tf$math$log(tf$exp(-m) + selection)
 
-  # initial state of each pair, (B, J, 1)
-  n_init <- as.integer(prod(dim(logit_init_country)[-1]))
-  logit_q0 <- tf$gather(tf$reshape(logit_init_country, c(-1L, n_init)),
-                        pair_init, axis = 1L)
+  logit_q <- logit_init - tf$cumsum(log_w, axis = 2L)
 
-  tf$sigmoid(tf$expand_dims(logit_q0, 2L) - tf$cumsum(log_w, axis = 2L))
+  # reversion: - t kappa in year t (see reversion_kappa())
+  if (!is.null(kappa_type)) {
+    years <- tf$reshape(tf$range(1, n_times + 1, dtype = dtype),
+                        c(1L, 1L, -1L))
+    logit_q <- logit_q - tf$gather(kappa_type, pair_type, axis = 1L) * years
+  }
+
+  tf$sigmoid(logit_q)
 }
 
 # The greta side: the fraction susceptible for the cell-type pairs
 # (pair_cell, pair_type), as a J x n_times greta array. `terms` is the output of
 # dynamical_terms(); `x_cell_years` has one row per (cell, year), cell-major;
-# each cell takes the initial state of country cell_country_lookup[cell].
+# each cell takes the initial state of country cell_country_lookup[cell], plus
+# the effects of its initial-state covariates, row `cell` of x_init (NULL for
+# none).
 closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
-                               cell_country_lookup, n_times) {
+                               cell_country_lookup, n_times, types,
+                               x_init = NULL) {
   n_covs <- ncol(x_cell_years)
-  n_countries <- nrow(terms$logit_init_country)
   stopifnot(nrow(x_cell_years) %% n_times == 0,
             length(pair_cell) == length(pair_type))
 
@@ -368,21 +656,34 @@ closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
   pair_country <- cell_country_lookup[pair_cell]
   stopifnot(!anyNA(pair_country))
 
+  # the initial state of each pair
+  l <- logit_init_relative_rows(
+    terms, pair_country, pair_type,
+    if (!is.null(x_init)) x_init[pair_cell, , drop = FALSE])
+  logit_init <- logit_init_from_relative(
+    l, init_frac_constants(types)$min[pair_type])
+
   # the TensorFlow function is found in this small environment, which is saved
   # with the node, so a reloaded draws object can still calculate() through it
   op_env <- new.env(parent = globalenv())
   op_env$tf_closed_form_states <- tf_closed_form_states
 
-  greta:::op("closed_form_states",
-             terms$beta_type,
-             terms$logit_init_country,
-             operation_args = list(
-               x_pairs = x_pairs,
-               pair_type = as.integer(pair_type - 1),
-               pair_init = as.integer((pair_country - 1) *
-                                        ncol(terms$logit_init_country) +
-                                        pair_type - 1)),
-             tf_operation = "tf_closed_form_states",
-             tf_function_env = op_env,
-             dim = c(length(pair_cell), n_times))
+  # the reversion kappa of each type, if any, is a greta array when estimated
+  # and data when fixed
+  kappa <- if (!is.null(terms$kappa_type)) {
+    list(if (inherits(terms$kappa_type, "greta_array")) terms$kappa_type else
+      as_data(terms$kappa_type))
+  }
+
+  do.call(greta:::op, c(
+    list("closed_form_states",
+         terms$beta_type,
+         logit_init),
+    kappa,
+    list(operation_args = list(
+           x_pairs = x_pairs,
+           pair_type = as.integer(pair_type - 1)),
+         tf_operation = "tf_closed_form_states",
+         tf_function_env = op_env,
+         dim = c(length(pair_cell), n_times))))
 }

@@ -303,7 +303,9 @@ extract_fold <- function(file) {
 
   # the model's own fitted overdispersion per record, a diagnostic only; which
   # form it takes depends on the model (see validation_metrics.R)
-  rho_fitted <- if (!is.null(fold$rho_class_draws)) {
+  rho_fitted <- if (!is.null(fold$rho_type_draws)) {
+    colMeans(thin_draws(fold$rho_type_draws))[fold$type_id]
+  } else if (!is.null(fold$rho_class_draws)) {
     colMeans(thin_draws(fold$rho_class_draws))[fold$class_id]
   } else if (!is.null(fold$rho_draws)) {
     colMeans(thin_draws(fold$rho_draws))

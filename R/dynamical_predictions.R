@@ -48,6 +48,10 @@ paired_draw_index <- function(fold, maximum = 2000) {
 # index, e.g. "beta_type_raw[13,9]", so the index is parsed from the names
 # rather than assumed from the column order.
 extract_parameter <- function(draws_matrix, name) {
+  # a scalar has one column, named without an index
+  if (name %in% colnames(draws_matrix)) {
+    return(draws_matrix[, name, drop = FALSE])
+  }
   columns <- grep(paste0("^", name, "\\["), colnames(draws_matrix))
   stopifnot(length(columns) > 0)
   index <- colnames(draws_matrix)[columns] %>%
@@ -133,6 +137,19 @@ variable_draws <- function(draws_matrix, logit_init_mean = NULL) {
   variables
 }
 
+# The model options a fold was fitted with (dynamical_model_options()). Folds
+# fitted before the options were saved used the defaults of the time, which are
+# the settings dynamical_model_options() gives with every term off.
+fold_options <- function(fold) {
+  if (!is.null(fold$options)) {
+    return(fold$options)
+  }
+  dynamical_model_options(rho = "class", mortality_floor = FALSE,
+                          init_covariates = NULL,
+                          selection_columns = selection_design(),
+                          reversion = FALSE)
+}
+
 # One draw of each variable, as the arrays dynamical_terms() takes.
 one_draw <- function(variables, i) {
   lapply(variables, function(a) {
@@ -144,14 +161,16 @@ one_draw <- function(variables, i) {
 # dynamical_terms() for every draw, stacked as draws x dim(term) arrays.
 dynamical_terms_draws <- function(variables, classes_index,
                                   country_region_index, types,
-                                  terms = c("beta_type", "logit_init_country")) {
+                                  terms = c("beta_type", "logit_init_country"),
+                                  options = dynamical_model_options()) {
   n_draws <- nrow(variables[[1]])
   out <- NULL
   for (i in seq_len(n_draws)) {
     terms_i <- dynamical_terms(one_draw(variables, i),
                                classes_index = classes_index,
                                country_region_index = country_region_index,
-                               types = types)[terms]
+                               types = types,
+                               options = options)[terms]
     if (is.null(out)) {
       out <- lapply(terms_i, function(x) {
         array(NA_real_, c(n_draws, dim(as.matrix(x))))
@@ -169,12 +188,23 @@ dynamical_terms_draws <- function(variables, classes_index,
 #
 #   effect_type      draws x n_covs x n_types   exp(beta_type)
 #   logit_init       draws x n_countries x n_types, logit of q_0
+#   rho_types        draws x n_types, the observation overdispersion
+#   mortality_floor  draws, the floor on mortality (NULL for none)
+#   logit_init_relative  draws x n_countries x n_types, and
+#   kappa_type       draws x n_types, the per-year change in logit resistance
+#                    from reversion (<= 0; NULL for none, see
+#                    reversion_kappa())
+#   init_coef        draws x n_init_covs x n_types (NULL for none): the parts
+#                    of the initial state when it has covariates (#19), the
+#                    logit relative initial state of each country and the
+#                    coefficients of the covariates on it
 dynamical_parameter_draws <- function(fold,
                                       df,
                                       classes_index,
                                       types,
                                       draw_index = paired_draw_index(fold),
-                                      logit_init_mean = NULL) {
+                                      logit_init_mean = NULL,
+                                      options = fold_options(fold)) {
 
   # as.matrix() on an mcmc.list stacks chains in order, which is exactly how
   # fit_fold() flattened the calculate() output that p_draws came from, so row
@@ -195,7 +225,11 @@ dynamical_parameter_draws <- function(fold,
     variables,
     classes_index = classes_index,
     country_region_index = dynamical_lookups(df)$country_region_index,
-    types = types)
+    types = types,
+    terms = c("beta_type", "logit_init_country", "rho_types",
+              "logit_init_relative",
+              if (!isFALSE(options$reversion)) "kappa_type"),
+    options = options)
 
   effect_type <- exp(terms$beta_type)
   logit_init <- terms$logit_init_country
@@ -203,6 +237,18 @@ dynamical_parameter_draws <- function(fold,
 
   list(effect_type = effect_type,
        logit_init = logit_init,
+       rho_types = matrix(terms$rho_types, n_draws),
+       mortality_floor = if (isTRUE(options$mortality_floor)) {
+         c(variables$mortality_floor)
+       },
+       logit_init_relative = terms$logit_init_relative,
+       kappa_type = if (!isFALSE(options$reversion)) {
+         matrix(terms$kappa_type, n_draws)
+       },
+       init_coef = if (!is.null(options$init_covariates)) {
+         array(variables$init_coef,
+               c(n_draws, length(options$init_covariates), n_types))
+       },
        n_draws = n_draws,
        n_covs = n_covs)
 }
@@ -218,6 +264,9 @@ dynamical_parameter_draws <- function(fold,
 #                     with new cell ids and supply country_id in `rows`.
 #   draw_index        rows of as.matrix(fold$draws) to use; the default
 #                     pairs with the stored or scored test predictions
+#   x_cells_init      initial-state covariates, one row per cell_id
+#                     (init_covariate_matrix()), for folds fitted with them;
+#                     by default those saved with the fold
 #
 # Returns a draws x nrow(rows) matrix, paired row for row with
 # thin_draws(fold$p_draws) under the default draw_index.
@@ -229,13 +278,18 @@ dynamical_predictions <- function(fold,
                                   classes_index,
                                   types,
                                   draw_index = paired_draw_index(fold),
-                                  max_block = 2.5e7) {
+                                  max_block = 2.5e7,
+                                  x_cells_init = fold$x_cells_init) {
 
+  options <- fold_options(fold)
   parameters <- dynamical_parameter_draws(fold,
                                           df = df,
                                           classes_index = classes_index,
                                           types = types,
-                                          draw_index = draw_index)
+                                          draw_index = draw_index,
+                                          options = options)
+  x_init <- select_init_covariates(x_cells_init, options)
+  init_min <- init_frac_constants(types)$min
   n_draws <- parameters$n_draws
   n_times <- max(cell_years_index$year_id)
 
@@ -300,9 +354,28 @@ dynamical_predictions <- function(fold,
       cumulative <- log_w[, target$year_id +
                             (match(target$cell_id, cells) - 1) * n_years,
                           drop = FALSE]
-      logit_init <- matrix(parameters$logit_init[, target$country_id, k],
-                           nrow = n_draws)
-      unique_result[, target$column] <- plogis(logit_init - cumulative)
+      logit_init <- if (is.null(x_init)) {
+        matrix(parameters$logit_init[, target$country_id, k], nrow = n_draws)
+      } else {
+        # the country's relative initial state plus the cell's covariate
+        # effects, then the transform (as logit_init_relative_rows() and
+        # logit_init_from_relative() in the model)
+        relative <- matrix(parameters$logit_init_relative[, target$country_id,
+                                                          k],
+                           nrow = n_draws) +
+          matrix(parameters$init_coef[, , k], nrow = n_draws) %*%
+          t(x_init[target$cell_id, , drop = FALSE])
+        logit_init_from_relative(relative, init_min[k])
+      }
+      # reversion: - t kappa in year t (see reversion_kappa())
+      if (!is.null(parameters$kappa_type)) {
+        cumulative <- cumulative +
+          outer(parameters$kappa_type[, k], target$year_id)
+      }
+      # mortality is the fraction susceptible, with the floor applied (one
+      # per draw, down the rows)
+      unique_result[, target$column] <- floored_mortality(
+        plogis(logit_init - cumulative), parameters$mortality_floor)
       rm(log_w, cumulative, logit_init)
     }
   }

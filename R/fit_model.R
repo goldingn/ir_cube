@@ -1,8 +1,12 @@
 # fit model
 
 # load packages and functions
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
+source("R/bioassay_subset.R")
 source("R/dynamical_model.R")
 
 # set the start of the timeseries considered in modelling (the start of
@@ -70,61 +74,18 @@ covs_flat <- c(crops_group, crops_implicated)
 ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 
 # numbers of unique location/time records per insecticide
-record_counts <- ir_africa %>%
-  group_by(insecticide_type, latitude, longitude, year_start) %>%
-  summarise(
-    mosquito_number = sum(mosquito_number),
-    .groups = "drop"
-  ) %>%
-  group_by(insecticide_type) %>%
-  summarise(
-    n = n(),
-    mosquito_number = mean(mosquito_number),
-    .groups = "drop"
-  ) %>%
-  arrange(desc(n))
+record_counts <- count_location_years(ir_africa)
 
-# keep only a subset of insecticide types
-
-# keep the first 9 of these: those with at least 1000 unique places/times, and
-# alpha-cypermethrin (914 unique) because of its use in LLINs.
-insecticides_keep <- c("Alpha-cypermethrin",
-                       "Deltamethrin",
-                       "Lambda-cyhalothrin", 
-                       "Permethrin",
-                       "Fenitrothion",
-                       "Malathion",
-                       "Pirimiphos-methyl",
-                       "DDT",
-                       "Bendiocarb")
-
-# # note: only one study has chlorfenapyr resistance (Benin in 2022)
-# ir_africa %>% filter(insecticide_type == "Chlorfenapyr") %>% View()
-
-df <- ir_africa %>%
-  filter(insecticide_type %in% insecticides_keep) %>%
-  group_by(insecticide_type) %>%
-  # subset to the most common concentration for each insecticide
-  filter(
-   concentration == sample_mode(concentration)
-  ) %>%
-  ungroup() %>%
-  filter(
-    # drop any from before the baseline
-    year_start >= baseline_year,
-    year_start <= final_data_year
-  ) %>%
-  mutate(
-    # create an index to the simulation year (in 1-indexed integers)
-    year_id = year_start - baseline_year + 1,
-    # add on cell ids corresponding to these observations,
-    cell = cellFromXY(mask,
-                      as.matrix(select(., longitude, latitude)))
-  ) %>%
-  # drop a handful of datapoints missing covariates
-  filter(
-    !is.na(extract(mask, cell)[, 1])
-  )
+# the modelled subset: the insecticide types with at least 1000 unique
+# places/times, and alpha-cypermethrin (914 unique) because of its use in LLINs,
+# each at its modal concentration, in the modelled years and inside the mask
+# (R/bioassay_subset.R)
+insecticides_keep <- modelled_insecticides
+df <- subset_modelled_bioassays(ir_africa,
+                                mask,
+                                insecticides_keep = insecticides_keep,
+                                baseline_year = baseline_year,
+                                final_data_year = final_data_year)
 
 # create indices to categorical vectors
 classes <- unique(df$insecticide_class)
@@ -158,67 +119,20 @@ type_concentrations <- df %>%
   pull(concentration)
 
 
-# create design matrix at all unique cells and for all years
+# the model terms (R/dynamical_model.R)
+model_options <- dynamical_model_options()
 
-# pull out temporally-static covariates for all cells
-flat_extract <- covs_flat %>%
-  extract(unique_cells) %>%
-  mutate(
-    cell = unique_cells,
-    .before = everything()
-  )
+# create design matrix at all unique cells and for all years, as the model
+# options' selection design asks (R/model_covariates.R)
+selection <- selection_design_matrix(unique_cells, baseline_year,
+                                     final_data_year,
+                                     model_options$selection_columns)
+cell_years_index <- selection$cell_years_index
+x_cell_years <- selection$x_cell_years
+rm(selection)
 
-# extract spatiotemporal covariates from the cube
-all_extract <- bind_cols(
-  terra::extract(nets_cube, unique_cells),
-  terra::extract(irs_cube, unique_cells),
-  terra::extract(pop_cube, unique_cells)
-) %>%
-  mutate(
-    cell = unique_cells,
-    .before = everything()
-  ) %>%
-  # this stacks all the different cubes in long format, but we want wide on the
-  # variable but long on year, so pivot_wider immediately after
-  pivot_longer(
-    cols = -one_of("cell"),
-    names_sep = "_",
-    names_to = c("variable", "year"),
-    values_to = "value"
-  ) %>%
-  pivot_wider(
-    names_from = "variable",
-    values_from = "value"
-  ) %>%
-  mutate(
-    year = as.numeric(year)
-  ) %>%
-  left_join(
-    flat_extract,
-    by = "cell"
-  ) %>%
-  mutate(
-    cell_id = match(cell, unique_cells),
-    year_id = year - baseline_year + 1,
-    .before = everything()
-  ) %>%
-  filter(
-    year >= baseline_year
-  ) %>%
-  select(
-    -cell,
-    -year
-  )
-
-# pull out index to cells and years
-cell_years_index <- all_extract %>%
-  select(cell_id, year_id)
-
-# get covariates for these cell-years as a matrix
-x_cell_years <- all_extract %>%
-  select(-cell_id,
-         -year_id) %>%
-  as.matrix()
+# the initial-state covariates (#19) at each cell, one row per cell_id
+x_cells_init <- init_covariate_matrix(unique_cells)
 
 # dimensions of things in the fitting stage
 n_covs <- ncol(x_cell_years)
@@ -236,7 +150,9 @@ built <- build_dynamical_model(train_df = df,
                                x_cell_years = x_cell_years,
                                cell_years_index = cell_years_index,
                                classes_index = classes_index,
-                               types = types)
+                               types = types,
+                               options = model_options,
+                               x_cells_init = x_cells_init)
 m <- built$model
 
 # the variables and derived quantities, as named objects in the saved image,
@@ -256,7 +172,8 @@ init_range <- 1 - init_frac_min
 n_chains <- 8
 
 # used cached posterior means as inits
-inits_one <- readRDS("temporary/inits.RDS")
+inits_one <- dynamical_inits(readRDS("temporary/inits.RDS"), built$variables,
+                             columns = colnames(x_cell_years))
 inits <- replicate(n_chains,
                    inits_one,
                    simplify = FALSE)

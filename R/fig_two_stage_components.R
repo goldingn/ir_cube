@@ -95,7 +95,8 @@ if (!file.exists(cache_file)) {
   stopifnot(isTRUE(all.equal(fit_env$df, df)),
             identical(fit_env$types, types),
             identical(fit_env$unique_cells, unique_cells))
-  fold <- list(draws = fit_env$draws)
+  fold <- list(draws = fit_env$draws, options = fit_env$model_options,
+                x_cells_init = fit_env$x_cells_init)
   rm(fit_env)
   invisible(gc())
 
@@ -119,7 +120,8 @@ if (!file.exists(cache_file)) {
 
   lookup <- country_region_lookup()
   logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
-                                   classes_index, countries, regions, lookup)
+                                   classes_index, countries, regions, lookup,
+                                   options = fold_options(fold))
   logit_init_k <- logit_init_all[, , k]
   effect_k <- parameters$effect_type[, , k]
   rm(fold, draws_matrix, parameters, logit_init_all)

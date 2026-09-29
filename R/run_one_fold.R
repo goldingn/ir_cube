@@ -22,17 +22,10 @@ n_samples <- if (length(arguments) >= 6) as.integer(arguments[6]) else 5000L
 # its thread count once initialised, so that has to be set first. And python has
 # to be initialised before terra and sf are attached, because those load the
 # system XML libraries, against which the conda environment's pyexpat is then
-# resolved and tensorflow_probability fails to import. So: load greta, set
-# threads, force python up, and only then source anything else.
-suppressMessages(library(greta))
-
-tensorflow_module <- reticulate::import("tensorflow")
-tensorflow_module$config$threading$set_intra_op_parallelism_threads(
-  as.integer(threads))
-tensorflow_module$config$threading$set_inter_op_parallelism_threads(
-  as.integer(threads))
-
-invisible(calculate(normal(0, 1), nsim = 1))
+# resolved and tensorflow_probability fails to import. So: set threads, force
+# python up (start_greta()), and only then source anything else.
+source("R/greta_setup.R")
+start_greta(threads = threads)
 
 source("R/validation_functions.R")
 source("R/validation_folds.R")
@@ -111,6 +104,9 @@ elapsed <- system.time(
     df = df,
     classes_index = classes_index,
     types = types,
+    # dynamical_model_options(), set in validation_covariates.R
+    options = model_options,
+    x_cells_init = x_cells_init,
     n_chains = n_chains,
     warmup = warmup,
     n_samples = n_samples
@@ -136,8 +132,13 @@ saveRDS(
        draws = fit$draws,
        prediction_arrays = fit$prediction_arrays,
        p_draws = fit$p_draws,
-       rho_class_draws = fit$rho_class_draws,
-       class_id = fit$class_id,
+       rho_type_draws = fit$rho_type_draws,
+       type_id = fit$type_id,
+       # the model options (dynamical_model_options()), which the plain-R
+       # predictions need to rebuild the model's terms
+       options = fit$options,
+       # the initial-state covariates at each cell (#19), for the same
+       x_cells_init = fit$x_cells_init,
        test_df = fit$test_df,
        p_draws_before = fit$p_draws_before,
        before_df = fit$before_df,

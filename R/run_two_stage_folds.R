@@ -280,6 +280,7 @@ if (nrow(p_saved) > length(draw_index)) {
 fold$p_draws <- NULL
 fold$p_draws_before <- NULL
 fold$rho_class_draws <- NULL
+fold$rho_type_draws <- NULL
 invisible(gc())
 
 # The rows are passed without their country_id, so that dynamical_predictions()

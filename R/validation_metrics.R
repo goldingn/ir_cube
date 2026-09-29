@@ -106,8 +106,11 @@ score_fold <- function(file) {
   # the overdispersion each model's own fit implies, kept for the diagnostic
   # table: a posterior for the dynamical model, a single fitted value for the
   # nulls, and absent from folds saved before the two were separated
-  rho_fitted <- if (!is.null(fold$rho_class_draws)) {
-    # saved compactly as draws by insecticide class, expanded here
+  rho_fitted <- if (!is.null(fold$rho_type_draws)) {
+    # saved compactly as draws by insecticide type, expanded here
+    thin_draws(fold$rho_type_draws)[, fold$type_id, drop = FALSE]
+  } else if (!is.null(fold$rho_class_draws)) {
+    # folds fitted before #20: by insecticide class
     thin_draws(fold$rho_class_draws)[, fold$class_id, drop = FALSE]
   } else if (!is.null(fold$rho_draws)) {
     thin_draws(fold$rho_draws)

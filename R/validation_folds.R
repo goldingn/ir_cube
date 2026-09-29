@@ -20,14 +20,11 @@ if (!exists("plot_folds")) {
 # load packages and functions
 source("R/packages.R")
 source("R/functions.R")
+source("R/bioassay_subset.R")
 
 # load bioassay data
 ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 
-
-# Note: there is code in fit_model to subset this to some insecticides. Relevant
-# code is copied here for now, but move that into the data preparation scripts
-# and save only the model-ready version to load in here
 
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
@@ -35,44 +32,13 @@ mask <- rast("data/clean/raster_mask.tif")
 baseline_year <- 1995
 final_data_year <- 2024
 
-insecticides_keep <- c("Alpha-cypermethrin",
-                       "Deltamethrin",
-                       "Lambda-cyhalothrin", 
-                       "Permethrin",
-                       "Fenitrothion",
-                       "Malathion",
-                       "Pirimiphos-methyl",
-                       "DDT",
-                       "Bendiocarb")
-
-df <- ir_africa %>%
-  filter(
-    insecticide_type %in% insecticides_keep
-  ) %>%
-  group_by(
-    insecticide_type
-  ) %>%
-  # subset to the most common concentration for each insecticide
-  filter(
-    concentration == sample_mode(concentration)
-  ) %>%
-  ungroup() %>%
-  filter(
-    # drop any from before the baseline
-    year_start >= baseline_year,
-    year_start <= final_data_year
-  ) %>%
-  mutate(
-    # need year id for main dynamical model
-    year_id = year_start - baseline_year + 1,
-    # add on cell ids corresponding to these observations,
-    cell = cellFromXY(mask,
-                      as.matrix(select(., longitude, latitude)))
-  ) %>%
-  # drop a handful of datapoints missing covariates
-  filter(
-    !is.na(extract(mask, cell)[, 1])
-  )
+# the modelled subset, as in fit_model.R (R/bioassay_subset.R)
+insecticides_keep <- modelled_insecticides
+df <- subset_modelled_bioassays(ir_africa,
+                                mask,
+                                insecticides_keep = insecticides_keep,
+                                baseline_year = baseline_year,
+                                final_data_year = final_data_year)
 
 
 # indexing for main model fitting

@@ -113,12 +113,19 @@ chain_sizes <- vapply(fold$draws, nrow, integer(1))
 chain_id <- findInterval(draw_index - 1, cumsum(chain_sizes)) + 1
 
 draws_matrix <- as.matrix(fold$draws)[draw_index, , drop = FALSE]
-rho_draws <- extract_parameter(draws_matrix, "rho_classes")
-dim(rho_draws) <- c(n_draws, length(classes))
+# the overdispersion of each type, draws x n_types (the model's terms, so this
+# covers rho per class and per type, #20)
+rho_draws <- dynamical_parameter_draws(fold, df, classes_index, types,
+                                       draw_index)$rho_types
 # these are the rho draws the held-out scoring paired with p (older folds
-# stored them unthinned, so they are thinned by the same rule first)
-if (!is.null(fold$rho_class_draws)) {
-  stored_rho <- fold$rho_class_draws
+# stored them unthinned, so they are thinned by the same rule first, and by
+# class, so they are expanded to types)
+stored_rho <- if (!is.null(fold$rho_type_draws)) {
+  fold$rho_type_draws
+} else if (!is.null(fold$rho_class_draws)) {
+  fold$rho_class_draws[, classes_index, drop = FALSE]
+}
+if (!is.null(stored_rho)) {
   if (nrow(stored_rho) > n_draws) {
     stored_rho <- stored_rho[draw_index, , drop = FALSE]
   }
@@ -184,7 +191,7 @@ pointwise_loglik <- function(p, rho, chunk = 2000) {
       y = rep(y[columns], each = nrow(p)),
       size = rep(n[columns], each = nrow(p)),
       p = p[, columns, drop = FALSE],
-      rho = rho[, class_id[columns], drop = FALSE],
+      rho = rho[, type_id[columns], drop = FALSE],
       log = TRUE)
   }
   out
@@ -220,7 +227,8 @@ mean_draws <- coda::mcmc.list(coda::mcmc(
   matrix(colMeans(draws_matrix), nrow = 1,
          dimnames = list(NULL, colnames(draws_matrix)))))
 attr(mean_draws, "model_info") <- mean_info
-mean_fold <- list(draws = mean_draws)
+mean_fold <- list(draws = mean_draws, options = fold$options,
+                  x_cells_init = fold$x_cells_init)
 p_at_mean_theta <- dynamical_predictions(mean_fold, training, df, x_cell_years,
                                          cell_years_index, classes_index,
                                          types, draw_index = 1)

@@ -23,7 +23,7 @@ cat("p_draws dim", dim(fold$p_draws), "\n")
 draw_index <- paired_draw_index(fold)
 p_ref <- fold$p_draws
 if (nrow(p_ref) > 2000) p_ref <- p_ref[round(seq(1, nrow(p_ref), length.out = 2000)), ]
-fold$p_draws <- NULL; fold$rho_draws <- NULL; fold$p_draws_before <- NULL; fold$rho_class_draws <- NULL
+fold$p_draws <- NULL; fold$rho_draws <- NULL; fold$p_draws_before <- NULL; fold$rho_class_draws <- NULL; fold$rho_type_draws <- NULL
 invisible(gc())
 
 if (experiment == "interp") {

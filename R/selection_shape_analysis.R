@@ -17,6 +17,12 @@
 #   outputs/selection_shape_cv.csv      cross-validated comparison of variants
 #   outputs/selection_shape_coefs.csv   coefficients of the variants, all data
 #   outputs/selection_shape_net_slope.csv  univariate net-use slope check
+#   outputs/selection_shape_net_profile.csv    scores with the net-use
+#     coefficient fixed at fractions of the saved model's value
+#   outputs/selection_shape_net_bootstrap.csv  block bootstrap of the net-use
+#     coefficient, on all pairs and subsets
+#   outputs/selection_shape_net_confounding.csv  how much net-use variation
+#     the pairs carry, and its collinearity with the other columns
 
 library(tidyverse)
 library(terra)
@@ -86,7 +92,12 @@ rho_type <- read_csv("outputs/bioassay_rho_hierarchical.csv",
 # pooled into the record
 records <- df %>%
   left_join(rho_type, by = "insecticide_type") %>%
-  group_by(cell_id, cell, latitude, longitude,
+  # one location and country per pixel
+  group_by(cell_id) %>%
+  mutate(latitude = first(latitude),
+         longitude = first(longitude),
+         country_name = first(country_name)) %>%
+  group_by(cell_id, cell, latitude, longitude, country_name,
            insecticide_class, insecticide_type, type_id, year_id) %>%
   summarise(
     died = sum(died),
@@ -95,19 +106,14 @@ records <- df %>%
     n_eff_factor = sum(mosquito_number * (1 + (mosquito_number - 1) * rho)),
     .groups = "drop"
   ) %>%
-  # one location per pixel for the grouping below
-  group_by(cell_id) %>%
-  mutate(latitude = first(latitude),
-         longitude = first(longitude)) %>%
-  ungroup() %>%
   mutate(
     p_hat = (died + 0.5) / (n + 1),
     logit_mort = qlogis(p_hat),
     # var(logit p_hat) ~= var(p_hat) / (p (1 - p))^2, where
     # var(p_hat) = p (1 - p) sum n_i (1 + (n_i - 1) rho) / n^2
     var_logit = n_eff_factor / (n ^ 2 * p_hat * (1 - p_hat))
-  ) %>%
-  distinct(cell_id, type_id, year_id, .keep_all = TRUE)
+  )
+stopifnot(!anyDuplicated(records[, c("cell_id", "type_id", "year_id")]))
 
 # consecutive pairs of records at the same pixel and insecticide type. Using
 # only consecutive pairs keeps each record in at most two differences.
@@ -123,7 +129,7 @@ pairs <- records %>%
   ungroup() %>%
   filter(!is.na(year_1)) %>%
   transmute(
-    cell_id, latitude, longitude,
+    cell_id, latitude, longitude, country_name,
     insecticide_class, insecticide_type, type_id,
     year_1,
     year_2 = year_id,
@@ -255,6 +261,8 @@ beta_type_raw <- draw_array("beta_type_raw", c(n_covs, n_types))
 x_pair_years <- as.matrix(pair_years[, colnames(x_cell_years)])
 pair_type <- pairs$type_id[pair_years$pair_id]
 model_rate <- matrix(NA, nrow(draws_mat), nrow(pairs))
+model_effect <- matrix(0, n_covs, n_types,
+                       dimnames = list(colnames(x_cell_years), types))
 for (s in seq_len(nrow(draws_mat))) {
   beta_class <- beta_overall[s, ] + sigma_overall[s, ] * beta_class_raw[s, , ]
   beta_type <- beta_class[, classes_index] +
@@ -262,6 +270,7 @@ for (s in seq_len(nrow(draws_mat))) {
   log_w <- log1p(x_pair_years %*% exp(beta_type))
   log_w <- log_w[cbind(seq_along(pair_type), pair_type)]
   model_rate[s, ] <- rowsum(log_w, pair_years$pair_id)[, 1] / pairs$dt
+  model_effect <- model_effect + exp(beta_type) / nrow(draws_mat)
 }
 pairs$model_rate <- colMeans(model_rate)
 rm(fitted, draws_mat, model_rate)
@@ -286,7 +295,8 @@ write_csv(net_slope, "outputs/selection_shape_net_slope.csv")
 knot_probs <- c(0.25, 0.5, 0.75)
 knots <- list(
   nets = unname(quantile(pair_years$nets, knot_probs)),
-  irs = unname(quantile(pair_years$irs[pair_years$irs > 0], knot_probs))
+  irs = unname(quantile(pair_years$irs[pair_years$irs > 0], knot_probs)),
+  pop = unname(quantile(pair_years$pop, knot_probs))
 )
 print(knots)
 
@@ -301,6 +311,10 @@ base_const <- c("one", "nets", "irs", "log_pop", crop_names)
 variants <- list(
   linear_pop = list(linear = base_pop),
   linear_pop_const = list(linear = c("one", base_pop)),
+  const_no_pop = list(linear = c("one", "nets", "irs", crop_names)),
+  pop_k123 = list(linear = base_pop, hinge = list(pop = 1:3)),
+  pop_k123_nets_k123 = list(linear = base_pop,
+                            hinge = list(pop = 1:3, nets = 1:3)),
   linear = list(linear = base_log_pop),
   linear_const = list(linear = base_const),
   nets_k1 = list(hinge = list(nets = 1)),
@@ -340,7 +354,7 @@ make_basis <- function(variant) {
 # weighted least squares for the interval mean of log w, with b >= 0 and the
 # reversion constant <= 0, by L-BFGS-B with an analytic gradient. `rows`
 # indexes pairs.
-fit_pairs <- function(x, rows, weights, reversion) {
+fit_pairs <- function(x, rows, weights, reversion, fixed = NULL) {
   keep <- pair_years$pair_id %in% rows
   x <- x[keep, , drop = FALSE]
   group <- match(pair_years$pair_id[keep], rows)
@@ -361,13 +375,19 @@ fit_pairs <- function(x, rows, weights, reversion) {
     -2 * colSums(w * resid * d_rate)
   }
   n_par <- n_b + reversion
+  lower <- c(rep(0, n_b), if (reversion) -Inf)
+  upper <- c(rep(Inf, n_b), if (reversion) 0)
+  # coefficients fixed at given values, as named elements of `fixed`
+  fixed_idx <- match(names(fixed), colnames(x))
+  lower[fixed_idx] <- upper[fixed_idx] <- fixed
   starts <- list(rep(0.05, n_par), rep(0.5, n_par))
   fits <- map(starts, function(start) {
     if (reversion) start[n_par] <- 0
+    start[fixed_idx] <- fixed
     optim(start, objective, gradient,
           method = "L-BFGS-B",
-          lower = c(rep(0, n_b), if (reversion) -Inf),
-          upper = c(rep(Inf, n_b), if (reversion) 0),
+          lower = lower,
+          upper = upper,
           control = list(maxit = 5000, factr = 1e5))
   })
   best <- fits[[which.min(map_dbl(fits, "value"))]]
@@ -458,9 +478,12 @@ log_density <- function(rows, pred) {
 }
 
 set.seed(2026)
-cv_scores <- map_dfr(seq_len(n_repeats), function(rep) {
+pair_folds <- map(seq_len(n_repeats), function(rep) {
   block_fold <- sample(rep_len(seq_len(n_folds), length(blocks)))
-  pair_fold <- block_fold[match(pairs$block, blocks)]
+  block_fold[match(pairs$block, blocks)]
+})
+cv_scores <- map_dfr(seq_len(n_repeats), function(rep) {
+  pair_fold <- pair_folds[[rep]]
   imap_dfr(variants, function(variant, name) {
     map_dfr(seq_len(n_folds), function(fold) {
       imap_dfr(class_rows, function(rows, class) {
@@ -525,3 +548,179 @@ cv_table <- bind_rows(
   )
 print(cv_table, n = Inf)
 write_csv(cv_table, "outputs/selection_shape_cv.csv")
+
+
+# robustness of the fitted net-use coefficient
+
+# the saved model's net-use effect per class: posterior mean effect per type,
+# averaged over the types in the class weighted by their numbers of pairs
+model_net_class <- pairs %>%
+  count(insecticide_class, insecticide_type) %>%
+  mutate(effect = model_effect["nets", insecticide_type]) %>%
+  group_by(insecticide_class) %>%
+  summarise(model_net = weighted.mean(effect, n))
+model_net <- setNames(model_net_class$model_net,
+                      model_net_class$insecticide_class)
+print(model_net)
+
+# profile: in-sample and held-out log density with the net-use coefficient
+# fixed at fractions of the model's value and the others refitted, for the
+# current columns (raw pop) and for log pop
+profile_bases <- c("linear_pop", "linear")
+net_fractions <- c(0, 0.25, 0.5, 1)
+net_profile_pairs <- expand_grid(variant = profile_bases,
+                                 fraction = net_fractions) %>%
+  pmap_dfr(function(variant, fraction) {
+    imap_dfr(class_rows, function(rows, class) {
+      fixed <- c(nets = fraction * model_net[[class]])
+      x <- bases[[variant]]
+      fit <- fit_pairs(x, rows, pair_weights, FALSE, fixed)
+      in_sample <- log_density(rows, predict_pairs(x, fit$par, rows, FALSE))
+      held_out <- map(pair_folds, function(pair_fold) {
+        score <- numeric(length(rows))
+        for (fold in seq_len(n_folds)) {
+          test_idx <- which(pair_fold[rows] == fold)
+          train <- rows[-test_idx]
+          test <- rows[test_idx]
+          fit <- fit_pairs(x, train, pair_weights, FALSE, fixed)
+          score[test_idx] <- log_density(test,
+                                         predict_pairs(x, fit$par, test, FALSE))
+        }
+        score
+      })
+      tibble(variant = variant, fraction = fraction,
+             insecticide_class = class, net_coef = fixed[["nets"]],
+             pair_id = rows, in_sample = in_sample,
+             held_out = reduce(held_out, `+`) / length(held_out))
+    })
+  })
+
+# differences from a zero net-use coefficient, with standard errors from the
+# spread of per-block differences
+summarise_profile <- function(data) {
+  data %>%
+    left_join(pairs %>% select(pair_id, block), by = "pair_id") %>%
+    group_by(variant, pair_id) %>%
+    mutate(in_sample_vs_0 = in_sample - in_sample[fraction == 0],
+           held_out_vs_0 = held_out - held_out[fraction == 0]) %>%
+    group_by(variant, fraction, block) %>%
+    summarise(across(c(in_sample, held_out, in_sample_vs_0, held_out_vs_0),
+                     sum),
+              .groups = "drop_last") %>%
+    summarise(se_held_out_vs_0 = sqrt(n()) * sd(held_out_vs_0),
+              in_sample = sum(in_sample),
+              held_out = sum(held_out),
+              in_sample_vs_0 = sum(in_sample_vs_0),
+              held_out_vs_0 = sum(held_out_vs_0),
+              .groups = "drop")
+}
+net_profile <- bind_rows(
+  net_profile_pairs %>%
+    split(.$insecticide_class) %>%
+    imap_dfr(~ summarise_profile(.x) %>%
+               mutate(insecticide_class = .y,
+                      net_coef = fraction * model_net[[.y]])),
+  summarise_profile(net_profile_pairs) %>%
+    mutate(insecticide_class = "all")
+) %>%
+  relocate(variant, insecticide_class, fraction, net_coef) %>%
+  relocate(se_held_out_vs_0, .after = held_out_vs_0)
+print(net_profile, n = Inf, width = Inf)
+write_csv(net_profile, "outputs/selection_shape_net_profile.csv")
+
+# block bootstrap of the net-use coefficient: resample 1-degree blocks with
+# replacement, weighting each pair by its block's multiplicity
+bootstrap_net <- function(rows, variant, n_boot = 200, seed = 1) {
+  x <- bases[[variant]]
+  estimate <- fit_pairs(x, rows, pair_weights, FALSE)$par[["nets"]]
+  rows_by_block <- split(rows, pairs$block[rows])
+  set.seed(seed)
+  boots <- parallel::mclapply(seq_len(n_boot), function(i) {
+    sampled <- sample(names(rows_by_block), replace = TRUE)
+    mult <- table(unlist(rows_by_block[sampled]))
+    boot_rows <- as.integer(names(mult))
+    w <- pair_weights
+    w[boot_rows] <- w[boot_rows] * as.vector(mult)
+    fit_pairs(x, boot_rows, w, FALSE)$par[["nets"]]
+  }, mc.cores = 6)
+  boots <- unlist(boots)
+  tibble(variant = variant,
+         n_pairs = length(rows),
+         n_blocks = length(rows_by_block),
+         estimate = estimate,
+         lower = quantile(boots, 0.025),
+         upper = quantile(boots, 0.975),
+         share_zero = mean(boots < 1e-8),
+         model_net = NA_real_)
+}
+
+# per-pair net use at the two records, for the subset spanning an increase
+pairs <- pairs %>%
+  select(-any_of(c("nets_1", "nets_2"))) %>%
+  left_join(covs %>% select(cell_id, year_1 = year_id, nets_1 = nets),
+            by = c("cell_id", "year_1")) %>%
+  left_join(covs %>% select(cell_id, year_2 = year_id, nets_2 = nets),
+            by = c("cell_id", "year_2"))
+
+pyrethroid <- pairs$insecticide_class == "Pyrethroids"
+top_countries <- pairs %>%
+  filter(insecticide_class == "Pyrethroids") %>%
+  count(country_name, sort = TRUE) %>%
+  slice_head(n = 3) %>%
+  pull(country_name)
+subsets <- c(
+  map(class_rows, identity) %>%
+    set_names(paste(names(class_rows), "all pairs", sep = ": ")),
+  list(
+    "Pyrethroids: first record 2010 or later" =
+      pairs$pair_id[pyrethroid & pairs$year_1 + baseline_year - 1 >= 2010],
+    "Pyrethroids: net use rose by > 0.2 over the interval" =
+      pairs$pair_id[pyrethroid & pairs$nets_2 - pairs$nets_1 > 0.2]
+  ),
+  map(top_countries, function(country) {
+    pairs$pair_id[pyrethroid & pairs$country_name == country]
+  }) %>%
+    set_names(paste("Pyrethroids:", top_countries))
+)
+net_bootstrap <- expand_grid(subset = names(subsets),
+                             variant = profile_bases) %>%
+  pmap_dfr(function(subset, variant) {
+    bootstrap_net(subsets[[subset]], variant) %>%
+      mutate(subset = subset, .before = everything())
+  }) %>%
+  mutate(model_net = unname(.env$model_net[str_remove(subset, ":.*$")]))
+print(net_bootstrap, n = Inf, width = Inf)
+write_csv(net_bootstrap, "outputs/selection_shape_net_bootstrap.csv")
+
+
+# how much net-use variation the pairs carry, and how collinear it is with
+# the constant-like columns: interval-mean net use across pairs, its
+# correlation with log pop and raw pop, and the share of its variance that a
+# regression on a constant, log pop, IRS and the crops explains
+net_confounding <- pairs %>%
+  mutate(group = insecticide_class) %>%
+  bind_rows(pairs %>% mutate(group = "all")) %>%
+  group_by(group) %>%
+  group_modify(function(d, key) {
+    others <- lm(reformulate(c("log_pop", "irs", sprintf("`%s`", crop_names)),
+                             "nets"),
+                 data = d)
+    tibble(
+      n_pairs = nrow(d),
+      nets_q05 = quantile(d$nets, 0.05),
+      nets_q25 = quantile(d$nets, 0.25),
+      nets_median = median(d$nets),
+      nets_q75 = quantile(d$nets, 0.75),
+      nets_q95 = quantile(d$nets, 0.95),
+      nets_sd = sd(d$nets),
+      share_below_0.18 = mean(d$nets < knots$nets[1]),
+      log_pop_mean = mean(d$log_pop),
+      log_pop_sd = sd(d$log_pop),
+      cor_nets_log_pop = cor(d$nets, d$log_pop),
+      cor_nets_pop = cor(d$nets, d$pop),
+      r2_nets_on_others = summary(others)$r.squared
+    )
+  }) %>%
+  ungroup()
+print(net_confounding, width = Inf)
+write_csv(net_confounding, "outputs/selection_shape_net_confounding.csv")

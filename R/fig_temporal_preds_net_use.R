@@ -2,6 +2,9 @@
 # coverage places
 
 # load packages and functions
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
 
