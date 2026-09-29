@@ -90,7 +90,8 @@ map_logit_init <- function(draws_matrix,
                            regions,
                            lookup = country_region_lookup(),
                            seed = 1,
-                           emulate_predict_fill = FALSE) {
+                           emulate_predict_fill = FALSE,
+                           options = dynamical_model_options()) {
 
   n_draws <- nrow(draws_matrix)
   n_types <- length(types)
@@ -135,7 +136,8 @@ map_logit_init <- function(draws_matrix,
                                       classes_index = classes_index,
                                       country_region_index = country_region,
                                       types = types,
-                                      terms = "logit_init_country")[[1]]
+                                      terms = "logit_init_country",
+                                      options = options)[[1]]
   dimnames(logit_init) <- list(NULL, all_countries, types)
   logit_init
 }
@@ -143,7 +145,7 @@ map_logit_init <- function(draws_matrix,
 
 # dynamical draws on a chunk of cells ------------------------------------------
 
-# Logit q (predicted bioassay mortality) at a chunk of cells, for draws of one
+# Logit of predicted bioassay mortality at a chunk of cells, for draws of one
 # insecticide type, returned as a list over `years_keep` of cells x draws
 # matrices.
 #
@@ -151,12 +153,15 @@ map_logit_init <- function(draws_matrix,
 #   logit_init   cells x draws: logit q_0 at each cell's country
 #   time_varying cells x years x 3 and flat cells x n_flat, from
 #                map_covariates(), for this chunk
+#   floor        draws: the floor on mortality (parameters$mortality_floor
+#                from dynamical_parameter_draws()), or NULL for none
 #
 # logit q_t = logit q_0 - sum_{s <= t} log w_s, with the fitness of year 1
 # (the baseline year) already applied to the year-1 state, exactly as
-# dynamical_predictions() and greta.dynamics do.
+# dynamical_predictions() and greta.dynamics do. Mortality is q_t, or with a
+# floor f, f + (1 - f) q_t.
 dynamical_logit_chunk <- function(effect, logit_init, time_varying, flat,
-                                  years, years_keep) {
+                                  years, years_keep, floor = NULL) {
   stopifnot(all(years_keep %in% years))
   last <- max(match(years_keep, years))
   effect_t <- t(effect)
@@ -166,7 +171,9 @@ dynamical_logit_chunk <- function(effect, logit_init, time_varying, flat,
     x_t <- cbind(time_varying[, t, ], flat)
     cumulative <- cumulative + log1p(x_t %*% effect_t)
     if (years[t] %in% years_keep) {
-      out[[as.character(years[t])]] <- logit_init - cumulative
+      out[[as.character(years[t])]] <- floored_logit_mortality(
+        logit_init - cumulative,
+        if (!is.null(floor)) rep(floor, each = nrow(logit_init)))
     }
   }
   out

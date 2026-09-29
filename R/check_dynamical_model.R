@@ -29,6 +29,7 @@ suppressMessages({
 })
 source("R/validation_functions.R")
 source("R/dynamical_predictions.R")
+source("R/two_stage_map_functions.R")
 
 model_options <- eval(parse(text = options_text))
 cat("options:", options_text, "\n")
@@ -108,3 +109,42 @@ cat(sprintf("rho: max abs diff %.3g\n", max(abs(rho_greta - rho_r))))
 cat(sprintf("log likelihood of assays 2..n: greta %.10g, plain R %.10g, diff %.3g\n",
             ld_all - ld_one, sum(loglik_r[-1]),
             ld_all - ld_one - sum(loglik_r[-1])))
+
+# the map path (R/two_stage_map_functions.R), at the data cells in 2000, 2012
+# and 2024, against dynamical_predictions()
+map_years <- c(2000, 2012, 2024)
+map_rows <- df %>%
+  distinct(cell, cell_id) %>%
+  mutate(country_name = countries[
+    built$lookups$cell_country_lookup[cell_id]])
+covariates <- map_covariates(map_rows$cell, baseline_year, max(map_years))
+parameters <- dynamical_parameter_draws(fold, df, classes_index, types,
+                                        draw_index = 1)
+logit_init_all <- map_logit_init(trace, NULL, types, classes_index, countries,
+                                 regions, country_region_lookup(),
+                                 options = model_options)
+cell_country_index <- match(map_rows$country_name,
+                            dimnames(logit_init_all)[[2]])
+map_difference <- 0
+for (k in seq_along(types)) {
+  dyn <- dynamical_logit_chunk(
+    effect = matrix(parameters$effect_type[, , k], nrow = 1),
+    logit_init = matrix(logit_init_all[, cell_country_index, k], ncol = 1),
+    time_varying = covariates$time_varying,
+    flat = covariates$flat,
+    years = baseline_year:max(map_years), years_keep = map_years,
+    floor = parameters$mortality_floor)
+  for (y in map_years) {
+    rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
+                   year_id = y - baseline_year + 1)
+    p_rows <- c(dynamical_predictions(fold, rows, df, x_cell_years,
+                                      cell_years_index, classes_index, types,
+                                      draw_index = 1))
+    l_rows <- qlogis(pmin(pmax(p_rows, 1e-12), 1 - 1e-12))
+    l_map <- pmin(pmax(c(dyn[[as.character(y)]]), qlogis(1e-12)),
+                  qlogis(1 - 1e-12))
+    map_difference <- max(map_difference, abs(l_map - l_rows))
+  }
+}
+cat(sprintf("map path vs plain R, logit, %d cells x %d types x %d years: max abs diff %.3g\n",
+            nrow(map_rows), length(types), length(map_years), map_difference))

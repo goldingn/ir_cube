@@ -27,7 +27,8 @@ source("R/greta_setup.R")
 #   rho               "class": one overdispersion per insecticide class;
 #                     "type": one per insecticide type, types nested in
 #                     class (#20)
-#   mortality_floor   an estimated floor on bioassay mortality (#14)
+#   mortality_floor   TRUE for an estimated floor on bioassay mortality, the
+#                     mortality of a fully resistant population (#14)
 #   init_covariates   names of static covariates for the initial state (#19)
 #   selection_columns extra columns of the selection design matrix (#23)
 #   reversion         a per-class reversion rate to susceptibility (#24)
@@ -46,7 +47,8 @@ dynamical_model_options <- function(rho = c("class", "type"),
 check_dynamical_model_options <- function(options) {
   defaults <- dynamical_model_options()
   stopifnot(setequal(names(options), names(defaults)))
-  implemented <- list(rho = list("class", "type"))
+  implemented <- list(rho = list("class", "type"),
+                      mortality_floor = list(FALSE, TRUE))
   for (name in names(defaults)) {
     allowed <- if (name %in% names(implemented)) implemented[[name]] else
       list(defaults[[name]])
@@ -150,7 +152,22 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     )
   )
 
-  c(variables, rho)
+  # Floor on bioassay mortality. Predicted mortality is the fraction susceptible
+  # q_t (a susceptible mosquito dies at the discriminating dose, a resistant
+  # one survives), so a floor f makes it f + (1 - f) q_t: f is the mortality
+  # of a fully resistant population, from resistance mechanisms that give
+  # finite protection at the discriminating dose, and from deaths by handling
+  # rather than insecticide. Beta(1, 9): the density is highest at 0 (no floor,
+  # the model without it), with mean 0.1, P(f < 0.2) = 0.87 and
+  # P(f < 0.3) = 0.96. WHO tests with control mortality above 20% are
+  # discarded and those at 5-20% Abbott-corrected, so handling mortality in the
+  # data should be below 0.2, and the discriminating doses are set to kill
+  # susceptible mosquitoes with a margin, not resistant ones.
+  floor <- if (isTRUE(options$mortality_floor)) {
+    list(mortality_floor = beta(1, 9))
+  }
+
+  c(variables, rho, floor)
 }
 
 # Deterministic transforms from the variables `v` to the quantities the dynamics
@@ -160,6 +177,7 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
 #                       susceptible q_0 in each country
 #   rho_types           n_types, the observation overdispersion of each type
 #                       (with rho = "class", its class's)
+#   mortality_floor     the floor on bioassay mortality, or NULL for none
 # and some intermediate quantities.
 #
 # `v` is a named list of either greta arrays or plain R arrays for a single
@@ -225,6 +243,7 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
   list(beta_type = beta_type,
        logit_init_country = logit_init_country,
        rho_types = rho_types,
+       mortality_floor = v$mortality_floor,
        # intermediate quantities, which the figure scripts read
        beta_class = beta_class,
        init_region_effect = init_region_effect,
@@ -248,6 +267,30 @@ dynamical_inits <- function(cached, variables) {
 }
 
 
+# Bioassay mortality from the fraction susceptible q, with the floor f (a
+# scalar, or one per draw conformable with q; NULL for none): f + (1 - f) q.
+# For greta arrays or plain R.
+floored_mortality <- function(q, floor) {
+  if (is.null(floor)) {
+    return(q)
+  }
+  floor + (1 - floor) * q
+}
+
+# The same on the logit scale: the logit of f + (1 - f) q from l = logit q,
+# computed without forming q, which rounds to 1 when l is large. With
+# 1 - p = (1 - f) ilogit(-l),
+#   logit p = log(f + (1 - f) ilogit(l)) - log(1 - f) + softplus(l)
+# which is l when f = 0. Plain R.
+floored_logit_mortality <- function(l, floor) {
+  if (is.null(floor)) {
+    return(l)
+  }
+  log(floor + (1 - floor) * plogis(l)) - log1p(-floor) -
+    plogis(-l, log.p = TRUE)
+}
+
+
 # the model ------------------------------------------------------------------
 
 # Build the greta model with the likelihood over `train_df`.
@@ -262,8 +305,9 @@ dynamical_inits <- function(cached, variables) {
 # Returns a list with the model, its variables (as passed to model()), the
 # derived terms, and two functions for predictions after sampling:
 # mortality(rows) returns the greta array of predicted bioassay mortality at the
-# (cell_id, type_id, year_id) of `rows`, and all_states() the states at every
-# cell, type and year.
+# (cell_id, type_id, year_id) of `rows`, and all_states() the predicted
+# mortality at every cell, type and year. Mortality is the state (the fraction
+# susceptible) with the mortality floor applied, if there is one.
 build_dynamical_model <- function(train_df,
                                   df,
                                   x_cell_years,
@@ -316,11 +360,12 @@ build_dynamical_model <- function(train_df,
                                  n_times)
     pair_index <- match(paste(rows$cell_id, rows$type_id),
                         paste(pairs$cell_id, pairs$type_id))
-    states[cbind(pair_index, rows$year_id)]
+    floored_mortality(states[cbind(pair_index, rows$year_id)],
+                      terms$mortality_floor)
   }
 
-  # the states at every cell, type and year, as n_unique_cells x n_types x
-  # n_times, for predictions after sampling. (Creating this before model() would
+  # the predicted mortality at every cell, type and year, as n_unique_cells x
+  # n_types x n_times, for predictions after sampling. (Creating this before model() would
   # put it in the model's graph.)
   all_states <- function() {
     pairs <- expand.grid(cell_id = seq_len(n_unique_cells),
@@ -329,7 +374,7 @@ build_dynamical_model <- function(train_df,
                                  pairs$type_id, lookups$cell_country_lookup,
                                  n_times)
     dim(states) <- c(n_unique_cells, n_types, n_times)
-    states
+    floored_mortality(states, terms$mortality_floor)
   }
 
   # likelihood

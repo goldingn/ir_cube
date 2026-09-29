@@ -188,6 +188,7 @@ dynamical_terms_draws <- function(variables, classes_index,
 #   effect_type      draws x n_covs x n_types   exp(beta_type)
 #   logit_init       draws x n_countries x n_types, logit of q_0
 #   rho_types        draws x n_types, the observation overdispersion
+#   mortality_floor  draws, the floor on mortality (NULL for none)
 dynamical_parameter_draws <- function(fold,
                                       df,
                                       classes_index,
@@ -226,6 +227,9 @@ dynamical_parameter_draws <- function(fold,
   list(effect_type = effect_type,
        logit_init = logit_init,
        rho_types = matrix(terms$rho_types, n_draws),
+       mortality_floor = if (isTRUE(options$mortality_floor)) {
+         c(variables$mortality_floor)
+       },
        n_draws = n_draws,
        n_covs = n_covs)
 }
@@ -325,7 +329,10 @@ dynamical_predictions <- function(fold,
                           drop = FALSE]
       logit_init <- matrix(parameters$logit_init[, target$country_id, k],
                            nrow = n_draws)
-      unique_result[, target$column] <- plogis(logit_init - cumulative)
+      # mortality is the fraction susceptible, with the floor applied (one
+      # per draw, down the rows)
+      unique_result[, target$column] <- floored_mortality(
+        plogis(logit_init - cumulative), parameters$mortality_floor)
       rm(log_w, cumulative, logit_init)
     }
   }
