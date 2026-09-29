@@ -2,7 +2,7 @@
 #
 #   Rscript R/run_one_fold.R <experiment> <fold> [n_chains] [threads]
 #
-# e.g. Rscript R/run_one_fold.R spatial_extrapolation Kenya 4 4
+# e.g. Rscript R/run_one_fold.R spatial_blocks 1 4 4
 #      Rscript R/run_one_fold.R temporal_forecasting 2014 4 4
 #
 # One fold per process, so that greta's warmup and sampling progress goes to

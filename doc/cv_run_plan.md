@@ -6,24 +6,43 @@ PR #12 asks for, and what it costs.
 
 ---
 
-## 1. Environment: do not upgrade greta
+## 1. Environment: greta 0.6, no greta.dynamics
 
-Sampling this model fails on greta 0.6.0 — `mcmc()` raises a TensorFlow
-`while_loop` shape error whenever the likelihood depends on
-`iterate_dynamic_function()` output. Reported upstream as
-greta-dev/greta.dynamics#45.
+The selection recursion is computed in closed form by one greta op
+(`closed_form_states()` in `R/dynamical_model.R`, #25), so the model no longer
+uses `iterate_dynamic_function()`. That was what stopped greta 0.6.0 sampling
+this model (a TensorFlow `while_loop` shape error, greta-dev/greta.dynamics#45),
+and greta.dynamics is no longer needed.
 
-The working combination, verified for both master's model definition and
-`fit_fold()`:
+greta must be at or after `43f9c52` (0.6.0.9000), which fills subassignments
+into greta arrays column-major, as R does (greta-dev/greta#844, fixed in #847).
+`R/packages.R` checks this behaviour and stops if it is wrong.
 
-```r
-remotes::install_version("tensorflow", version = "2.16.0")
-remotes::install_github("njtierney/greta@4cc989f")            # 0.5.0.9000
-remotes::install_github("greta-dev/greta.dynamics@db7df31")   # 0.2.2
+Tested with greta `282944f`, TensorFlow 2.21.0, TensorFlow Probability 0.25.0,
+python 3.12, in a library and conda environment separate from the 0.5 setup:
+
+```bash
+Rscript -e 'remotes::install_github("greta-dev/greta@282944f", lib = "~/R/greta06-lib")'
+~/.local/share/r-miniconda/bin/conda create -n greta06-env python=3.12
+~/.local/share/r-miniconda/envs/greta06-env/bin/python -m pip install \
+  "tensorflow==2.21.*" "tensorflow_probability[tf]==0.25.*"
 ```
 
-Python side is a conda env built by `greta::install_greta_deps()`:
-TensorFlow 2.15.1, TFP 0.23.0.
+and every script that uses greta is run with
+
+```bash
+export R_LIBS=~/R/greta06-lib
+export RETICULATE_PYTHON=~/.local/share/r-miniconda/envs/greta06-env/bin/python
+```
+
+`R_LIBS` rather than `R_LIBS_USER`, which `~/.Renviron` sets. Set
+`RETICULATE_PYTHON` explicitly: otherwise greta 0.6 finds the old
+`greta-env-tf2` (TensorFlow 2.15), and its own uv-managed environment failed to
+resolve here. The other R packages come from the default library, as before.
+
+Under greta 0.6 the model gives the same log density as under 0.5.0.9000
+(`4cc989f`, TensorFlow 2.15.1) at the same parameter values, full data and the
+interpolation fold (difference 0, gradient to 6e-13), and samples.
 
 ## 2. Two ordering constraints, both load-bearing
 
@@ -62,7 +81,7 @@ and launch from there.
 Smoke test the whole path before committing to a long run:
 
 ```bash
-Rscript R/run_one_fold.R spatial_extrapolation Kenya 2 4 5 5
+Rscript R/run_one_fold.R spatial_blocks 1 2 4 5 5
 ```
 
 takes a few minutes and exercises everything. Delete the resulting `.rds`
