@@ -45,39 +45,50 @@ init_covariate_matrix <- function(cells, layers = init_covariate_layers()) {
 # insecticide use outside vector control; with a trend they enter only as
 # products z(x, t) = g(t) s(x, t) with a temporal trend g of that pressure, so
 # that no covariate acts as a constant selection rate and there is no
-# selection from them where g is 0.
-#   pop          transform of population s(x, t), each on 0-1:
-#                "saturating": d / (d + pop_d50), d the population density in
-#                people per km2 (pop_cube.tif over the cell area), 0 in the
-#                pixels WorldPop has as empty (pop_density_matrix());
+# selection from them where g is 0. There are two trends: g_dom for
+# population (domestic and public-health use) and g_ag for the crops
+# (agricultural use).
+#   pop          transform of population s(x, t), each on 0-1, with d the
+#                population density in people per km2 (pop_cube.tif over the
+#                cell area, 0 in the pixels WorldPop has as empty;
+#                pop_density_matrix()):
+#                "encounter": 1 - exp(-d / lambda), lambda =
+#                pop_d_half / log(2), the chance of encountering at least one
+#                source of exposure when sources are Poisson in number with
+#                mean proportional to d;
+#                "saturating": d / (d + pop_d_half);
 #                "raw": pop_scaled_cube.tif, population per cell min-max
 #                scaled; "log": pop_log_scaled_cube.tif, log population
 #                min-max scaled (write_log_pop_cubes())
-#   pop_d50      the density (people per km2) at which the saturating
-#                transform is 0.5; used only by pop = "saturating"
+#   pop_d_half   the density (people per km2) at which "encounter" and
+#                "saturating" are 0.5; not used by the others
 #   hinges       named list of knots, e.g. list(nets = c(0.18, 0.35)): hinge
 #                columns min(x, k) for any of nets, irs, pop (the last after
 #                its transform), knots k on the 0-1 scale. Each enters the
 #                fitness with a positive coefficient, like the linear ones, so
 #                the effect can saturate but not decrease
-#   trend        g(t): "none", the static columns as they are (the design of
-#                the fits to date); "linear_0_1", linear in the year, 0 in
-#                trend_years[1] and 1 in trend_years[2]; or a regions x years
-#                matrix of g, rownames the region names of
-#                country_region_lookup() and colnames the years, covering
-#                every year the design is built for, each cell taking its
-#                region's row (cell_regions())
-#   trend_years  the years where the linear trend is 0 and 1. The first
-#                should be the model's baseline year (1995), so these columns
-#                are 0 there
-#   trend_after  the linear trend after trend_years[2]: "continue", on the
-#                same line (g > 1, e.g. 1.17 in 2030); "cap", held at 1
-# pop, the population hinges and the crops are multiplied by g; net use, IRS
-# and their hinges are not.
-selection_design <- function(pop = c("raw", "log", "saturating"),
-                             pop_d50 = 50,
+#   trend_pop    g_dom(t), multiplying population and its hinges, and
+#   trend_crops  g_ag(t), multiplying the crops, each one of: "none", the
+#                columns as they are (the design of the fits to date);
+#                "linear_0_1", linear in the year, 0 in trend_years[1] and 1
+#                in trend_years[2]; or a regions x years matrix of g, rownames
+#                the region names of country_region_lookup() and colnames the
+#                years, covering every year the design is built for, each
+#                cell taking its region's row (cell_regions()). g_ag is to be
+#                estimated by region from FAOSTAT
+#                (data/clean/faostat_regional_trend.csv)
+#   trend_years  the years where a linear trend is 0 and 1. The first should
+#                be the model's baseline year (1995), so these columns are 0
+#                there
+#   trend_after  a linear trend after trend_years[2]: "continue", on the same
+#                line (g > 1, e.g. 1.17 in 2030); "cap", held at 1
+# Net use, IRS and their hinges have no trend.
+selection_design <- function(pop = c("raw", "log", "encounter",
+                                     "saturating"),
+                             pop_d_half = 50,
                              hinges = list(),
-                             trend = "none",
+                             trend_pop = "none",
+                             trend_crops = "none",
                              trend_years = c(1995, 2025),
                              trend_after = c("continue", "cap")) {
   pop <- match.arg(pop)
@@ -87,59 +98,66 @@ selection_design <- function(pop = c("raw", "log", "saturating"),
             all(vapply(hinges, function(k) {
               is.numeric(k) && all(k > 0 & k < 1)
             }, logical(1))),
-            is.numeric(pop_d50), length(pop_d50) == 1, pop_d50 > 0,
+            is.numeric(pop_d_half), length(pop_d_half) == 1,
+            pop_d_half > 0,
             is.numeric(trend_years), length(trend_years) == 2,
             trend_years[2] > trend_years[1])
-  if (is.matrix(trend)) {
-    stopifnot(is.numeric(trend), !is.null(rownames(trend)),
-              !anyNA(suppressWarnings(as.integer(colnames(trend)))))
-  } else {
-    stopifnot(trend %in% c("none", "linear_0_1"))
+  for (trend in list(trend_pop, trend_crops)) {
+    if (is.matrix(trend)) {
+      stopifnot(is.numeric(trend), !is.null(rownames(trend)),
+                !anyNA(suppressWarnings(as.integer(colnames(trend)))))
+    } else {
+      stopifnot(length(trend) == 1, trend %in% c("none", "linear_0_1"))
+    }
   }
-  list(pop = pop, pop_d50 = pop_d50, hinges = hinges, trend = trend,
-       trend_years = trend_years, trend_after = trend_after)
+  list(pop = pop, pop_d_half = pop_d_half, hinges = hinges, trend_pop = trend_pop,
+       trend_crops = trend_crops, trend_years = trend_years,
+       trend_after = trend_after)
 }
 
 # The design of the fits before the trend and the saturating population (raw
 # population, no hinges, no trend), e.g. for matching the cached inits
 selection_design_untrended <- function() {
-  selection_design(pop = "raw", trend = "none")
+  selection_design(pop = "raw", trend_pop = "none", trend_crops = "none")
 }
 
 # A saved design, completed as selection_design() would build it. Designs
-# saved before the trend was added have only pop and hinges, and meant no
-# trend.
+# saved before the trends were added have only pop and hinges, and meant none.
 complete_selection_design <- function(design) {
-  if (is.null(design$trend)) {
-    design$trend <- "none"
+  for (name in c("trend_pop", "trend_crops")) {
+    if (is.null(design[[name]])) {
+      design[[name]] <- "none"
+    }
   }
   do.call(selection_design, design)
 }
 
-has_trend <- function(design) {
-  is.matrix(design$trend) || design$trend != "none"
+# whether a trend (design$trend_pop or design$trend_crops) is on
+has_trend <- function(trend) {
+  is.matrix(trend) || trend != "none"
 }
 
 # the columns of the selection design matrix, in order: nets, irs, pop, the
-# hinge columns, then the crops; with a trend, the pop, population hinge and
-# crop columns are named "<name>:trend" (e.g. "pop_sat:trend",
-# "pop_sat_min_0.5:trend", "all crops:trend")
+# hinge columns, then the crops; with their trend, the pop and population
+# hinge columns are named "<name>:g_dom" (e.g. "pop_enc:g_dom",
+# "pop_enc_min_0.5:g_dom") and the crops "<name>:g_ag" ("all crops:g_ag")
 selection_column_names <- function(design = selection_design()) {
   design <- complete_selection_design(design)
   pop_name <- c(raw = "pop", log = "log_pop",
-                saturating = "pop_sat")[[design$pop]]
-  trended <- function(name) {
-    if (has_trend(design)) paste0(name, ":trend") else name
+                encounter = "pop_enc", saturating = "pop_sat")[[design$pop]]
+  trended <- function(name, trend, suffix) {
+    if (has_trend(trend)) paste0(name, ":", suffix) else name
   }
   hinge_names <- unlist(lapply(names(design$hinges), function(name) {
     if (name == "pop") {
-      trended(paste0(pop_name, "_min_", design$hinges[[name]]))
+      trended(paste0(pop_name, "_min_", design$hinges[[name]]),
+              design$trend_pop, "g_dom")
     } else {
       paste0(name, "_min_", design$hinges[[name]])
     }
   }))
-  c("nets", "irs", trended(pop_name), hinge_names,
-    trended(colnames(selection_flat_names())))
+  c("nets", "irs", trended(pop_name, design$trend_pop, "g_dom"), hinge_names,
+    trended(colnames(selection_flat_names()), design$trend_crops, "g_ag"))
 }
 
 selection_flat_names <- function() {
@@ -202,9 +220,13 @@ selection_pop_matrix <- function(cells, baseline_year, end_year, design) {
       }
       read_padded_cube(file, cells, baseline_year, end_year)
     },
+    encounter = {
+      d <- pop_density_matrix(cells, baseline_year, end_year)
+      -expm1(-d * log(2) / design$pop_d_half)
+    },
     saturating = {
       d <- pop_density_matrix(cells, baseline_year, end_year)
-      d / (d + design$pop_d50)
+      d / (d + design$pop_d_half)
     }
   )
 }
@@ -218,12 +240,13 @@ cell_regions <- function(cells) {
   lookup$region[match(country, lookup$country_name)]
 }
 
-# The trend g(t) at mask cells `cells` for years baseline_year..end_year, as a
-# cells x years matrix (see selection_design()). With a supplied regional
-# trend, cells outside any region are NA.
-selection_trend_matrix <- function(cells, baseline_year, end_year, design) {
+# A trend g(t) (design$trend_pop or design$trend_crops) at mask cells `cells`
+# for years baseline_year..end_year, as a cells x years matrix (see
+# selection_design()). With a supplied regional trend, cells outside any
+# region are NA.
+selection_trend_matrix <- function(cells, baseline_year, end_year, trend,
+                                   design) {
   years <- baseline_year:end_year
-  trend <- design$trend
   if (is.matrix(trend)) {
     missing_years <- setdiff(years, as.integer(colnames(trend)))
     if (length(missing_years) > 0) {
@@ -251,16 +274,15 @@ selection_trend_matrix <- function(cells, baseline_year, end_year, design) {
 # The time-varying selection covariates at mask cells `cells`, years
 # baseline_year..end_year, as a cells x years x columns array: nets, irs and
 # pop from the cubes (padded as read_padded_cube()), then the hinge columns,
-# and with a trend, pop and its hinges multiplied by g and the crop products
-# g x crop after them, so that every column is here and selection_static()
-# has none.
+# with trend_pop, pop and its hinges multiplied by g_dom, and with
+# trend_crops, the crop products g_ag x crop after them (selection_static()
+# then has none).
 selection_time_varying <- function(cells, baseline_year, end_year,
                                    design = selection_design()) {
   design <- complete_selection_design(design)
   columns <- selection_column_names(design)
-  trend <- has_trend(design)
   n_time_varying <- 3 + length(unlist(design$hinges)) +
-    if (trend) ncol(selection_flat_names()) else 0
+    if (has_trend(design$trend_crops)) ncol(selection_flat_names()) else 0
   out <- array(NA_real_,
                c(length(cells), end_year - baseline_year + 1, n_time_varying),
                dimnames = list(NULL, baseline_year:end_year,
@@ -277,13 +299,18 @@ selection_time_varying <- function(cells, baseline_year, end_year,
       out[, , j] <- pmin(out[, , match(name, c("nets", "irs", "pop"))], k)
     }
   }
-  if (trend) {
-    g <- selection_trend_matrix(cells, baseline_year, end_year, design)
+  if (has_trend(design$trend_pop)) {
+    g <- selection_trend_matrix(cells, baseline_year, end_year,
+                                design$trend_pop, design)
     pop_columns <- c(3, 3 + which(rep(names(design$hinges),
                                       lengths(design$hinges)) == "pop"))
     for (p in pop_columns) {
       out[, , p] <- out[, , p] * g
     }
+  }
+  if (has_trend(design$trend_crops)) {
+    g <- selection_trend_matrix(cells, baseline_year, end_year,
+                                design$trend_crops, design)
     flat <- selection_flat(cells)
     for (i in seq_len(ncol(flat))) {
       j <- j + 1
@@ -309,11 +336,11 @@ selection_flat <- function(cells) {
 }
 
 # The static columns of the design at mask cells `cells`: the crop layers
-# without a trend, and none (a cells x 0 matrix) with one, when the crop
+# without trend_crops, and none (a cells x 0 matrix) with it, when the crop
 # products are among the time-varying columns
 selection_static <- function(cells, design = selection_design()) {
   design <- complete_selection_design(design)
-  if (has_trend(design)) {
+  if (has_trend(design$trend_crops)) {
     return(matrix(numeric(0), length(cells), 0))
   }
   selection_flat(cells)
