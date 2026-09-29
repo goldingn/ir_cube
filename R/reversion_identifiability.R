@@ -21,6 +21,9 @@
 # fit's mortality and rho, then fit the default model with the rate estimated
 # (reversion = "estimated", half-normal(0, 0.1) per class), starting from the
 # true values except the rate, which starts at 0.01 as in dynamical_inits().
+# With REVERSION_SIM_START=cached, every variable starts where a fit to the
+# real data would, from dynamical_inits() and temporary/inits.RDS, to check
+# that the recovery does not depend on starting at the truth.
 #
 # summarise: per class, the true rate against its posterior, and the
 # selection the fit attributes to the covariates against the truth, to
@@ -228,8 +231,12 @@ if (mode == "base") {
 # simulate and refit ----------------------------------------------------------
 
 if (mode == "refit") {
-  destination <- file.path(sim_dir, sprintf("refit_%s_seed%d.rds",
-                                            rate_label(rate), seed))
+  start <- Sys.getenv("REVERSION_SIM_START", "truth")
+  stopifnot(start %in% c("truth", "cached"))
+  destination <- file.path(sim_dir, sprintf("refit_%s_seed%d%s.rds",
+                                            rate_label(rate), seed,
+                                            if (start == "cached") "_cached"
+                                            else ""))
   base <- readRDS(file.path(sim_dir, sprintf("base_%s.rds",
                                              rate_label(rate))))
   truth <- base$means
@@ -253,9 +260,14 @@ if (mode == "refit") {
 
   built <- build(sim_df, "estimated")
   list2env(built$variables, environment())
-  inits <- truth[intersect(names(truth), names(built$variables))]
-  inits$reversion_rate <- array(0.01, dim(built$variables$reversion_rate))
-  inits <- do.call(greta::initials, inits)
+  if (start == "truth") {
+    inits <- truth[intersect(names(truth), names(built$variables))]
+    inits$reversion_rate <- array(0.01, dim(built$variables$reversion_rate))
+    inits <- do.call(greta::initials, inits)
+  } else {
+    inits <- dynamical_inits(readRDS("temporary/inits.RDS"), built$variables,
+                             columns = colnames(x_cell_years))
+  }
   report("refit with the rate estimated | %d chains, %d warmup, %d samples, %d threads",
          n_chains, warmup, n_samples, threads)
   timing <- system.time(draws <- sample_model(built, inits))
@@ -273,6 +285,7 @@ if (mode == "refit") {
                            values = draws)
   saveRDS(list(rate = rate,
                seed = seed,
+               start = start,
                truth = truth,
                sim_died = sim_df$died,
                draws = as.matrix(terms_draws),
@@ -317,6 +330,7 @@ if (mode == "summarise") {
     tibble(
       true_rate = paste(fit$rate, collapse = ","),
       seed = fit$seed,
+      start = fit$start %||% "truth",
       insecticide_class = classes,
       class_true_rate = true_rate,
       rate_mean = colMeans(rate_draws),
