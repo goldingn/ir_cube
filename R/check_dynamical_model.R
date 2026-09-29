@@ -1,0 +1,110 @@
+# Check that the greta model (build_dynamical_model(), with the closed-form op)
+# and the plain-R predictions (R/dynamical_predictions.R) agree, at a random
+# free state, for a given set of model options:
+#   - predicted mortality at every training assay, and rho per type
+#   - the log likelihood: the model's log density over all the data, less that
+#     of the same model with one assay in the likelihood (which shares every
+#     prior and Jacobian term), against the plain-R betabinomial log likelihood
+#     of the other assays
+# and print the log density itself, for regression checks between versions.
+#
+#   Rscript R/check_dynamical_model.R '<options>' [seed]
+# e.g.
+#   Rscript R/check_dynamical_model.R 'dynamical_model_options(rho = "type")'
+#
+# Run with the greta 0.6 environment (doc/cv_run_plan.md, section 1).
+
+arguments <- commandArgs(trailingOnly = TRUE)
+options_text <- if (length(arguments) >= 1) arguments[1] else
+  "dynamical_model_options()"
+seed <- if (length(arguments) >= 2) as.integer(arguments[2]) else 1L
+
+source("R/greta_setup.R")
+start_greta(threads = 4)
+suppressMessages({
+  sink("/dev/null")
+  source("R/validation_folds.R")
+  source("R/validation_covariates.R")
+  sink()
+})
+source("R/validation_functions.R")
+source("R/dynamical_predictions.R")
+
+model_options <- eval(parse(text = options_text))
+cat("options:", options_text, "\n")
+
+build <- function(train_df) {
+  build_dynamical_model(train_df = train_df,
+                        df = df,
+                        x_cell_years = x_cell_years,
+                        cell_years_index = cell_years_index,
+                        classes_index = classes_index,
+                        types = types,
+                        options = model_options)
+}
+
+built <- build(df)
+built_one <- build(df[1, ])
+
+log_density <- function(model, free) {
+  f <- model$dag$generate_log_prob_function(which = "adjusted")
+  free_tf <- tensorflow::tf$constant(matrix(free, nrow = 1),
+                                     dtype = tensorflow::tf$float64)
+  as.numeric(f(free_tf))
+}
+
+n_free <- length(unlist(built$model$dag$example_parameters(free = TRUE)))
+stopifnot(n_free == length(unlist(
+  built_one$model$dag$example_parameters(free = TRUE))))
+set.seed(seed)
+free <- rnorm(n_free, 0, 0.5)
+
+ld_all <- log_density(built$model, free)
+ld_one <- log_density(built_one$model, free)
+
+# the variables' values at this free state, as a one-draw fold for the plain-R
+# path
+trace <- built$model$dag$trace_values(matrix(free, nrow = 1))
+stopifnot(identical(unname(trace),
+                    unname(built_one$model$dag$trace_values(
+                      matrix(free, nrow = 1)))))
+fold <- list(draws = coda::mcmc.list(coda::mcmc(trace)),
+             options = model_options)
+
+# greta, at these values: calculate() on a one-draw greta_mcmc_list, as on a
+# fitted model's draws
+values <- greta:::as_greta_mcmc_list(
+  coda::mcmc.list(coda::mcmc(trace)),
+  list(raw_draws = coda::mcmc.list(coda::mcmc(matrix(free, nrow = 1))),
+       model = built$model))
+greta_values <- calculate(p = built$population_mortality_vec,
+                          rho = built$terms$rho_types,
+                          values = values)
+greta_values <- as.matrix(greta_values)
+p_greta <- greta_values[1, grep("^p\\[", colnames(greta_values))]
+rho_greta <- greta_values[1, grep("^rho\\[", colnames(greta_values))]
+
+# plain R
+p_r <- c(dynamical_predictions(fold, select(df, -country_id), df,
+                               x_cell_years, cell_years_index, classes_index,
+                               types, draw_index = 1))
+rho_r <- c(dynamical_parameter_draws(fold, df, classes_index, types,
+                                     draw_index = 1)$rho_types)
+
+# the betabinomial log likelihood, parameterised as in betabinomial_p_rho() and
+# not clamped (dbetabinom() clamps p away from 0 and 1)
+a <- p_r * (1 / rho_r[df$type_id] - 1)
+b <- a * (1 - p_r) / p_r
+loglik_r <- extraDistr::dbbinom(df$died, df$mosquito_number, alpha = a,
+                                beta = b, log = TRUE)
+
+cat(sprintf("free parameters %d, log density %.10g\n", n_free, ld_all))
+cat(sprintf("p: max abs diff %.3g, max logit diff %.3g (range %.3g-%.3g)\n",
+            max(abs(p_greta - p_r)),
+            max(abs(qlogis(pmin(pmax(p_greta, 1e-12), 1 - 1e-12)) -
+                      qlogis(pmin(pmax(p_r, 1e-12), 1 - 1e-12)))),
+            min(p_r), max(p_r)))
+cat(sprintf("rho: max abs diff %.3g\n", max(abs(rho_greta - rho_r))))
+cat(sprintf("log likelihood of assays 2..n: greta %.10g, plain R %.10g, diff %.3g\n",
+            ld_all - ld_one, sum(loglik_r[-1]),
+            ld_all - ld_one - sum(loglik_r[-1])))

@@ -396,8 +396,9 @@ insecticide_colours <- function() {
 }
 
 # the observation overdispersion greta array for each bioassay, given its type
-# and class ids, from whichever rho the fitted model has in env: one per
-# insecticide type (rho_types or rho_type) or one per class (rho_classes)
+# and class ids, from whichever rho the fitted model has in env. Fits from
+# build_dynamical_model() carry rho_types, the rho of each type under either
+# rho option (#20); older fits carry rho_classes, one per class
 observation_rho <- function(type_id, class_id, env = parent.frame()) {
   for (name in c("rho_types", "rho_type")) {
     if (exists(name, envir = env)) {

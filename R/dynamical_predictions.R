@@ -48,6 +48,10 @@ paired_draw_index <- function(fold, maximum = 2000) {
 # index, e.g. "beta_type_raw[13,9]", so the index is parsed from the names
 # rather than assumed from the column order.
 extract_parameter <- function(draws_matrix, name) {
+  # a scalar has one column, named without an index
+  if (name %in% colnames(draws_matrix)) {
+    return(draws_matrix[, name, drop = FALSE])
+  }
   columns <- grep(paste0("^", name, "\\["), colnames(draws_matrix))
   stopifnot(length(columns) > 0)
   index <- colnames(draws_matrix)[columns] %>%
@@ -133,6 +137,18 @@ variable_draws <- function(draws_matrix, logit_init_mean = NULL) {
   variables
 }
 
+# The model options a fold was fitted with (dynamical_model_options()). Folds
+# fitted before the options were saved used the defaults of the time, which are
+# the settings dynamical_model_options() gives with every term off.
+fold_options <- function(fold) {
+  if (!is.null(fold$options)) {
+    return(fold$options)
+  }
+  dynamical_model_options(rho = "class", mortality_floor = FALSE,
+                          init_covariates = NULL, selection_columns = NULL,
+                          reversion = FALSE)
+}
+
 # One draw of each variable, as the arrays dynamical_terms() takes.
 one_draw <- function(variables, i) {
   lapply(variables, function(a) {
@@ -144,14 +160,16 @@ one_draw <- function(variables, i) {
 # dynamical_terms() for every draw, stacked as draws x dim(term) arrays.
 dynamical_terms_draws <- function(variables, classes_index,
                                   country_region_index, types,
-                                  terms = c("beta_type", "logit_init_country")) {
+                                  terms = c("beta_type", "logit_init_country"),
+                                  options = dynamical_model_options()) {
   n_draws <- nrow(variables[[1]])
   out <- NULL
   for (i in seq_len(n_draws)) {
     terms_i <- dynamical_terms(one_draw(variables, i),
                                classes_index = classes_index,
                                country_region_index = country_region_index,
-                               types = types)[terms]
+                               types = types,
+                               options = options)[terms]
     if (is.null(out)) {
       out <- lapply(terms_i, function(x) {
         array(NA_real_, c(n_draws, dim(as.matrix(x))))
@@ -169,12 +187,14 @@ dynamical_terms_draws <- function(variables, classes_index,
 #
 #   effect_type      draws x n_covs x n_types   exp(beta_type)
 #   logit_init       draws x n_countries x n_types, logit of q_0
+#   rho_types        draws x n_types, the observation overdispersion
 dynamical_parameter_draws <- function(fold,
                                       df,
                                       classes_index,
                                       types,
                                       draw_index = paired_draw_index(fold),
-                                      logit_init_mean = NULL) {
+                                      logit_init_mean = NULL,
+                                      options = fold_options(fold)) {
 
   # as.matrix() on an mcmc.list stacks chains in order, which is exactly how
   # fit_fold() flattened the calculate() output that p_draws came from, so row
@@ -195,7 +215,9 @@ dynamical_parameter_draws <- function(fold,
     variables,
     classes_index = classes_index,
     country_region_index = dynamical_lookups(df)$country_region_index,
-    types = types)
+    types = types,
+    terms = c("beta_type", "logit_init_country", "rho_types"),
+    options = options)
 
   effect_type <- exp(terms$beta_type)
   logit_init <- terms$logit_init_country
@@ -203,6 +225,7 @@ dynamical_parameter_draws <- function(fold,
 
   list(effect_type = effect_type,
        logit_init = logit_init,
+       rho_types = matrix(terms$rho_types, n_draws),
        n_draws = n_draws,
        n_covs = n_covs)
 }

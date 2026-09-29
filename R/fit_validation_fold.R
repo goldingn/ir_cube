@@ -45,7 +45,7 @@ fit_fold <- function(train_df,
   list2env(built$variables, environment())
 
   # use cached posterior means as inits
-  inits_one <- readRDS(inits_file)
+  inits_one <- dynamical_inits(readRDS(inits_file), built$variables)
   inits <- replicate(n_chains,
                      inits_one,
                      simplify = FALSE)
@@ -87,6 +87,9 @@ fit_fold <- function(train_df,
   # returns the draws in order, as an mcmc.list, and the predicted fractions can
   # be diagnosed like any other monitored quantity.
   population_mortality_vec_test <- built$mortality(test_df)
+  # the overdispersion of each insecticide type (with rho = "class", its
+  # class's)
+  rho_types <- built$terms$rho_types
 
   # Optionally, predictions at a second set of cell-years. The forecasting
   # experiment is scored on the change in mortality between a window before the
@@ -100,7 +103,7 @@ fit_fold <- function(train_df,
            sprintf(" and %d before-window records", nrow(before_df)))
   prediction_draws <- calculate(
     population_mortality_vec_test = population_mortality_vec_test,
-    rho_classes = rho_classes,
+    rho_types = rho_types,
     values = draws
   )
 
@@ -109,7 +112,7 @@ fit_fold <- function(train_df,
   ess_prediction <- coda::effectiveSize(prediction_draws)
   ess_p <- ess_prediction[grep("population_mortality_vec_test\\[",
                                names(ess_prediction))]
-  ess_rho <- ess_prediction[grep("rho_classes", names(ess_prediction))]
+  ess_rho <- ess_prediction[grep("rho_types", names(ess_prediction))]
 
   report("prediction ESS: p median %.0f min %.0f | rho median %.0f min %.0f",
          median(ess_p, na.rm = TRUE), min(ess_p, na.rm = TRUE),
@@ -119,9 +122,9 @@ fit_fold <- function(train_df,
   prediction_matrix <- as.matrix(prediction_draws)
   p_columns <- grep("population_mortality_vec_test\\[",
                     colnames(prediction_matrix))
-  rho_columns <- grep("rho_classes", colnames(prediction_matrix))
+  rho_columns <- grep("rho_types", colnames(prediction_matrix))
   p_draws <- prediction_matrix[, p_columns, drop = FALSE]
-  rho_class_draws <- prediction_matrix[, rho_columns, drop = FALSE]
+  rho_type_draws <- prediction_matrix[, rho_columns, drop = FALSE]
   rm(prediction_matrix, prediction_draws)
   invisible(gc())
 
@@ -161,7 +164,7 @@ fit_fold <- function(train_df,
     seq_len(nrow(p_draws))
   }
   p_draws <- p_draws[keep_draws, , drop = FALSE]
-  rho_class_draws <- rho_class_draws[keep_draws, , drop = FALSE]
+  rho_type_draws <- rho_type_draws[keep_draws, , drop = FALSE]
   if (!is.null(p_draws_before)) {
     p_draws_before <- p_draws_before[keep_draws, , drop = FALSE]
   }
@@ -191,13 +194,15 @@ fit_fold <- function(train_df,
        # refitting all of them.
        draws = draws,
        prediction_arrays = list(p = population_mortality_vec_test,
-                                rho = rho_classes),
+                                rho = rho_types),
        p_draws = p_draws,
-       # the overdispersion is shared by every assay of an insecticide class, so
-       # it is stored by class with the index needed to expand it, rather than
-       # as one column per held-out assay
-       rho_class_draws = rho_class_draws,
-       class_id = test_df$class_id,
+       # the overdispersion is shared by every assay of an insecticide type, so
+       # it is stored by type with the index needed to expand it, rather than
+       # as one column per held-out assay. Folds fitted before #20 stored
+       # rho_class_draws and class_id instead
+       rho_type_draws = rho_type_draws,
+       type_id = test_df$type_id,
+       options = built$options,
        test_df = test_df,
        p_draws_before = p_draws_before,
        before_df = before_df,

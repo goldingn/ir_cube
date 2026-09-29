@@ -129,8 +129,11 @@ saveRDS(
        draws = fit$draws,
        prediction_arrays = fit$prediction_arrays,
        p_draws = fit$p_draws,
-       rho_class_draws = fit$rho_class_draws,
-       class_id = fit$class_id,
+       rho_type_draws = fit$rho_type_draws,
+       type_id = fit$type_id,
+       # the model options (dynamical_model_options()), which the plain-R
+       # predictions need to rebuild the model's terms
+       options = fit$options,
        test_df = fit$test_df,
        p_draws_before = fit$p_draws_before,
        before_df = fit$before_df,

@@ -25,7 +25,8 @@ source("R/greta_setup.R")
 # placeholders for terms still to be added, and build_dynamical_model() refuses
 # them until they are implemented:
 #   rho               "class": one overdispersion per insecticide class;
-#                     "type": one per insecticide type (#20)
+#                     "type": one per insecticide type, types nested in
+#                     class (#20)
 #   mortality_floor   an estimated floor on bioassay mortality (#14)
 #   init_covariates   names of static covariates for the initial state (#19)
 #   selection_columns extra columns of the selection design matrix (#23)
@@ -45,7 +46,7 @@ dynamical_model_options <- function(rho = c("class", "type"),
 check_dynamical_model_options <- function(options) {
   defaults <- dynamical_model_options()
   stopifnot(setequal(names(options), names(defaults)))
-  implemented <- list(rho = "class")
+  implemented <- list(rho = list("class", "type"))
   for (name in names(defaults)) {
     allowed <- if (name %in% names(implemented)) implemented[[name]] else
       list(defaults[[name]])
@@ -108,7 +109,7 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
 
   init <- init_frac_constants(types)
 
-  list(
+  variables <- list(
     # initial fractions susceptible: a prior logit-mean per type, and IID
     # deviations by region and by country within region
     init_region_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
@@ -121,13 +122,35 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     beta_type_raw = normal(0, 1, dim = c(n_covs, n_types)),
     sigma_overall = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
     sigma_class = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
-    # observation overdispersion. With rho = 0.067 the 95% interval of a
-    # betabinomial at p = 0.5 is 0.5 wide, a range to treat as unlikely: the
-    # half-normal sd of 0.025 puts P(rho < 0.067) at about 0.99 (see the
-    # history of fit_model.R for the calculation)
-    rho_classes = normal(0, 0.025, truncation = c(0, 1), dim = n_classes),
     logit_init_mean = normal(qlogis(init$relative_prior), 1, dim = n_types)
   )
+
+  rho <- switch(
+    options$rho,
+    # observation overdispersion per class. With rho = 0.067 the 95% interval
+    # of a betabinomial at p = 0.5 is 0.5 wide, a range to treat as unlikely:
+    # the half-normal sd of 0.025 puts P(rho < 0.067) at about 0.99 (see the
+    # history of fit_model.R for the calculation)
+    class = list(
+      rho_classes = normal(0, 0.025, truncation = c(0, 1), dim = n_classes)
+    ),
+    # Per type, nested in class, on the logit scale and non-centred, as the
+    # replicate-assay estimate in R/fig_illustrate_bioassay_variability.R:
+    #   logit rho_type = rho_mu + rho_sigma_class z_class + rho_sigma_type z_type
+    # with the same priors. The prior centre is that of the replicate-assay
+    # rho (0.15); rho here also absorbs misfit of the model, and the class-level
+    # rho above reached posterior means of 0.24-0.38 despite its half-normal
+    # prior, so no stronger prior is put on it.
+    type = list(
+      rho_mu = normal(qlogis(0.15), 1),
+      rho_sigma_class = normal(0, 0.5, truncation = c(0, Inf)),
+      rho_sigma_type = normal(0, 0.5, truncation = c(0, Inf)),
+      rho_class_raw = normal(0, 1, dim = n_classes),
+      rho_type_raw = normal(0, 1, dim = n_types)
+    )
+  )
+
+  c(variables, rho)
 }
 
 # Deterministic transforms from the variables `v` to the quantities the dynamics
@@ -135,6 +158,8 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
 #   beta_type           n_covs x n_types, log selection effect of each covariate
 #   logit_init_country  n_countries x n_types, logit of the initial fraction
 #                       susceptible q_0 in each country
+#   rho_types           n_types, the observation overdispersion of each type
+#                       (with rho = "class", its class's)
 # and some intermediate quantities.
 #
 # `v` is a named list of either greta arrays or plain R arrays for a single
@@ -150,7 +175,9 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
     inv_logit <- greta::ilogit
     softplus <- greta::log1pe
   } else {
-    v <- lapply(v, function(x) if (is.matrix(x) && ncol(x) == 1) c(x) else x)
+    v <- lapply(v, function(x) {
+      if (length(dim(x)) <= 1 || (is.matrix(x) && ncol(x) == 1)) c(x) else x
+    })
     inv_logit <- stats::plogis
     softplus <- function(x) -stats::plogis(-x, log.p = TRUE)
   }
@@ -184,13 +211,40 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
   logit_init_country <- sweep(log(q0_scaled) + softplus(logit_init_relative),
                               2, log(init_range), FUN = "-")
 
+  # observation overdispersion per type
+  rho_types <- switch(
+    options$rho,
+    class = v$rho_classes[classes_index],
+    type = {
+      logit_rho_class <- v$rho_mu + v$rho_sigma_class * v$rho_class_raw
+      inv_logit(logit_rho_class[classes_index] +
+                  v$rho_sigma_type * v$rho_type_raw)
+    }
+  )
+
   list(beta_type = beta_type,
        logit_init_country = logit_init_country,
+       rho_types = rho_types,
        # intermediate quantities, which the figure scripts read
        beta_class = beta_class,
        init_region_effect = init_region_effect,
        init_country_effect = init_country_effect,
        logit_init_relative = logit_init_relative)
+}
+
+
+# Initial values for the model's `variables` from a cached set
+# (temporary/inits.RDS, posterior means from an earlier fit): the cached values
+# of the variables the model has, and, for rho = "type", a start for rho_mu
+# from the cached class-level rho. Variables with neither start where greta
+# puts them.
+dynamical_inits <- function(cached, variables) {
+  cached <- unclass(cached)
+  out <- cached[intersect(names(cached), names(variables))]
+  if ("rho_mu" %in% names(variables) && !is.null(cached$rho_classes)) {
+    out$rho_mu <- mean(qlogis(c(cached$rho_classes)))
+  }
+  do.call(greta::initials, out)
 }
 
 
@@ -280,7 +334,7 @@ build_dynamical_model <- function(train_df,
 
   # likelihood
   population_mortality_vec <- mortality(train_df)
-  rho <- variables$rho_classes[train_df$class_id]
+  rho <- terms$rho_types[train_df$type_id]
   distribution(train_df$died) <- betabinomial_p_rho(
     N = train_df$mosquito_number,
     p = population_mortality_vec,
@@ -331,8 +385,10 @@ tf_closed_form_states <- function(beta_type, logit_init_country,
                                   x_pairs, pair_type, pair_init) {
   tf <- tensorflow::tf
   dtype <- beta_type$dtype
-  pair_type <- tf$constant(pair_type, dtype = tf$int32)
-  pair_init <- tf$constant(pair_init, dtype = tf$int32)
+  # reshaped to vectors, since reticulate passes a length-one R vector as a
+  # scalar
+  pair_type <- tf$reshape(tf$constant(pair_type, dtype = tf$int32), list(-1L))
+  pair_init <- tf$reshape(tf$constant(pair_init, dtype = tf$int32), list(-1L))
   x_pairs <- tf$constant(x_pairs, dtype = dtype)
 
   # log fitness, (B, J, n_times)
