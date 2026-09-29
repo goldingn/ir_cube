@@ -26,11 +26,8 @@ fit_fold <- function(train_df,
                      types,
                      options = dynamical_model_options(),
                      x_cells_init = NULL,
-                     n_chains = 4,
-                     warmup = 2000,
-                     n_samples = 5000,
+                     settings = dynamical_mcmc_settings(),
                      stored_draws = 2000,
-                     Lmax = 30,
                      inits_file = "temporary/inits.RDS") {
 
   # the model, with the likelihood over the training fold (R/dynamical_model.R)
@@ -42,25 +39,15 @@ fit_fold <- function(train_df,
                                  types = types,
                                  options = options,
                                  x_cells_init = x_cells_init)
-  m <- built$model
-  # mcmc() matches the initial values to greta arrays by name in this frame
-  list2env(built$variables, environment())
 
-  # use cached posterior means as inits
+  # use cached posterior means as inits, and the sampler settings
+  # (R/dynamical_model.R)
   inits_one <- dynamical_inits(readRDS(inits_file), built$variables,
-                               columns = colnames(x_cell_years))
-  inits <- replicate(n_chains,
-                     inits_one,
-                     simplify = FALSE)
-
-  Lmin <- round(Lmax / 2)
-
-  draws <- mcmc(m,
-                chains = n_chains,
-                initial_values = inits,
-                warmup = warmup,
-                sampler = hmc(Lmin = Lmin, Lmax = Lmax),
-                n_samples = n_samples)
+                               columns = colnames(x_cell_years),
+                               country_region_index =
+                                 built$lookups$country_region_index)
+  draws <- run_dynamical_mcmc(built$model, built$variables, inits_one,
+                              settings)
 
   # `n_samples` is taken in one call rather than accumulated in batches towards
   # an effective sample size target. The previous version topped up with
@@ -75,7 +62,7 @@ fit_fold <- function(train_df,
     flush(stdout())
   }
 
-  sampled <- n_samples
+  sampled <- settings$n_samples
   ess <- coda::effectiveSize(draws)
   report("sampled %d per chain | raw parameter ESS min %.0f median %.0f",
          sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE))
@@ -215,7 +202,8 @@ fit_fold <- function(train_df,
        ess_p = ess_p,
        ess_rho = ess_rho,
        n_sampled = sampled,
-       n_chains = n_chains)
+       n_chains = settings$n_chains,
+       settings = settings)
 
 }
 

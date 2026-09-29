@@ -142,7 +142,7 @@ variable_draws <- function(draws_matrix, logit_init_mean = NULL) {
 # the settings dynamical_model_options() gives with every term off.
 fold_options <- function(fold) {
   if (!is.null(fold$options)) {
-    return(fold$options)
+    return(complete_dynamical_model_options(fold$options))
   }
   dynamical_model_options(rho = "class", mortality_floor = FALSE,
                           init_covariates = NULL,

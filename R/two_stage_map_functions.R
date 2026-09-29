@@ -85,6 +85,17 @@ map_logit_init <- function(draws_matrix,
   stopifnot(identical(!is.null(variables$init_coef),
                       !is.null(options$init_covariates)))
   init_region_raw <- variables$init_region_raw
+  # the region of each of the fit's countries
+  fit_country_region <- match(lookup$region[match(countries,
+                                                  lookup$country_name)],
+                              regions)
+  # centred country deviations (#25), as the non-centred ones, on which the
+  # deviations of countries without data are drawn
+  if (!is.null(variables$init_country_centred)) {
+    variables$init_country_raw <- init_country_raw_from_centred(
+      variables, fit_country_region, draws = TRUE)
+    variables$init_country_centred <- NULL
+  }
   init_country_raw <- variables$init_country_raw
 
   # observed countries and regions keep their sampled deviations; the rest are

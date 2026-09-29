@@ -174,7 +174,8 @@ n_chains <- 8
 
 # used cached posterior means as inits
 inits_one <- dynamical_inits(readRDS("temporary/inits.RDS"), built$variables,
-                             columns = colnames(x_cell_years))
+                             columns = colnames(x_cell_years),
+                             country_region_index = country_region_index)
 inits <- replicate(n_chains,
                    inits_one,
                    simplify = FALSE)

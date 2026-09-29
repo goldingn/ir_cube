@@ -12,11 +12,20 @@
 arguments <- commandArgs(trailingOnly = TRUE)
 experiment_name <- arguments[1]
 fold_name <- arguments[2]
-n_chains <- if (length(arguments) >= 3) as.integer(arguments[3]) else 4L
 threads <- if (length(arguments) >= 4) as.integer(arguments[4]) else 4L
-# optional overrides, for smoke-testing the path without a real fit
-warmup <- if (length(arguments) >= 5) as.integer(arguments[5]) else 2000L
-n_samples <- if (length(arguments) >= 6) as.integer(arguments[6]) else 5000L
+# overrides of the sampler settings (dynamical_mcmc_settings(), in
+# R/dynamical_model.R): the number of chains, and for smoke-testing the path
+# without a real fit, warmup and samples
+setting_overrides <- list()
+if (length(arguments) >= 3) {
+  setting_overrides$n_chains <- as.integer(arguments[3])
+}
+if (length(arguments) >= 5) {
+  setting_overrides$warmup <- as.integer(arguments[5])
+}
+if (length(arguments) >= 6) {
+  setting_overrides$n_samples <- as.integer(arguments[6])
+}
 
 # Order matters here, and for two separate reasons. TensorFlow refuses to change
 # its thread count once initialised, so that has to be set first. And python has
@@ -32,6 +41,7 @@ source("R/validation_folds.R")
 source("R/validation_covariates.R")
 source("R/dynamical_model.R")
 source("R/fit_validation_fold.R")
+settings <- do.call(dynamical_mcmc_settings, setting_overrides)
 
 # find the requested fold
 before <- NULL
@@ -91,7 +101,7 @@ if (file.exists(destination)) {
 cat(sprintf("%s | %s / %s | %i training, %i held out | %i chains, %i threads\n",
             format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
             experiment_name, fold_name, nrow(training), nrow(test),
-            n_chains, threads))
+            settings$n_chains, threads))
 flush(stdout())
 
 elapsed <- system.time(
@@ -107,9 +117,7 @@ elapsed <- system.time(
     # dynamical_model_options(), set in validation_covariates.R
     options = model_options,
     x_cells_init = x_cells_init,
-    n_chains = n_chains,
-    warmup = warmup,
-    n_samples = n_samples
+    settings = settings
   )
 )
 
@@ -147,7 +155,8 @@ saveRDS(
        ess_p = fit$ess_p,
        ess_rho = fit$ess_rho,
        n_sampled = fit$n_sampled,
-       n_chains = fit$n_chains),
+       n_chains = fit$n_chains,
+       settings = fit$settings),
   destination
 )
 
