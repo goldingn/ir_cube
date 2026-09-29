@@ -24,8 +24,8 @@ source("R/model_covariates.R")
 
 # Switches for model terms. The defaults are the model for the refit: rho per
 # type, the mortality floor and both initial-state covariates on; raw
-# population and no hinges in the selection design, pending the choice of
-# design; no reversion, pending the identifiability simulation. The fits
+# population, no hinges and no trend in the selection design, pending the
+# choice of design; no reversion, pending the identifiability simulation. The fits
 # before these terms were added had rho = "class", mortality_floor = FALSE,
 # init_covariates = NULL (see fold_options()). build_dynamical_model() refuses
 # settings that are not implemented:
@@ -39,7 +39,8 @@ source("R/model_covariates.R")
 #                     for none (#19)
 #   selection_columns how the selection design matrix is built:
 #                     selection_design() (R/model_covariates.R), the
-#                     population transform and any hinge columns (#23). The
+#                     population transform, any hinge columns and the trend
+#                     on the population and crop columns (#23). The
 #                     model takes the matrix as built; build_dynamical_model()
 #                     checks its columns against this
 #   reversion         reversion to susceptibility (#24): FALSE for none,
@@ -71,8 +72,13 @@ check_dynamical_model_options <- function(options) {
          all(is.finite(reversion)) && all(reversion <= 0))) {
     implemented$reversion <- list(FALSE, reversion)
   }
-  implemented$selection_columns <- list(do.call(selection_design,
-                                               options$selection_columns))
+  # any design selection_design() builds, including one saved before the
+  # trend was added (complete_selection_design())
+  design <- options$selection_columns
+  if (identical(complete_selection_design(design),
+                do.call(selection_design, complete_selection_design(design)))) {
+    implemented$selection_columns <- list(design)
+  }
   if (!is.null(options$init_covariates)) {
     stopifnot(is.character(options$init_covariates),
               !anyDuplicated(options$init_covariates),
@@ -355,9 +361,10 @@ logit_init_from_relative <- function(l, min) {
 # for the floor, the initial-state coefficients and the reversion rate. Other
 # variables start where greta puts them. `columns` are the columns of the
 # selection design matrix, to match the selection coefficients to the cached
-# fit's (cached_columns, the default design).
+# fit's (cached_columns, the design without the trend, of the fits to date).
 dynamical_inits <- function(cached, variables, columns = NULL,
-                            cached_columns = selection_column_names()) {
+                            cached_columns = selection_column_names(
+                              selection_design_untrended())) {
   cached <- unclass(cached)
   # the selection coefficients, by covariate (row): the cached values where
   # the column is in the cached fit's design, and weak selection (a log effect

@@ -146,7 +146,7 @@ fold_options <- function(fold) {
   }
   dynamical_model_options(rho = "class", mortality_floor = FALSE,
                           init_covariates = NULL,
-                          selection_columns = selection_design(),
+                          selection_columns = selection_design_untrended(),
                           reversion = FALSE)
 }
 
