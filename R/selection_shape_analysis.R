@@ -44,8 +44,33 @@ for (i in seq_len(last_expr)) {
   eval(fit_model_exprs[[i]], envir = globalenv())
 }
 
+# the trended designs (selection_design()): population by the encounter
+# transform of density (the default), d / (d + d_half), raw or log, times
+# g_dom, and the crops times g_ag, both linear, 0 in 1995 and 1 in 2025
+x_trend <- map(c("encounter", "saturating", "raw", "log"), function(pop) {
+  selection_design_matrix(unique_cells, baseline_year, final_data_year,
+                          selection_design(pop = pop))$x_cell_years
+})
+x_trend <- do.call(cbind, c(x_trend[1],
+                            map(x_trend[-1], ~ .x[, 3, drop = FALSE])))
+trend_pop_names <- c("pop_enc:g_dom", "pop_sat:g_dom", "pop:g_dom",
+                     "log_pop:g_dom")
+trend_crop_names <- grep(":g_ag$", colnames(x_trend), value = TRUE)
+stopifnot(length(trend_crop_names) == 10,
+          all(trend_pop_names %in% colnames(x_trend)))
+x_trend <- x_trend[, c(trend_pop_names, trend_crop_names)]
+
+# the design of the saved fit, without the trend
+selection <- selection_design_matrix(unique_cells, baseline_year,
+                                     final_data_year,
+                                     selection_design_untrended())
+stopifnot(identical(selection$cell_years_index, cell_years_index))
+x_cell_years <- selection$x_cell_years
+rm(selection)
+
 # covariates for all cell-years with data, in the model's column order
-covs <- bind_cols(cell_years_index, as_tibble(x_cell_years))
+covs <- bind_cols(cell_years_index, as_tibble(x_cell_years),
+                  as_tibble(x_trend))
 crop_names <- setdiff(colnames(x_cell_years), c("nets", "irs", "pop"))
 
 # log population density, min-max scaled over the whole cube (2000-2030) as
@@ -331,7 +356,17 @@ variants <- list(
   const_irs_k123 = list(linear = base_const, hinge = list(irs = 1:3)),
   linear_reversion = list(reversion = TRUE),
   const_reversion = list(linear = base_const, reversion = TRUE),
-  nets_k123_reversion = list(hinge = list(nets = 1:3), reversion = TRUE)
+  nets_k123_reversion = list(hinge = list(nets = 1:3), reversion = TRUE),
+  # the trended designs: population and crops only as products with the
+  # linear trend
+  trend_pop_enc = list(linear = c("nets", "irs", "pop_enc:g_dom",
+                                  trend_crop_names)),
+  trend_pop_sat = list(linear = c("nets", "irs", "pop_sat:g_dom",
+                                  trend_crop_names)),
+  trend_pop_raw = list(linear = c("nets", "irs", "pop:g_dom",
+                                  trend_crop_names)),
+  trend_pop_log = list(linear = c("nets", "irs", "log_pop:g_dom",
+                                  trend_crop_names))
 )
 variants <- map(variants, function(v) {
   list(linear = v$linear %||% base_log_pop,
