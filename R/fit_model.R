@@ -1,8 +1,12 @@
 # fit model
 
 # load packages and functions
+# greta first, so python starts before terra and sf are attached
+source("R/greta_setup.R")
+start_greta()
 source("R/packages.R")
 source("R/functions.R")
+source("R/bioassay_subset.R")
 source("R/dynamical_model.R")
 
 # set the start of the timeseries considered in modelling (the start of
@@ -70,61 +74,18 @@ covs_flat <- c(crops_group, crops_implicated)
 ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 
 # numbers of unique location/time records per insecticide
-record_counts <- ir_africa %>%
-  group_by(insecticide_type, latitude, longitude, year_start) %>%
-  summarise(
-    mosquito_number = sum(mosquito_number),
-    .groups = "drop"
-  ) %>%
-  group_by(insecticide_type) %>%
-  summarise(
-    n = n(),
-    mosquito_number = mean(mosquito_number),
-    .groups = "drop"
-  ) %>%
-  arrange(desc(n))
+record_counts <- count_location_years(ir_africa)
 
-# keep only a subset of insecticide types
-
-# keep the first 9 of these: those with at least 1000 unique places/times, and
-# alpha-cypermethrin (914 unique) because of its use in LLINs.
-insecticides_keep <- c("Alpha-cypermethrin",
-                       "Deltamethrin",
-                       "Lambda-cyhalothrin", 
-                       "Permethrin",
-                       "Fenitrothion",
-                       "Malathion",
-                       "Pirimiphos-methyl",
-                       "DDT",
-                       "Bendiocarb")
-
-# # note: only one study has chlorfenapyr resistance (Benin in 2022)
-# ir_africa %>% filter(insecticide_type == "Chlorfenapyr") %>% View()
-
-df <- ir_africa %>%
-  filter(insecticide_type %in% insecticides_keep) %>%
-  group_by(insecticide_type) %>%
-  # subset to the most common concentration for each insecticide
-  filter(
-   concentration == sample_mode(concentration)
-  ) %>%
-  ungroup() %>%
-  filter(
-    # drop any from before the baseline
-    year_start >= baseline_year,
-    year_start <= final_data_year
-  ) %>%
-  mutate(
-    # create an index to the simulation year (in 1-indexed integers)
-    year_id = year_start - baseline_year + 1,
-    # add on cell ids corresponding to these observations,
-    cell = cellFromXY(mask,
-                      as.matrix(select(., longitude, latitude)))
-  ) %>%
-  # drop a handful of datapoints missing covariates
-  filter(
-    !is.na(extract(mask, cell)[, 1])
-  )
+# the modelled subset: the insecticide types with at least 1000 unique
+# places/times, and alpha-cypermethrin (914 unique) because of its use in LLINs,
+# each at its modal concentration, in the modelled years and inside the mask
+# (R/bioassay_subset.R)
+insecticides_keep <- modelled_insecticides
+df <- subset_modelled_bioassays(ir_africa,
+                                mask,
+                                insecticides_keep = insecticides_keep,
+                                baseline_year = baseline_year,
+                                final_data_year = final_data_year)
 
 # create indices to categorical vectors
 classes <- unique(df$insecticide_class)

@@ -16,6 +16,8 @@
 #
 # Source from the repo root, after R/packages.R and R/functions.R.
 
+source("R/greta_setup.R")
+
 
 # model options ------------------------------------------------------------
 
@@ -217,6 +219,7 @@ build_dynamical_model <- function(train_df,
                                   options = dynamical_model_options()) {
 
   check_dynamical_model_options(options)
+  check_greta_fill()
 
   n_covs <- ncol(x_cell_years)
   n_unique_cells <- max(df$cell_id)

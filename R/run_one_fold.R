@@ -22,17 +22,10 @@ n_samples <- if (length(arguments) >= 6) as.integer(arguments[6]) else 5000L
 # its thread count once initialised, so that has to be set first. And python has
 # to be initialised before terra and sf are attached, because those load the
 # system XML libraries, against which the conda environment's pyexpat is then
-# resolved and tensorflow_probability fails to import. So: load greta, set
-# threads, force python up, and only then source anything else.
-suppressMessages(library(greta))
-
-tensorflow_module <- reticulate::import("tensorflow")
-tensorflow_module$config$threading$set_intra_op_parallelism_threads(
-  as.integer(threads))
-tensorflow_module$config$threading$set_inter_op_parallelism_threads(
-  as.integer(threads))
-
-invisible(calculate(normal(0, 1), nsim = 1))
+# resolved and tensorflow_probability fails to import. So: set threads, force
+# python up (start_greta()), and only then source anything else.
+source("R/greta_setup.R")
+start_greta(threads = threads)
 
 source("R/validation_functions.R")
 source("R/validation_folds.R")
