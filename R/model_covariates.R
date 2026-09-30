@@ -458,6 +458,24 @@ selection_design_matrix <- function(cells, baseline_year, end_year,
          year_id = rep(seq_len(n_years), length(cells))))
 }
 
+# The covariates of `design` on their own scales at mask cells `cells`, for
+# figures and summaries: a tibble of cell_id, year_id and one column per
+# covariate (nets, irs, pop, the crops), with population min-max scaled and no
+# trends or hinges, as fit_model.R extracted them (all_extract) before the
+# selection design was configurable.
+covariate_extract <- function(cells, baseline_year, end_year,
+                              design = selection_design()) {
+  design$pop <- "raw"
+  design$init_pop <- NULL
+  design$trend_pop <- "none"
+  design$trend_crops <- "none"
+  design$hinges <- list()
+  selection <- selection_design_matrix(cells, baseline_year, end_year,
+                                       design)
+  bind_cols(selection$cell_years_index,
+            as_tibble(selection$x_cell_years))
+}
+
 # Write min-max scaled log population cubes, pop_log_scaled_cube.tif
 # (2000-2022) and pop_log_scaled_cube_future.tif (2023-2030), layers
 # log_pop_<year>, as prep_rasters.R does with its log transform switched on,

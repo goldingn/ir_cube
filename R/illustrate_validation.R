@@ -15,7 +15,7 @@ mask <- rast("data/clean/raster_mask.tif")
 # get posterior predictive simulations of observations
 died_sim <- betabinomial_p_rho(N = df$mosquito_number,
                                p = population_mortality_vec,
-                               rho = rho_classes[df$class_id])
+                               rho = observation_rho(df$type_id, df$class_id))
 mortality_sim <- died_sim / df$mosquito_number
 
 # summarise fit to data

@@ -10,6 +10,11 @@ source("R/functions.R")
 # load the fitted model objects here, to set up predictions
 load(file = "temporary/fitted_model.RData")
 
+# the covariates at the data cells, on their own scales (R/model_covariates.R)
+source("R/model_covariates.R")
+all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,
+                                 model_options$selection_columns)
+
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
