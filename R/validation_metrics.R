@@ -65,15 +65,17 @@ thin_draws <- function(x, maximum = max_draws) {
 set.seed(2026 - 8 - 31)
 
 # externally estimated overdispersion, from replicate bioassays in the same
-# pixel, year and insecticide (estimate_bioassay_rho.R). This sets the noise
-# floor, and is independent of any of the models being scored
-rho_external <- read.csv("outputs/bioassay_rho.csv")
-rho_for_class <- function(insecticide_class) {
-  index <- match(insecticide_class, rho_external$insecticide_class)
-  # fall back to the pooled estimate for any class not fitted separately
-  pooled <- rho_external$rho[rho_external$insecticide_class == "all"]
-  ifelse(is.na(index), pooled, rho_external$rho[index])
-}
+# pixel, year and insecticide. This sets the noise floor, and is independent of
+# any of the models being scored. See rho_lookup() in validation_functions.R.
+# only the three experiments that survive; the leave-one-country-out folds
+# confound spatial prediction with the country initial condition, and the
+# three-year 2020 forecast fold leaked its cut year into the holdout. Draws for
+# both are parked in outputs/cv_draws_defunct.
+scored_experiments <- c("spatial_interpolation", "spatial_blocks",
+                        "temporal_forecasting")
+
+rho_source <- rho_lookup()
+cat("overdispersion:", rho_source$source, "\n")
 
 # Every model is scored at that external estimate, so the only thing differing
 # between models is the posterior on the population fraction. Set this to FALSE
@@ -87,6 +89,11 @@ files <- list.files(draws_dir, pattern = "\\.rds$", full.names = TRUE)
 if (length(files) == 0) {
   stop("no draws found in ", draws_dir, "; run R/run_validation_folds.R first")
 }
+# refuse anything outside the three experiments rather than silently scoring it
+experiment_of <- function(file) {
+  sub("^[a-z_]+__([a-z_]+)__.*$", "\\1", basename(file))
+}
+stopifnot(all(experiment_of(files) %in% scored_experiments))
 
 cat(sprintf("scoring %i saved folds\n", length(files)))
 
@@ -118,7 +125,7 @@ score_fold <- function(file) {
     matrix(fold$rho_implied, nrow = nrow(p_draws), ncol = nrow(test))
   }
 
-  rho_scoring <- rho_for_class(test$insecticide_class)
+  rho_scoring <- rho_for_record(test, rho_source)
   rho_draws <- if (score_at_external_rho) {
     matrix(rho_scoring, nrow = nrow(p_draws), ncol = nrow(test), byrow = TRUE)
   } else {
@@ -435,11 +442,15 @@ if (nrow(sampling_diagnostics) > 0) {
 
 rho_comparison <- bind_rows(lapply(scored, function(entry) {
   entry$scores %>%
-    select(model, experiment, fold, insecticide_class, rho_fitted)
+    select(model, experiment, fold, insecticide_type, insecticide_class,
+           rho_fitted)
 })) %>%
-  group_by(model, experiment, insecticide_class) %>%
-  summarise(rho_fitted = mean(rho_fitted), .groups = "drop") %>%
-  mutate(rho_external = rho_for_class(insecticide_class))
+  # by type as well as class: the models fit one overdispersion per class, but
+  # the external estimate is now per type, so the comparison is made at the
+  # finer of the two
+  group_by(model, experiment, insecticide_class, insecticide_type) %>%
+  summarise(rho_fitted = mean(rho_fitted), .groups = "drop")
+rho_comparison$rho_external <- rho_for_record(rho_comparison, rho_source)
 
 write.csv(rho_comparison, "outputs/cv_rho_comparison.csv", row.names = FALSE)
 
@@ -591,7 +602,6 @@ write.csv(uncertainty, "outputs/cv_uncertainty.csv", row.names = FALSE)
 
 cat("\nexcess MSE with a pixel-cluster bootstrap, against the intercept null:\n")
 print(uncertainty %>%
-        filter(fold == "pooled" | experiment == "spatial_extrapolation") %>%
         transmute(experiment, fold, model, n_pixels,
                   excess = round(excess, 4),
                   explained = sprintf("%.2f [%.2f, %.2f]", explained,

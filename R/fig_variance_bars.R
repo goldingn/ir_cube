@@ -49,7 +49,13 @@ interval_alpha <- 0.35
 # estimate, and the noise block from the top
 bar_layers <- function(data, width = 0.8) {
 
-  models <- data %>% filter(kind == "model")
+  # A bar whose point estimate is below zero gets no colour at all. Clamping
+  # the rects at zero would otherwise draw an interval band with no rule in it,
+  # since the rule at the estimate falls off the axis - which reads as though
+  # the estimate were somewhere inside the band rather than below it. Plain
+  # grey says what is meant: the model explains none of the variance. The
+  # values are in outputs/cv_variance_explained_by_insecticide.csv.
+  models <- data %>% filter(kind == "model", is.finite(estimate), estimate > 0)
   noise <- data %>% filter(kind == "noise")
 
   list(

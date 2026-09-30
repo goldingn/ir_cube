@@ -1,7 +1,7 @@
 # Null model definitions used in the cross-validation experiments: the
 # insecticide-type intercept model and the nearest neighbour heuristic.
 #
-# Moved out of predictive_validation.R so that both the existing point-prediction
+# Separated from the scoring so that both the point-prediction
 # scoring and the posterior predictive scoring (#10) use one definition of each
 # null model. The lower half of this file adds predictive distributions for the
 # nulls, because a proper scoring rule needs a distribution rather than a point

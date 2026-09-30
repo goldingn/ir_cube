@@ -28,19 +28,14 @@ suppressMessages({
 set.seed(2026 - 9 - 23)
 n_bootstrap <- 2000
 
-rho_table <- read.csv("outputs/bioassay_rho.csv")
-rho_for_class <- function(insecticide_class) {
-  index <- match(insecticide_class, rho_table$insecticide_class)
-  pooled <- rho_table$rho[rho_table$insecticide_class == "all"]
-  ifelse(is.na(index), pooled, rho_table$rho[index])
-}
+rho_source <- rho_lookup()
 
 # pooled mortality per (pixel, insecticide) in a set of years
 window_totals <- function(years) {
   df %>%
     filter(year_start %in% years) %>%
     group_by(group = paste(cell, insecticide_type),
-             insecticide_class) %>%
+             insecticide_type, insecticide_class) %>%
     summarise(assays = n(),
               died = sum(died),
               tested = sum(mosquito_number),
@@ -59,7 +54,7 @@ paired_change <- function(before_years, after_years) {
 
   bi <- match(shared, b$group)
   ai <- match(shared, a$group)
-  rho <- rho_for_class(a$insecticide_class[ai])
+  rho <- rho_for_record(a[ai, ], rho_source)
 
   delta <- a$died[ai] / a$tested[ai] - b$died[bi] / b$tested[bi]
   # irreducible variance of that difference: the two windows are independent
@@ -137,14 +132,11 @@ base <- theme_minimal(base_size = 11) +
         panel.grid.major.x = element_blank(),
         legend.position = "bottom")
 
-# every figure is written twice: a 300 dpi raster to look at, and a vector PDF
-# for the manuscript. The ggplot objects are also saved, so a panel can be
+# a 300 dpi raster only. The ggplot objects are also saved, so a panel can be
 # restyled for the paper without recomputing anything
 save_figure <- function(plot, name, width, height) {
   ggsave(file.path("figures", paste0(name, ".png")), plot, bg = "white",
          width = width, height = height, dpi = 300)
-  ggsave(file.path("figures", paste0(name, ".pdf")), plot, bg = "white",
-         width = width, height = height, device = cairo_pdf)
   invisible(plot)
 }
 

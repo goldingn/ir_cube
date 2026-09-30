@@ -1,6 +1,6 @@
 # Covariate layers and design matrix shared by the cross-validation folds.
 #
-# Extracted from dynamic_predictive_validation.R (#10): none of this depends on
+# Separated out (#10): none of this depends on
 # which fold is being fitted, so it is built once and passed to fit_fold().
 # Sourcing this file expects the fold definitions in validation_folds.R to have
 # been sourced already, for `df`, `unique_cells`, `classes`, `types`, `regions`

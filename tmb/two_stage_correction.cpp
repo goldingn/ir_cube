@@ -3,7 +3,7 @@
 // Gaussian model for the empirical-logit bioassay mortality z_i, with its
 // sampling variance v_i fixed:
 //
-//   z_i = m_i + omega(s_i) + xi(s_i, t_i) + u_j(i) [+ p_c(i)] [+ s_k(i)] + e_i,
+//   z_i = m_i + omega(s_i) + xi(s_i, t_i) + u_j(i) [+ p_c(i)] + e_i,
 //   e_i ~ N(0, v_i)
 //
 // where m_i is the dynamical model's logit prediction (an offset, never
@@ -11,15 +11,11 @@
 // the accumulated sum since t0 of an AR(1)-in-time, Matern-in-space field of
 // annual selection anomalies eta, and u is an iid pixel-year effect.
 //
-// Two optional iid terms extend the error structure (doc/two_stage_plan.md,
-// "Error structure"); both are off by default, which gives exactly the model
-// without them:
-//   p  static pixel effect, one per pixel (raster cell), SD sigma_p: a
-//      persistent local deviation, part of the prediction target;
-//   s  survey effect, one per survey (citation x country x year), SD sigma_s:
-//      shared measurement / batch error, not part of the prediction target.
-// When a term is off its vector is mapped to zero in R, and neither its prior
-// nor its hyperprior enters the objective.
+// p is an optional static pixel effect, one per pixel (raster cell), SD
+// sigma_p (doc/two_stage_plan.md, "Error structure"): a persistent local
+// deviation, part of the prediction target. It is off by default, which gives
+// exactly the model without it: its vector is mapped to zero in R, and neither
+// its prior nor its hyperprior enters the objective.
 //
 // Random effects:
 //   w_omega  node values of omega                           (n_nodes)
@@ -30,26 +26,15 @@
 // space-time block dominates the cost of the fit.
 //   u        pixel-year effects                             (n_pixel_years)
 //   p        static pixel effects                           (n_pixels, or 1 if off)
-//   s        survey effects                                 (n_surveys, or 1 if off)
 //
-// The assay variance v_i is fixed data by default. With estimate_rho = 1 it is
-// v0_i (1 + (n_i - 1) rho), with v0_i the binomial part and logit rho a
-// hyperparameter with a normal prior (mapped out, so absent, by default).
 // xi(., t0) = 0 is not a parameter: it enters only as the zero that the first
 // time difference is taken from.
-//
-// Damped accumulation (doc/two_stage_plan.md, "Damped accumulation"): with
-// damped_xi = 1, xi(s, t) = psi xi(s, t - 1) + eta(s, t), 0 <= psi < 1, with
-// logit psi a hyperparameter and a lognormal prior on the reversion timescale
-// 1 / (1 - psi). xi is then asymptotically stationary and reverts to 0 (the
-// dynamical model) on that timescale. By default (damped_xi = 0) logit_psi is
-// mapped out and xi is the undamped sum of eta, exactly the model without it.
 //
 // x rather than eta is the random effect so that each observation touches the
 // nodes of a single year: parameterising by eta would make every observation
 // depend on all earlier years' eta, and the Hessian much denser. The map
-// x -> eta (eta_t = x_t - psi x_{t-1}, with x_t0 = 0; psi = 1 undamped) is unit
-// lower triangular, so its Jacobian is 1 and the prior on eta is the prior on x.
+// x -> eta (eta_t = x_t - x_{t-1}, with x_t0 = 0) is unit lower triangular, so
+// its Jacobian is 1 and the prior on eta is the prior on x.
 //
 // The model is Gaussian in the random effects, so given the hyperparameters the
 // Laplace approximation is exact and the inner Newton step converges at once.
@@ -114,15 +99,6 @@ Type objective_function<Type>::operator() ()
   DATA_INTEGER(include_p);        // 1 to include the static pixel effect p
   DATA_IVECTOR(p_index);          // 0-based pixel of each observation
   DATA_VECTOR(pc_sigma_p);        // (sigma0, P(sigma_p > sigma0))
-  DATA_INTEGER(include_s);        // 1 to include the survey effect s
-  DATA_IVECTOR(s_index);          // 0-based survey of each observation
-  DATA_VECTOR(pc_sigma_s);        // (sigma0, P(sigma_s > sigma0))
-  DATA_INTEGER(estimate_rho);     // 1 to estimate the assay overdispersion rho
-  DATA_VECTOR(v0);                // binomial part of v (used if estimate_rho)
-  DATA_VECTOR(n_assay);           // mosquitoes per assay (used if estimate_rho)
-  DATA_VECTOR(rho_prior);         // (mean, sd) of the normal prior on logit rho
-  DATA_INTEGER(damped_xi);        // 1 for xi_t = psi xi_{t-1} + eta_t
-  DATA_VECTOR(psi_prior);         // (meanlog, sdlog) of 1 / (1 - psi)
 
   // parameters -------------------------------------------------------------
   PARAMETER_VECTOR(w_omega);
@@ -135,11 +111,7 @@ Type objective_function<Type>::operator() ()
   PARAMETER(logit_phi);
   PARAMETER(log_tau);
   PARAMETER_VECTOR(p);
-  PARAMETER_VECTOR(s);
   PARAMETER(log_sigma_p);
-  PARAMETER(log_sigma_s);
-  PARAMETER(logit_rho);
-  PARAMETER(logit_psi);
 
   Type sigma_omega = exp(log_sigma_omega);
   Type kappa_omega = exp(log_kappa_omega);
@@ -161,22 +133,12 @@ Type objective_function<Type>::operator() ()
     int n_nodes = x.dim(0);
     int n_years = x.dim(1);
 
-    // (damped) time differences, with x_t0 = 0
+    // time differences, with x_t0 = 0
     array<Type> eta(n_nodes, n_years);
-    if (damped_xi == 1) {
-      Type psi = invlogit(logit_psi);
-      for (int i = 0; i < n_nodes; i++) {
-        eta(i, 0) = x(i, 0);
-        for (int t = 1; t < n_years; t++) {
-          eta(i, t) = x(i, t) - psi * x(i, t - 1);
-        }
-      }
-    } else {
-      for (int i = 0; i < n_nodes; i++) {
-        eta(i, 0) = x(i, 0);
-        for (int t = 1; t < n_years; t++) {
-          eta(i, t) = x(i, t) - x(i, t - 1);
-        }
+    for (int i = 0; i < n_nodes; i++) {
+      eta(i, 0) = x(i, 0);
+      for (int t = 1; t < n_years; t++) {
+        eta(i, t) = x(i, t) - x(i, t - 1);
       }
     }
 
@@ -199,34 +161,17 @@ Type objective_function<Type>::operator() ()
     lambda(i) += u(u_index(i));
   }
 
-  // p: static pixel effects, s: survey effects (optional) -------------------
+  // p: static pixel effects (optional) ---------------------------------------
   Type sigma_p = exp(log_sigma_p);
-  Type sigma_s = exp(log_sigma_s);
   if (include_p == 1) {
     nll -= dnorm(p, Type(0.0), sigma_p, true).sum();
     for (int i = 0; i < z.size(); i++) {
       lambda(i) += p(p_index(i));
     }
   }
-  if (include_s == 1) {
-    nll -= dnorm(s, Type(0.0), sigma_s, true).sum();
-    for (int i = 0; i < z.size(); i++) {
-      lambda(i) += s(s_index(i));
-    }
-  }
 
   // likelihood ------------------------------------------------------------------
-  // v is fixed data by default. With estimate_rho, v = v0 (1 + (n - 1) rho),
-  // with v0 the binomial part and rho a hyperparameter with a normal prior on
-  // its logit (doc/two_stage_plan.md, "Joint rho")
-  Type rho = invlogit(logit_rho);
-  if (estimate_rho == 1) {
-    vector<Type> v_rho = v0 * (Type(1.0) + (n_assay - Type(1.0)) * rho);
-    nll -= dnorm(z, lambda, sqrt(v_rho), true).sum();
-    nll -= dnorm(logit_rho, rho_prior(0), rho_prior(1), true);
-  } else {
-    nll -= dnorm(z, lambda, sqrt(v), true).sum();
-  }
+  nll -= dnorm(z, lambda, sqrt(v), true).sum();
 
   // priors (penalties) on the hyperparameters ----------------------------------
   nll -= log_pc_matern(log_kappa_omega, log_sigma_omega, pc_omega);
@@ -235,14 +180,10 @@ Type objective_function<Type>::operator() ()
   Type lambda_tau = -log(pc_tau(1)) / pc_tau(0);
   nll -= log(lambda_tau) - lambda_tau * tau + log_tau;
 
-  // exponential (PC) priors on sigma_p and sigma_s, as for tau
+  // exponential (PC) prior on sigma_p, as for tau
   if (include_p == 1) {
     Type lambda_p = -log(pc_sigma_p(1)) / pc_sigma_p(0);
     nll -= log(lambda_p) - lambda_p * sigma_p + log_sigma_p;
-  }
-  if (include_s == 1) {
-    Type lambda_s = -log(pc_sigma_s(1)) / pc_sigma_s(0);
-    nll -= log(lambda_s) - lambda_s * sigma_s + log_sigma_s;
   }
 
   Type persistence = Type(1.0) / (Type(1.0) - phi);
@@ -252,14 +193,6 @@ Type objective_function<Type>::operator() ()
     // so d log L / d logit_phi = phi
     nll -= dnorm(log(persistence), persistence_prior(0), persistence_prior(1),
                  true) + log(phi);
-    // lognormal prior on the reversion timescale L_psi = 1 / (1 - psi), with
-    // the same Jacobian (d log L_psi / d logit_psi = psi)
-    if (damped_xi == 1) {
-      Type psi = invlogit(logit_psi);
-      Type reversion = Type(1.0) / (Type(1.0) - psi);
-      nll -= dnorm(log(reversion), psi_prior(0), psi_prior(1), true) +
-        log(psi);
-    }
   }
 
   // reports ---------------------------------------------------------------------
@@ -273,10 +206,6 @@ Type objective_function<Type>::operator() ()
   REPORT(persistence);
   REPORT(tau);
   REPORT(sigma_p);
-  REPORT(sigma_s);
-  REPORT(rho);
-  Type psi = invlogit(logit_psi);
-  REPORT(psi);
   ADREPORT(range_omega);
   ADREPORT(sigma_omega);
   ADREPORT(tau);

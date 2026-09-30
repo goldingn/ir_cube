@@ -5,8 +5,10 @@
 **Final model.** Stage B (PQL on the beta-binomial counts, `R/two_stage_pql.R`) of `omega_xi_u` plus the static per-pixel effect p (`terms=p`); no survey effect s. Meshes omega5000_xi2500; `m_ref` = dynamical posterior mean logit; per-type ρ.
 - λ = m_ref + ω + ξ + u + p. Held-out draws: joint latent draw, p from its posterior at pixels with training data and fresh N(0, σ_p²) elsewhere. Model `two_stage_omega_xi_u_p_pql_mesh-omega5000_xi2500`.
 - Maps (`R/two_stage_maps.R`): the smooth correction ω + ξ only; u (observation noise) and p are left out of the mean and SD maps.
-- The survey-effect code stays as an option (`terms=p,s`); it is not in the final model.
-- ξ is undamped. A damped ξ (ψ estimated) was tested and not adopted, because it forecasts worse at 4–5 years (see "Damped accumulation"). It stays as an option (`xi=damped`).
+- No survey effect s: tested and not adopted (see "Error structure").
+- ρ is fixed at the external per-type ρ̂. Estimating it jointly was tested and not adopted (see "Joint rho").
+- ξ is undamped. A damped ξ (ψ estimated) was tested and not adopted, because it forecasts worse at 4–5 years (see "Damped accumulation").
+- The code for these three options was removed after testing (commit 6edcf0d has it).
 
 **u is observation noise.** The pixel-year term u is treated as observation-level noise shared by the assays of a pixel-year, not as part of the inferred process. The prediction target is m + ω + ξ + p. This reverses issue #21, which put u in the target. Cross-validation scoring is unchanged: a held-out assay's predictive distribution includes u either way. Maps and the supplement figures leave u out.
 
@@ -370,8 +372,9 @@ Motivation (`R/two_stage_hotspot_diagnostics.R`, `hotspot_{nugget,covariance}.cs
 **Checks** (`R/check_two_stage_error_structure.R`):
 - Defaults against the committed code (git HEAD): objective, hyperparameters, mode, H, stage-B fit and predictive draws are identical (difference exactly 0).
 - Simulation (σ_p = 0.5, σ_s = 0.4, 2000 assays, 727 surveys, mostly small): σ̂_p = 0.44, σ̂_s = 0.27 (weakly identified at this survey size), range ω 508 (truth 500; 177 without p and s). Shift vs refit 2e-15. 95% coverage of the target: 0.95 (new pixels), 0.99 (training pixels, new year). Coverage of a new assay's λ + s: 0.90/0.89 without s, 0.92/0.95 with the fresh draw.
+- Since the s code was removed, the check simulates p only and compares the current code with the code at a git ref (default HEAD), with and without p (all differences exactly 0). Simulation (σ_p = 0.5): σ̂_p = 0.42; shift vs refit 7e-15; 95% coverage of the target 0.89 (new pixels), 0.95 (training pixels, new year).
 
-**Runs.** `R/run_two_stage_folds.R <experiment> <fold> variants=omega_xi_u stage=B terms=p` (or `terms=p,s`); models `two_stage_omega_xi_u_p[_s][_snone|_spost]_pql_mesh-omega5000_xi2500`. All 45 type-fits converged per variant. About 6 min per type, 25–90 min per fold, peak 15.4 GB. Scored by `R/two_stage_metrics.R` → `outputs/two_stage/error_structure_two_stage.csv`.
+**Runs.** `R/run_two_stage_folds.R <experiment> <fold> variants=omega_xi_u stage=B terms=p` (the s runs used `terms=p,s`, since removed); models `two_stage_omega_xi_u_p[_s][_snone|_spost]_pql_mesh-omega5000_xi2500`. All 45 type-fits converged per variant. About 6 min per type, 25–90 min per fold, peak 15.4 GB. Scored by `R/two_stage_metrics.R` → `outputs/two_stage/error_structure_two_stage.csv`.
 
 **Hyperparameters** (median (range) over 45 type-fits, stage B):
 
@@ -418,9 +421,13 @@ Motivation (`R/two_stage_hotspot_diagnostics.R`, `hotspot_{nugget,covariance}.cs
 
 **Recommendation.** Adopt +p: it is cheap, never worse, reduces hotspot prominence, and represents a real persistent local deviation. s gains only in the width of the held-out predictive distribution, not in the map. Neither term changes ω's range materially, so ω's short range is not an artefact of the missing error terms.
 
-**Decision.** The final model is stage B + p, without s (top of this document). The s code stays as an option (`terms=p,s`).
+**Decision.** The final model is stage B + p, without s (top of this document).
+
+Survey effect s: code removed after testing; see commit 6edcf0d.
 
 ## Joint rho
+
+Code removed after testing; see commit 6edcf0d.
 
 Why: after stage B, interior training residuals are narrower than v implies (SD 0.70 vs 0.95), and 0% assays are over-implied. That suggests the fixed per-type ρ̂ is too large once u and p are in the model.
 
@@ -491,6 +498,8 @@ All coverage-difference intervals exclude 0. The per-origin results are in `join
 
 ## Damped accumulation
 
+Code removed after testing; see commit 6edcf0d.
+
 Why: at stage B, φ ≈ 0.01–0.07 and σ_η ≈ 0.5, so ξ = Ση is close to a random walk. Its prior SD grows as σ_η√t. Away from data the 95% interval widens to about 5–99% by 2015, and the correction SD reaches about 4 logit by 2030. Within data, ξ produces year-to-year reversals.
 
 **Model** (`fit_correction(damped_xi = TRUE)`, runner `xi=damped`; off by default):
@@ -549,4 +558,4 @@ Why: at stage B, φ ≈ 0.01–0.07 and σ_η ≈ 0.5, so ξ = Ση is close to 
 - Spatial experiments: no material change. Forecasting: worse at horizons 4–5 years. Reverting to the dynamical model loses skill that the undamped ξ keeps: −10 to −12 points explained, and 95% coverage 0.83–0.85.
 - So the held deviation is real at those horizons, where the dynamical model itself has little skill. The data prefer fast reversion within the data window (the fitted ψ), but held-out forecasts do not.
 
-**Decision: do not adopt.** The rule was to adopt if the lower CI bound of Δ log score is ≥ −0.01 in every experiment. It fails on forecasting 2014 (−0.059 [−0.077, −0.042]), on the pooled forecasts, and marginally on blocks (lower bound −0.018). The final model stays undamped. The code stays as an option (`xi=damped`).
+**Decision: do not adopt.** The rule was to adopt if the lower CI bound of Δ log score is ≥ −0.01 in every experiment. It fails on forecasting 2014 (−0.059 [−0.077, −0.042]), on the pooled forecasts, and marginally on blocks (lower bound −0.018). The final model stays undamped.

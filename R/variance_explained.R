@@ -65,41 +65,34 @@ experiments <- list(
        folds = "all"),
   list(label = "spatial extrapolation", experiment = "spatial_blocks",
        folds = c("1", "2")),
+  # the two five-year rolling origins, pooled into one bar as the two spatial
+  # blocks are. The 2020 three-year fold they replace both leaked training
+  # records into the holdout and landed on the one pause in twenty years of
+  # decline, which was also the thinnest window.
   list(label = "temporal change", experiment = "temporal_forecasting",
-       folds = "2020")
+       folds = c("2014", "2018"))
 )
+
+# each contrast is the first model less the second, in percentage points of the
+# observed variance
+contrasts <- list(
+  c("dynamical", "nearest_neighbour"),
+  c("dynamical", "nearest_neighbour_oracle"),
+  c("dynamical", "intercept"),
+  c("nearest_neighbour", "intercept"))
 
 models <- c(dynamical = "dynamical model",
             nearest_neighbour = "nearest recent survey",
             nearest_neighbour_oracle = "nearest surveys, best k",
             intercept = "insecticide mean")
 
-# overdispersion per insecticide type, from the hierarchical fit if it is there
-# and converged, otherwise the per-class maximum likelihood estimates
-rho_source <- "per class (maximum likelihood)"
-rho_lookup <- NULL
-if (file.exists("outputs/bioassay_rho_hierarchical.csv")) {
-  hierarchical <- read.csv("outputs/bioassay_rho_hierarchical.csv")
-  if (all(hierarchical$worst_rhat < 1.05)) {
-    rho_source <- "per insecticide type (hierarchical, MCMC)"
-    rho_lookup <- hierarchical %>%
-      transmute(key = insecticide_type, rho, rho_lower, rho_upper,
-                se_logit = (qlogis(rho_upper) - qlogis(rho_lower)) / (2 * 1.96))
-  }
-}
-if (is.null(rho_lookup)) {
-  class_rho <- read.csv("outputs/bioassay_rho.csv") %>%
-    filter(insecticide_class != "all")
-  rho_lookup <- class_rho %>%
-    transmute(key = insecticide_class, rho, rho_lower, rho_upper,
-              se_logit = standard_error / (rho * (1 - rho)))
-}
-rho_key <- if (grepl("^per insecticide type", rho_source)) {
-  "insecticide_type"
-} else {
-  "insecticide_class"
-}
-cat("overdispersion used for the noise share:", rho_source, "\n")
+# the same per-type overdispersion the rest of the pipeline scores against.
+# rho_table, not rho_lookup: the latter is the function that supplies it.
+rho_spec <- rho_lookup()
+rho_key <- rho_spec$key
+rho_table <- rho_spec$table %>%
+  mutate(se_logit = (qlogis(rho_upper) - qlogis(rho_lower)) / (2 * 1.96))
+cat("overdispersion used for the noise share:", rho_spec$source, "\n")
 
 
 # assemble the held-out records, with one prediction column per model ---------
@@ -142,7 +135,7 @@ stopifnot(all(prediction_columns %in% names(records)),
           !any(is.na(records[, prediction_columns])))
 
 records <- records %>%
-  left_join(rho_lookup %>% select(key, rho_type = rho),
+  left_join(rho_table %>% select(key, rho_type = rho),
             by = setNames("key", rho_key))
 stopifnot(!any(is.na(records$rho_type)))
 
@@ -230,11 +223,11 @@ bootstrap_explained <- function(data) {
 # essentially all of the floor's uncertainty sits.
 noise_posterior <- function(data) {
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
-  index <- match(data[[rho_key]], rho_lookup$key)
-  centre <- qlogis(rho_lookup$rho)
-  spread <- rho_lookup$se_logit
+  index <- match(data[[rho_key]], rho_table$key)
+  centre <- qlogis(rho_table$rho)
+  spread <- rho_table$se_logit
   vapply(seq_len(n_posterior), function(i) {
-    drawn <- plogis(rnorm(nrow(rho_lookup), centre, spread))
+    drawn <- plogis(rnorm(nrow(rho_table), centre, spread))
     100 * mean(floor_contributions(data, drawn[index]), na.rm = TRUE) / variance
   }, numeric(1))
 }
@@ -257,6 +250,22 @@ summarise_subset <- function(data, label, stratum = NA_character_) {
         lower = quantile(replicates[, column], 0.025, na.rm = TRUE),
         upper = quantile(replicates[, column], 0.975, na.rm = TRUE))
     })),
+    # Paired contrasts, formed within each bootstrap replicate. Every model is
+    # scored on the same resample, so the per-model intervals are strongly
+    # correlated and whether two of them overlap says nothing about the
+    # difference; this is the only thing that can settle a comparison. The
+    # denominator cancels within a replicate, so the contrast is just
+    # 100 (MSE_reference - MSE_model) / Var(y).
+    bind_rows(lapply(contrasts, function(pair) {
+      a <- paste0("p_", pair[1])
+      b <- paste0("p_", pair[2])
+      drawn <- replicates[, a] - replicates[, b]
+      data.frame(quantity = paste(models[[pair[1]]], "-", models[[pair[2]]]),
+                 kind = "contrast",
+                 estimate = point[[a]] - point[[b]],
+                 lower = quantile(drawn, 0.025, na.rm = TRUE),
+                 upper = quantile(drawn, 0.975, na.rm = TRUE))
+    })),
     data.frame(quantity = "bioassay variability", kind = "noise",
                estimate = noise_point,
                lower = quantile(noise, 0.025), upper = quantile(noise, 0.975))
@@ -272,10 +281,44 @@ pooled <- bind_rows(lapply(split(records, records$experiment), function(data) {
 row.names(pooled) <- NULL
 write.csv(pooled, "outputs/cv_variance_explained.csv", row.names = FALSE)
 
+# and per fold, for experiments built from more than one, so that a pooled bar
+# can be checked against the folds it pools
+by_fold <- bind_rows(lapply(
+  split(records, paste(records$experiment, records$fold)), function(data) {
+    if (n_distinct(records$fold[records$experiment == data$experiment[1]]) < 2) {
+      return(NULL)
+    }
+    summarise_subset(data, data$experiment[1], data$fold[1])
+  }))
+row.names(by_fold) <- NULL
+write.csv(by_fold, "outputs/cv_variance_explained_by_fold.csv", row.names = FALSE)
+
 cat("\nper experiment, % of observed variance in held-out mortality:\n")
 print(as.data.frame(pooled %>%
   mutate(value = sprintf("%5.1f [%5.1f, %5.1f]", estimate, lower, upper)) %>%
   select(experiment, assays, pixels, quantity, value) %>%
+  pivot_wider(names_from = quantity, values_from = value)), row.names = FALSE)
+
+
+cat("\npaired contrasts, within bootstrap replicates:\n")
+print(as.data.frame(pooled %>%
+  filter(kind == "contrast") %>%
+  mutate(value = sprintf("%6.1f [%6.1f, %6.1f]", estimate, lower, upper)) %>%
+  select(experiment, quantity, value) %>%
+  pivot_wider(names_from = quantity, values_from = value)), row.names = FALSE)
+
+cat("\nper fold within experiment:\n")
+print(as.data.frame(by_fold %>%
+  filter(kind != "contrast") %>%
+  mutate(value = sprintf("%5.1f [%5.1f, %5.1f]", estimate, lower, upper)) %>%
+  select(experiment, fold = stratum, assays, pixels, quantity, value) %>%
+  pivot_wider(names_from = quantity, values_from = value)), row.names = FALSE)
+
+cat("\npaired contrasts per fold:\n")
+print(as.data.frame(by_fold %>%
+  filter(kind == "contrast") %>%
+  mutate(value = sprintf("%6.1f [%6.1f, %6.1f]", estimate, lower, upper)) %>%
+  select(experiment, fold = stratum, quantity, value) %>%
   pivot_wider(names_from = quantity, values_from = value)), row.names = FALSE)
 
 

@@ -1,7 +1,7 @@
 # Fit the dynamical model to each cross-validation training fold and save
 # posterior predictive draws for the held-out data.
 #
-# This replaces the point-estimate extraction in dynamic_predictive_validation.R
+# This replaces the earlier point-estimate extraction
 # (#10). The MCMC is unchanged; what is saved is the posterior draws of the
 # predicted population fraction and the observation overdispersion, rather than
 # their means, so that held-out data can be scored against the full posterior

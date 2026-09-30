@@ -62,32 +62,38 @@ models <- c(nearest_neighbour = "1-NN",
 
 # per-record predictions, observations and geometry ------------------------
 
-scores <- readRDS("outputs/predictable_variance_scores.RDS")
-
-intercept <- bind_rows(lapply(
-  unique(scores$fold[scores$experiment == experiment]),
-  function(fold) {
-    x <- readRDS(file.path(draws_dir, sprintf("intercept__%s__%s.rds",
-                                              experiment, fold)))
-    data.frame(experiment = experiment, fold = fold,
-               row = seq_len(nrow(x$test_df)),
-               p_intercept = colMeans(x$p_draws))
-  }))
+# Built from the two tables the scoring pipeline writes, so this script is
+# reproducible from a clean checkout: cv_scores.csv is per held-out record and
+# already carries every model's prediction, cv_geometry.csv is per (cell, year,
+# insecticide) stratum and carries the distance to the nearest same-insecticide
+# training record. The join is one to one on that stratum.
+scores <- read.csv("outputs/cv_scores.csv") %>%
+  filter(experiment == !!experiment)
+geometry <- read.csv("outputs/cv_geometry.csv") %>%
+  filter(experiment == !!experiment) %>%
+  select(experiment, fold, cell, year_start, insecticide_type,
+         distance_1 = distance_same)
 
 records <- scores %>%
-  select(experiment, fold, row, cell, observed, died, mosquito_number, rho,
-         country_name, insecticide_class, insecticide_type, year_start,
-         distance_1, model, predicted) %>%
+  select(experiment, fold, cell, observed, died, mosquito_number,
+         rho = rho_external, country_name, insecticide_class, insecticide_type,
+         year_start, model, predicted) %>%
+  group_by(model) %>%
+  mutate(row = row_number()) %>%
+  ungroup() %>%
   pivot_wider(id_cols = c(experiment, fold, row, cell, observed, died,
                           mosquito_number, rho, country_name, insecticide_class,
-                          insecticide_type, year_start, distance_1),
+                          insecticide_type, year_start),
               names_from = model, values_from = predicted,
               names_prefix = "p_") %>%
-  left_join(intercept, by = c("experiment", "fold", "row")) %>%
-  filter(experiment == !!experiment,
-         # countries with too few held-out records to support a fixed effect
+  rename(p_intercept = p_intercept) %>%
+  left_join(geometry,
+            by = c("experiment", "fold", "cell", "year_start",
+                   "insecticide_type")) %>%
+  filter(# countries with too few held-out records to support a fixed effect
          country_name %in% names(which(table(country_name) >= 50)))
-stopifnot(!any(is.na(records$p_intercept)))
+stopifnot(!any(is.na(records$p_intercept)), !any(is.na(records$distance_1)))
+
 
 for (model in names(models)) {
   records[[paste0("d_", model)]] <-

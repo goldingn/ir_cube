@@ -15,27 +15,12 @@
 # forecasts of the correction plateau, and u is the pixel-year deviation from
 # the smooth fields.
 #
-# Optional terms (doc/two_stage_plan.md, "Error structure"), off by default so
-# that the defaults reproduce the model above exactly:
+# Optional term (doc/two_stage_plan.md, "Error structure"), off by default so
+# that the default reproduces the model above exactly:
 #
 #   + p_c(i)  static pixel effect, iid N(0, sigma_p^2) per pixel (raster cell):
 #             a persistent local deviation that omega otherwise absorbs as a
-#             node spike. Part of the prediction target, like u.
-#   + s_k(i)  survey effect, iid N(0, sigma_s^2) per survey (citation x country
-#             x year, see survey_id()): shared batch / measurement error between
-#             the assays of one survey. Not part of the prediction target: it is
-#             left out of maps, and added (as a fresh draw per held-out survey)
-#             only to predict held-out assays, like the assay noise e.
-#
-# Optional joint rho (doc/two_stage_plan.md, "Joint rho"), off by default:
-# estimate_rho = TRUE makes the overdispersion rho a hyperparameter, with
-# v_i = v0_i (1 + (n_i - 1) rho), v0_i the binomial part of v, and a normal
-# prior on logit rho centred on the replicate-based estimate (train$rho).
-#
-# Optional damped accumulation (doc/two_stage_plan.md, "Damped accumulation"),
-# off by default: damped_xi = TRUE makes xi(s, t) = psi xi(s, t - 1) + eta(s, t)
-# with 0 <= psi < 1 a hyperparameter, so that xi reverts to 0 (the dynamical
-# model) on the timescale 1 / (1 - psi) instead of accumulating without bound.
+#             node spike. Part of the final model and of its prediction target.
 #
 # Hyperparameters are estimated by penalised maximum marginal
 # likelihood (TMB, template in tmb/two_stage_correction.cpp); given them, the
@@ -196,17 +181,8 @@ matern_precision_r <- function(fem, kappa, sigma) {
 
 # PC priors: P(range < 50 km) = 0.05 and P(sigma > 1) = 0.05 for both Matern
 # fields, P(tau > 1) = 0.05, and persistence 1 / (1 - phi) ~ lognormal(log 5,
-# 0.62), i.e. a median of five years with a 95% interval of roughly 1.5-17
-# P(sigma_p > 1) = 0.05 and P(sigma_s > 1) = 0.05 for the optional pixel and
-# survey effects. With estimate_rho, logit rho ~ N(logit rho_hat, rho_logit_sd^2),
-# rho_hat the replicate-based per-type estimate: at sd 0.56 the central 95%
-# interval is about rho_hat / 3 to 3 rho_hat (exp(1.96 x 0.56) = 3.0).
-# With damped_xi, the reversion timescale L_psi = 1 / (1 - psi) ~ lognormal(log
-# 10, 0.82): a median of ten years and a 95% interval of 2-50 years
-# (exp(1.96 x 0.82) = 5.0). Two years is fast reversion (half-life of a
-# deviation about 1.4 years); fifty years is indistinguishable from the
-# undamped random walk over the 30 years of data. The median of ten years is a
-# third of the data window, so the prior does not favour either end
+# 0.62), i.e. a median of five years with a 95% interval of roughly 1.5-17.
+# P(sigma_p > 1) = 0.05 for the optional pixel effect
 correction_priors <- function(range0 = 50,
                               alpha_range = 0.05,
                               sigma0 = 1,
@@ -216,50 +192,14 @@ correction_priors <- function(range0 = 50,
                               persistence_median = 5,
                               persistence_sdlog = 0.62,
                               sigma_p0 = 1,
-                              alpha_sigma_p = 0.05,
-                              sigma_s0 = 1,
-                              alpha_sigma_s = 0.05,
-                              rho_logit_sd = 0.56,
-                              psi_reversion_median = 10,
-                              psi_reversion_sdlog = 0.82) {
+                              alpha_sigma_p = 0.05) {
   list(
     pc_omega = c(range0, alpha_range, sigma0, alpha_sigma),
     pc_eta = c(range0, alpha_range, sigma0, alpha_sigma),
     pc_tau = c(tau0, alpha_tau),
     persistence_prior = c(log(persistence_median), persistence_sdlog),
-    pc_sigma_p = c(sigma_p0, alpha_sigma_p),
-    pc_sigma_s = c(sigma_s0, alpha_sigma_s),
-    rho_logit_sd = rho_logit_sd,
-    psi_prior = c(log(psi_reversion_median), psi_reversion_sdlog)
+    pc_sigma_p = c(sigma_p0, alpha_sigma_p)
   )
-}
-
-
-# surveys -----------------------------------------------------------------------
-
-# Survey identifier for the survey effect s: citation x country x year. The
-# citation alone does not identify a study: aggregated sources ("Ministry of
-# Health", "PMI 2016", "VectorBase", personal communications) span countries,
-# so the country splits them (110 of 1434 citation-years span more than one
-# country, with 9,902 assays). Assays with no citation (12 in the cleaned data,
-# all Madagascar 2023) fall back to spatial clusters within a year: pixels
-# within cluster_km of each other (single linkage) in the same country-year.
-survey_id <- function(citation, country, year, coords_km, cluster_km = 25) {
-  id <- paste(citation, country, year, sep = " | ")
-  missing <- is.na(citation) | citation == ""
-  if (any(missing)) {
-    group <- paste(country, year)[missing]
-    xy <- coords_km[missing, , drop = FALSE]
-    cluster <- integer(sum(missing))
-    for (g in unique(group)) {
-      rows <- which(group == g)
-      cluster[rows] <- if (length(rows) == 1) 1L else
-        stats::cutree(stats::hclust(stats::dist(xy[rows, , drop = FALSE]),
-                                    method = "single"), h = cluster_km)
-    }
-    id[missing] <- paste("no citation", group, "cluster", cluster, sep = " | ")
-  }
-  id
 }
 
 
@@ -296,41 +236,18 @@ correction_design <- function(mesh, mesh_xi, coords, year, t0, T) {
 correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
                              silent = TRUE) {
   dll <- load_correction_template()
-  # joint rho is off unless the data ask for it (older callers do not)
-  if (is.null(data$estimate_rho)) {
-    data <- c(data, list(estimate_rho = 0L, v0 = 0, n_assay = 0,
-                         rho_prior = c(0, 1)))
-  }
-  if (is.null(parameters$logit_rho)) parameters$logit_rho <- 0
-  # damped xi likewise
-  if (is.null(data$damped_xi)) {
-    data <- c(data, list(damped_xi = 0L, psi_prior = c(log(10), 0.82)))
-  }
-  if (is.null(parameters$logit_psi)) parameters$logit_psi <- 0
   hyper_names <- c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
                    "log_kappa_eta", "logit_phi", "log_tau")
   map <- list()
   random <- c("w_omega", "u")
-  # the optional pixel and survey effects: mapped to zero (and dropped from the
-  # parameter vector, so the model is exactly the one without them) when off
-  for (term in c("p", "s")) {
-    if (data[[paste0("include_", term)]] == 1) {
-      random <- c(random, term)
-      hyper_names <- c(hyper_names, paste0("log_sigma_", term))
-    } else {
-      map[[term]] <- factor(rep(NA, length(parameters[[term]])))
-      map[[paste0("log_sigma_", term)]] <- factor(NA)
-    }
-  }
-  if (data$estimate_rho == 1) {
-    hyper_names <- c(hyper_names, "logit_rho")
+  # the optional pixel effect: mapped to zero (and dropped from the parameter
+  # vector, so the model is exactly the one without it) when off
+  if (data$include_p == 1) {
+    random <- c(random, "p")
+    hyper_names <- c(hyper_names, "log_sigma_p")
   } else {
-    map$logit_rho <- factor(NA)
-  }
-  if (data$damped_xi == 1 && variant != "omega_u") {
-    hyper_names <- c(hyper_names, "logit_psi")
-  } else {
-    map$logit_psi <- factor(NA)
+    map$p <- factor(rep(NA, length(parameters$p)))
+    map$log_sigma_p <- factor(NA)
   }
   if (variant == "omega_u") {
     # xi and its hyperparameters drop out of the model entirely
@@ -372,18 +289,6 @@ correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
 #
 # Speed depends heavily on the BLAS used by CHOLMOD's supernodal factorisation:
 # with R's reference BLAS the same fits are ~10x slower than with OpenBLAS.
-#
-# estimate_rho = TRUE estimates rho jointly (see the header). train then needs
-# mosquito_number and rho (the prior centre, one value), and either v0 (the
-# binomial part of v, e.g. the PQL working 1 / (n p (1 - p))) or died, from
-# which the stage-A v0 = 1 / (y + 0.5) + 1 / (n - y + 0.5) is computed. The
-# start is start$logit_rho, else logit(train$rho). The fit's precision_obs and
-# tmb_data$v are then at the estimated rho. hyper_hessian = TRUE adds the
-# numerical Hessian of the objective in the hyperparameters (optimHess), and
-# with it the standard errors of logit rho and logit psi.
-#
-# damped_xi = TRUE estimates the damping psi of xi (see the header); the start
-# is start$logit_psi, else psi = 0.9 (the prior median reversion timescale).
 fit_correction <- function(train,
                            variant = c("omega_xi_u", "omega_u"),
                            t0,
@@ -397,17 +302,9 @@ fit_correction <- function(train,
                            control = list(eval.max = 1000, iter.max = 500),
                            sdreport = FALSE,
                            silent = TRUE,
-                           pixel_effect = FALSE,
-                           survey_effect = FALSE,
-                           estimate_rho = FALSE,
-                           damped_xi = FALSE,
-                           hyper_hessian = FALSE) {
+                           pixel_effect = FALSE) {
 
   variant <- match.arg(variant)
-  damped_xi <- damped_xi && variant == "omega_xi_u"
-  if (survey_effect && !"survey" %in% names(train)) {
-    stop("survey_effect = TRUE needs a survey column in train (see survey_id())")
-  }
   timing <- list(start = Sys.time())
 
   if (any(train$year < t0) || any(train$year > T)) {
@@ -417,15 +314,6 @@ fit_correction <- function(train,
     stage_a <- empirical_logit(train$died, train$mosquito_number, train$rho)
     train$z <- stage_a$z
     train$v <- stage_a$v
-  }
-  if (estimate_rho) {
-    rho_centre <- unique(train$rho)
-    stopifnot(length(rho_centre) == 1, "mosquito_number" %in% names(train))
-    if (!"v0" %in% names(train)) {
-      train$v0 <- empirical_logit(train$died, train$mosquito_number, 0)$v
-    }
-    rho_logit_sd <- if (is.null(priors$rho_logit_sd)) 0.56 else
-      priors$rho_logit_sd
   }
 
   coords <- coords_km(train)
@@ -455,17 +343,10 @@ fit_correction <- function(train,
                                        paste(pixel_years$cell,
                                              pixel_years$year))]
 
-  # static pixels and surveys with data, each with its own p and s (a single
-  # unused level when the term is off)
+  # static pixels with data, each with its own p (a single unused level when
+  # the term is off)
   pixels <- tibble(cell = unique(train$cell)) %>% mutate(p_index = row_number())
   p_index <- match(train$cell, pixels$cell)
-  surveys <- if (survey_effect) {
-    tibble(survey = unique(train$survey)) %>% mutate(s_index = row_number())
-  } else {
-    tibble(survey = NA_character_, s_index = 1L)
-  }
-  s_index <- if (survey_effect) match(train$survey, surveys$survey) else
-    rep(1L, nrow(train))
 
   data <- list(
     z = train$z,
@@ -484,19 +365,7 @@ fit_correction <- function(train,
     include_p = as.integer(pixel_effect),
     p_index = as.integer(p_index - 1),
     pc_sigma_p = if (is.null(priors$pc_sigma_p)) c(1, 0.05) else
-      priors$pc_sigma_p,
-    include_s = as.integer(survey_effect),
-    s_index = as.integer(s_index - 1),
-    pc_sigma_s = if (is.null(priors$pc_sigma_s)) c(1, 0.05) else
-      priors$pc_sigma_s,
-    estimate_rho = as.integer(estimate_rho),
-    v0 = if (estimate_rho) train$v0 else 0,
-    n_assay = if (estimate_rho) as.numeric(train$mosquito_number) else 0,
-    rho_prior = if (estimate_rho) c(qlogis(rho_centre), rho_logit_sd) else
-      c(0, 1),
-    damped_xi = as.integer(damped_xi),
-    psi_prior = if (is.null(priors$psi_prior)) c(log(10), 0.82) else
-      priors$psi_prior
+      priors$pc_sigma_p
   )
 
   # start the ranges at a few hundred km, well inside the prior, and the
@@ -508,10 +377,7 @@ fit_correction <- function(train,
     log_kappa_eta = log(sqrt(8) / 300),
     logit_phi = qlogis(0.8),
     log_tau = log(0.3),
-    log_sigma_p = log(0.3),
-    log_sigma_s = log(0.3),
-    logit_rho = if (estimate_rho) qlogis(rho_centre) else 0,
-    logit_psi = if (damped_xi) qlogis(0.9) else 0
+    log_sigma_p = log(0.3)
   )
   start <- modifyList(defaults, start)
   parameters <- c(
@@ -520,9 +386,8 @@ fit_correction <- function(train,
          u = rep(0, nrow(pixel_years))),
     start[c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
             "log_kappa_eta", "logit_phi", "log_tau")],
-    list(p = rep(0, if (pixel_effect) nrow(pixels) else 1),
-         s = rep(0, if (survey_effect) nrow(surveys) else 1)),
-    start[c("log_sigma_p", "log_sigma_s", "logit_rho", "logit_psi")]
+    list(p = rep(0, if (pixel_effect) nrow(pixels) else 1)),
+    start["log_sigma_p"]
   )
 
   obj <- correction_adfun(data, parameters, variant, silent = silent)
@@ -558,11 +423,6 @@ fit_correction <- function(train,
                                        x = 1, dims = c(nrow(train),
                                                        nrow(pixels)))
   }
-  if (survey_effect) {
-    A_blocks$s <- Matrix::sparseMatrix(i = seq_len(nrow(train)), j = s_index,
-                                       x = 1, dims = c(nrow(train),
-                                                       nrow(surveys)))
-  }
   A_latent <- do.call(cbind, A_blocks[names(blocks)])
 
   report <- obj$report(par_full)
@@ -573,32 +433,6 @@ fit_correction <- function(train,
     tau = report$tau
   )
   if (pixel_effect) hyper$sigma_p <- report$sigma_p
-  if (survey_effect) hyper$sigma_s <- report$sigma_s
-  rho_se_logit <- NA_real_
-  psi_se_logit <- NA_real_
-  hyper_hessian_matrix <- NULL
-  if (estimate_rho) {
-    hyper$rho <- report$rho
-    # the likelihood's v and D at the estimated rho
-    data$v <- data$v0 * (1 + (data$n_assay - 1) * report$rho)
-  }
-  if (hyper_hessian && (estimate_rho || damped_xi)) {
-    hyper_hessian_matrix <- stats::optimHess(opt$par, obj$fn, obj$gr)
-    covariance <- tryCatch(solve(hyper_hessian_matrix),
-                           error = function(e) NULL)
-    se_of <- function(name) {
-      i <- which(names(opt$par) == name)
-      if (length(i) == 1 && !is.null(covariance) && covariance[i, i] > 0) {
-        sqrt(covariance[i, i])
-      } else {
-        NA_real_
-      }
-    }
-    if (estimate_rho) rho_se_logit <- se_of("logit_rho")
-    if (damped_xi) psi_se_logit <- se_of("logit_psi")
-    # optimHess leaves the inner problem at a perturbed point: restore it
-    obj$fn(opt$par)
-  }
   if (variant == "omega_xi_u") {
     hyper <- c(hyper, list(
       sigma_eta = report$sigma_eta,
@@ -607,7 +441,6 @@ fit_correction <- function(train,
       phi = report$phi,
       persistence = report$persistence
     ))
-    if (damped_xi) hyper$psi <- report$psi
   }
 
   sd_report <- if (sdreport) TMB::sdreport(obj) else NULL
@@ -646,17 +479,7 @@ fit_correction <- function(train,
       m_ref = train$m,
       pixel_years = pixel_years,
       pixel_effect = pixel_effect,
-      survey_effect = survey_effect,
-      estimate_rho = estimate_rho,
-      rho = if (estimate_rho) report$rho else
-        if (length(unique(train$rho)) == 1) unique(train$rho) else NA_real_,
-      rho_centre = if (estimate_rho) rho_centre else NA_real_,
-      rho_se_logit = rho_se_logit,
-      damped_xi = damped_xi,
-      psi_se_logit = psi_se_logit,
-      hyper_hessian = hyper_hessian_matrix,
       pixels = pixels,
-      surveys = surveys,
       n_obs = nrow(train),
       timings = as.numeric(timings, units = "secs") |> setNames(names(timings))
     ),
@@ -699,50 +522,23 @@ sample_latent_deviation <- function(H_chol, n_latent, n) {
 #
 # Latent draws are joint samples with precision H, so omega, xi and u keep
 # their posterior correlations. xi beyond T is forecast by running the AR(1)
-# for eta forward from each draw's eta_T = x_T - psi x_{T-1} with fresh Matern
-# innovations, and accumulating: xi_t = psi xi_{t-1} + eta_t (psi = 1 unless
-# the fit has damped_xi). u is taken from the joint draw at pixel-years
+# for eta forward from each draw's eta_T = x_T - x_{T-1} with fresh Matern
+# innovations, and accumulating. u is taken from the joint draw at pixel-years
 # with data, and drawn from N(0, tau^2) (once per distinct pixel-year) elsewhere.
 # The static pixel effect p (if fitted) is handled the same way per pixel: the
 # joint draw at pixels with data, N(0, sigma_p^2) once per distinct new pixel
 # elsewhere.
 #
-# The survey effect s (if fitted) is batch error, not part of the target, so
-# `survey` says what to do with it:
-#   "none"       leave it out: the prediction of the population fraction, what
-#                a map shows (the default);
-#   "fresh"      add a fresh N(0, sigma_s^2) draw per distinct new$survey,
-#                shared by the rows of that survey, whether or not the survey
-#                has training data: the predictive distribution of a new assay
-#                from an unknown survey. This is what the held-out scoring uses:
-#                the scoring code turns logit draws into draws of p and scores
-#                them with a beta-binomial at the external per-type rho, so the
-#                survey draw has to be inside the draws to widen the predictive
-#                distribution the way the assay noise does;
-#   "posterior"  as "fresh", but surveys with training data take their joint
-#                posterior draw (a sensitivity check: it uses the survey's
-#                other assays, which a map user does not have).
-# Several values give a named list of matrices from the same latent draws, so
-# they differ only in the survey term.
-#
-# Returns an n_draws x nrow(new) matrix (or a list of them). Draws are generated
-# in batches of batch_size to bound memory
+# Returns an n_draws x nrow(new) matrix. Draws are generated in batches of
+# batch_size to bound memory
 predict_correction <- function(fit,
                                new,
                                m_draws_train = NULL,
                                m_draws_new = NULL,
                                n_draws = 1000,
-                               batch_size = 100,
-                               survey = "none") {
+                               batch_size = 100) {
 
-  survey <- unique(survey)
-  stopifnot(length(survey) >= 1,
-            all(survey %in% c("none", "fresh", "posterior")))
-  include_s <- isTRUE(fit$survey_effect)
   include_p <- isTRUE(fit$pixel_effect)
-  if (include_s && any(survey != "none") && !"survey" %in% names(new)) {
-    stop("survey draws need a survey column in new")
-  }
 
   if (xor(is.null(m_draws_train), is.null(m_draws_new))) {
     stop("supply both m_draws_train and m_draws_new, or neither")
@@ -760,8 +556,6 @@ predict_correction <- function(fit,
   n_latent <- length(fit$mode)
   hyper <- fit$hyper
   include_xi <- fit$variant == "omega_xi_u"
-  # damping of xi: 1 (undamped accumulation) unless the fit estimated it
-  psi <- correction_psi(fit)
 
   coords <- coords_km(new)
   A_new <- mesh_basis(fit$mesh, coords)
@@ -812,17 +606,8 @@ predict_correction <- function(fit,
     unseen_cell_index <- match(new$cell[!has_p], unseen_cells)
     idx_p <- fit$blocks$p
   }
-  # s: one fresh draw per distinct new survey; for "posterior", surveys with
-  # training data take the latent draw
-  if (include_s && any(survey != "none")) {
-    new_surveys <- unique(new$survey)
-    new_survey_index <- match(new$survey, new_surveys)
-    s_train <- fit$surveys$s_index[match(new_surveys, fit$surveys$survey)]
-    idx_s <- fit$blocks$s
-  }
 
-  draws <- lapply(setNames(survey, survey), function(x)
-    matrix(NA_real_, n_draws, n_new))
+  draws <- matrix(NA_real_, n_draws, n_new)
   batches <- split(seq_len(n_draws), ceiling(seq_len(n_draws) / batch_size))
 
   for (batch in batches) {
@@ -851,7 +636,7 @@ predict_correction <- function(fit,
         last <- (fit$n_years - 1) * n_nodes_xi + seq_len(n_nodes_xi)
         xi_nodes <- x_draw[last, , drop = FALSE]
         eta_nodes <- if (fit$n_years > 1) {
-          xi_nodes - psi * x_draw[last - n_nodes_xi, , drop = FALSE]
+          xi_nodes - x_draw[last - n_nodes_xi, , drop = FALSE]
         } else {
           xi_nodes
         }
@@ -859,7 +644,7 @@ predict_correction <- function(fit,
           innovation <- sample_latent_deviation(Q_eta_chol, n_nodes_xi, nb)
           eta_nodes <- hyper$phi * eta_nodes +
             sqrt(1 - hyper$phi ^ 2) * innovation
-          xi_nodes <- psi * xi_nodes + eta_nodes
+          xi_nodes <- xi_nodes + eta_nodes
           rows <- which(forecast)[horizon == h]
           if (length(rows) > 0) {
             lambda[rows, ] <- lambda[rows, ] +
@@ -893,28 +678,10 @@ predict_correction <- function(fit,
       }
     }
 
-    for (mode in survey) {
-      lambda_mode <- lambda
-      if (include_s && mode != "none") {
-        s_draw <- matrix(rnorm(length(new_surveys) * nb, 0, hyper$sigma_s),
-                         length(new_surveys), nb)
-        if (mode == "posterior" && any(!is.na(s_train))) {
-          seen <- !is.na(s_train)
-          s_draw[seen, ] <- theta[idx_s[s_train[seen]], , drop = FALSE]
-        }
-        lambda_mode <- lambda_mode + s_draw[new_survey_index, , drop = FALSE]
-      }
-      draws[[mode]][batch, ] <- t(lambda_mode)
-    }
+    draws[batch, ] <- t(lambda)
   }
 
-  if (length(survey) == 1) draws[[1]] else draws
-}
-
-# the damping psi of xi in a fit: xi_t = psi xi_{t-1} + eta_t. 1 (the undamped
-# sum of eta) unless the fit estimated it (fit_correction(damped_xi = TRUE))
-correction_psi <- function(fit) {
-  if (isTRUE(fit$damped_xi)) fit$hyper$psi else 1
+  draws
 }
 
 # The named mesh configurations of the mesh-resolution experiment

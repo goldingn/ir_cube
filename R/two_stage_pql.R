@@ -30,21 +30,8 @@
 # with the final working (z, v) as data, and the PQL passes are re-run at the
 # new hyperparameters.
 #
-# The optional pixel (p) and survey (s) effects are more Gaussian latent terms
-# with columns in A: nothing here changes form, and the refit keeps whichever
-# terms the stage-A fit has.
-#
-# Joint rho (doc/two_stage_plan.md, "Joint rho"): if the stage-A fit estimated
-# rho (fit_correction(estimate_rho = TRUE)), the first passes use its rho, the
-# re-estimate estimates rho again with the working v0 = 1 / (n p (1 - p)) as the
-# binomial part, and the second passes use that rho. The passes hold rho fixed,
-# like the other hyperparameters. The returned fit's rho, D and H are at the
-# final rho.
-#
-# Damped xi (doc/two_stage_plan.md, "Damped accumulation"): if the stage-A fit
-# estimated psi (fit_correction(damped_xi = TRUE)), the re-estimate estimates it
-# again with the other hyperparameters, and its standard error (optimHess).
-# Nothing else changes: psi enters only Q, i.e. H.
+# The optional pixel effect p is one more Gaussian latent term, with columns in
+# A: nothing here changes form, and the refit keeps it if the stage-A fit has it.
 #
 # The result is a correction_fit with mode, H, H_chol, precision_obs (= the
 # final D) and the hyperparameters replaced, so predict_correction() uses it
@@ -69,7 +56,6 @@ pql_working <- function(lambda, died, n, rho, clamp = 15) {
   phi <- 1 + (n - 1) * rho
   list(z = lambda_c + (died / n - p) / pq,
        v = phi / (n * pq),
-       v0 = 1 / (n * pq),
        D = n * pq / phi,
        n_clamped = sum(lambda != lambda_c))
 }
@@ -186,9 +172,7 @@ fit_correction_pql <- function(fit_a, train,
   start_time <- Sys.time()
   died <- train$died
   n <- train$mosquito_number
-  estimate_rho <- isTRUE(fit_a$estimate_rho)
-  damped_xi <- isTRUE(fit_a$damped_xi)
-  rho <- if (estimate_rho) fit_a$hyper$rho else train$rho
+  rho <- train$rho
   stopifnot(length(died) == fit_a$n_obs)
 
   lambda_a <- fit_a$m_ref + as.vector(fit_a$A_latent %*% fit_a$mode)
@@ -208,25 +192,17 @@ fit_correction_pql <- function(fit_a, train,
   time_second <- 0
   if (refit) {
     hyper_names <- c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
-                     "log_kappa_eta", "logit_phi", "log_tau", "log_sigma_p",
-                     "log_sigma_s", if (estimate_rho) "logit_rho",
-                     if (damped_xi) "logit_psi")
+                     "log_kappa_eta", "logit_phi", "log_tau", "log_sigma_p")
     hyper_names <- intersect(hyper_names, names(fit_a$par_list))
     start <- lapply(fit_a$par_list[hyper_names], as.numeric)
     train_w <- train
     train_w$z <- first$working$z
     train_w$v <- first$working$v
-    if (estimate_rho) train_w$v0 <- first$working$v0
     t_refit <- Sys.time()
     base <- fit_correction(train_w, variant = fit_a$variant, t0 = fit_a$t0,
                            T = fit_a$T, mesh = fit_a$mesh,
                            mesh_xi = fit_a$mesh_xi, start = start,
-                           pixel_effect = isTRUE(fit_a$pixel_effect),
-                           survey_effect = isTRUE(fit_a$survey_effect),
-                           estimate_rho = estimate_rho,
-                           damped_xi = damped_xi,
-                           hyper_hessian = estimate_rho || damped_xi)
-    if (estimate_rho) rho <- base$hyper$rho
+                           pixel_effect = isTRUE(fit_a$pixel_effect))
     time_refit <- difftime(Sys.time(), t_refit, units = "secs")
     t_second <- Sys.time()
     final <- pql_passes(base, died, n, rho, tol = tol,
@@ -242,7 +218,6 @@ fit_correction_pql <- function(fit_a, train,
   out$precision_obs <- final$working$D
   out$tmb_data$z <- final$working$z
   out$tmb_data$v <- final$working$v
-  if (estimate_rho) out$tmb_data$v0 <- final$working$v0
   out$stage_b <- list(
     lambda_a = lambda_a,
     lambda = final$lambda,
@@ -264,8 +239,6 @@ fit_correction_pql <- function(fit_a, train,
       sqrt(mean((final$lambda - first$lambda) ^ 2)) else NA_real_,
     final_change = final$final_change,
     n_clamped = final$working$n_clamped,
-    rho_a = if (estimate_rho) fit_a$hyper$rho else NA_real_,
-    rho = if (estimate_rho) rho else NA_real_,
     timings = c(passes_first = as.numeric(time_first),
                 refit = as.numeric(time_refit),
                 passes_second = as.numeric(time_second),

@@ -428,3 +428,39 @@ ppd_aggregate <- function(died, mosquito_number, group, sims,
   do.call(rbind, out)
 
 }
+
+# bioassay overdispersion per insecticide type ----------------------------
+
+# rho sets the noise floor on every score, so every script has to use the same
+# one: the hierarchical fit over replicate bioassay groups, types nested in
+# class, fitted by MCMC in fig_illustrate_bioassay_variability.R. There is no
+# fallback - scoring against a different overdispersion than the rest of the
+# pipeline is worse than not scoring at all.
+rho_lookup <- function(file = "outputs/bioassay_rho_hierarchical.csv") {
+  if (!file.exists(file)) {
+    stop("no per-type overdispersion at ", file,
+         "; run R/fig_illustrate_bioassay_variability.R first")
+  }
+  hierarchical <- utils::read.csv(file)
+  if (!all(hierarchical$worst_rhat < 1.05)) {
+    stop("the per-type overdispersion fit has not converged (worst Rhat ",
+         round(max(hierarchical$worst_rhat), 3), ")")
+  }
+  list(source = "per insecticide type (hierarchical, MCMC)",
+       key = "insecticide_type",
+       table = data.frame(key = hierarchical$insecticide_type,
+                          rho = hierarchical$rho,
+                          rho_lower = hierarchical$rho_lower,
+                          rho_upper = hierarchical$rho_upper))
+}
+
+# rho per record. `data` must carry insecticide_type.
+rho_for_record <- function(data, lookup) {
+  # without this the missing column gives match(NULL, ...) -> integer(0), a
+  # zero-length result, and the check below passes on nothing at all
+  stopifnot(lookup$key %in% names(data))
+  index <- match(data[[lookup$key]], lookup$table$key)
+  out <- lookup$table$rho[index]
+  stopifnot(!any(is.na(out)))
+  out
+}

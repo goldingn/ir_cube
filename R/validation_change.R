@@ -37,10 +37,9 @@ suppressMessages({
 })
 
 # Every forecasting origin on disk, scored separately. The design is a rolling
-# origin — five-year windows cut at 2014 and 2018, plus the superseded 2020
-# three-year fold kept as a supplementary observation — and the origins must not
-# be pooled: their holdout windows have true rates of decline differing by a
-# factor of two, which is the contrast the test is built on.
+# origin — five-year windows cut at 2014 and 2018 — and the origins must not be
+# pooled: their holdout windows have true rates of decline differing by a factor
+# of two, which is the contrast the test is built on.
 fold_files <- sort(list.files(
   "outputs/cv_draws",
   pattern = "^dynamical__temporal_forecasting__.*\\.rds$",
@@ -49,13 +48,11 @@ fold_files <- sort(list.files(
 if (length(fold_files) == 0) {
   stop("no forecasting folds in outputs/cv_draws")
 }
+# the superseded three-year 2020 origin leaked its cut year into the holdout
+stopifnot(!any(grepl("__2020\\.rds$", fold_files)))
 
-rho_external <- read.csv("outputs/bioassay_rho.csv")
-rho_for_class <- function(insecticide_class) {
-  index <- match(insecticide_class, rho_external$insecticide_class)
-  pooled <- rho_external$rho[rho_external$insecticide_class == "all"]
-  ifelse(is.na(index), pooled, rho_external$rho[index])
-}
+rho_source <- rho_lookup()
+cat("overdispersion:", rho_source$source, "\n")
 
 # thin to a common set of draws; the change is a smooth functional and does not
 # need twenty thousand of them
@@ -75,6 +72,9 @@ window_summary <- function(data, p_draws, group) {
     p = vapply(index, function(i) {
       as.numeric(p_draws[, i, drop = FALSE] %*% weights[i]) / sum(weights[i])
     }, numeric(nrow(p_draws))),
+    insecticide_type = vapply(index,
+                              function(i) data$insecticide_type[i[1]],
+                              character(1)),
     insecticide_class = vapply(index,
                                function(i) data$insecticide_class[i[1]],
                                character(1)),
@@ -104,7 +104,10 @@ score_scale <- function(scale, holdout, before, p_holdout, p_before) {
   hi <- match(shared, h$groups)
   bi <- match(shared, b$groups)
 
-  rho <- rho_for_class(h$insecticide_class[hi])
+  rho <- rho_for_record(
+    data.frame(insecticide_type = h$insecticide_type[hi],
+               insecticide_class = h$insecticide_class[hi]),
+    rho_source)
 
   delta_observed <- h$died[hi] / h$tested[hi] - b$died[bi] / b$tested[bi]
   delta_draws <- h$p[, hi, drop = FALSE] - b$p[, bi, drop = FALSE]

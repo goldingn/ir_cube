@@ -1,4 +1,4 @@
-# Estimate the bioassay overdispersion parameter rho from replicate bioassays.
+# Are the replicate bioassay groups representative of the data as a whole?
 #
 # Bioassays carried out in the same 5km pixel, in the same year, with the same
 # insecticide, are replicate measurements of a single population susceptible
@@ -94,7 +94,7 @@ cat(sprintf("%i assays in %i replicated pixel-year-insecticide groups\n",
 
 # Gauss-Legendre nodes and weights on (0, 1), for integrating over the group
 # fraction. A fixed grid keeps the likelihood smooth in the parameters, which
-# matters for the optimiser
+# matters for grouping
 gauss_legendre_01 <- function(n_nodes = 128) {
   # nodes of the Legendre polynomial by Newton iteration on the interval (-1, 1)
   i <- seq_len(n_nodes)
@@ -160,84 +160,6 @@ negative_log_likelihood <- function(par, died, mosquito_number, group_id,
   -total
 
 }
-
-# fit to one set of assays, returning rho with a standard error from the
-# observed information
-fit_rho <- function(data) {
-
-  group_id <- match(data$group_id, unique(data$group_id))
-
-  fit <- optim(
-    par = c(qlogis(0.14), log(4), log(1.5)),
-    fn = negative_log_likelihood,
-    died = data$died,
-    mosquito_number = data$mosquito_number,
-    group_id = group_id,
-    quadrature = quadrature,
-    method = "BFGS",
-    hessian = TRUE,
-    control = list(maxit = 500)
-  )
-
-  rho <- plogis(fit$par[1])
-  # delta method for the standard error of rho from that of logit(rho)
-  standard_error_logit <- sqrt(diag(solve(fit$hessian)))[1]
-  standard_error <- standard_error_logit * rho * (1 - rho)
-
-  data.frame(
-    rho = rho,
-    rho_lower = plogis(fit$par[1] - 1.96 * standard_error_logit),
-    rho_upper = plogis(fit$par[1] + 1.96 * standard_error_logit),
-    standard_error = standard_error,
-    n_assays = nrow(data),
-    n_groups = length(unique(group_id)),
-    convergence = fit$convergence
-  )
-
-}
-
-# overall, and by insecticide class
-rho_overall <- fit_rho(replicated) %>%
-  mutate(insecticide_class = "all", .before = everything())
-
-rho_by_class <- replicated %>%
-  group_by(insecticide_class) %>%
-  filter(n_distinct(group_id) >= 20) %>%
-  group_split() %>%
-  lapply(function(data) {
-    fit_rho(data) %>%
-      mutate(insecticide_class = data$insecticide_class[1],
-             .before = everything())
-  }) %>%
-  bind_rows()
-
-rho_estimates <- bind_rows(rho_overall, rho_by_class)
-
-cat("\nestimated overdispersion:\n")
-print(rho_estimates %>% mutate(across(where(is.numeric), ~ round(.x, 4))))
-
-write.csv(rho_estimates, "outputs/bioassay_rho.csv", row.names = FALSE)
-
-
-# comparison with the previous estimate ------------------------------------
-
-# the six most heavily sampled combinations, as used previously
-top_six <- replicated %>%
-  count(group_id, sort = TRUE) %>%
-  slice(1:6) %>%
-  pull(group_id)
-
-rho_top_six <- replicated %>%
-  filter(group_id %in% top_six) %>%
-  fit_rho()
-
-cat(sprintf("\nrho from the six most sampled groups only: %.3f (%.3f - %.3f), %i assays\n",
-            rho_top_six$rho, rho_top_six$rho_lower, rho_top_six$rho_upper,
-            rho_top_six$n_assays))
-cat(sprintf("rho from all replicated groups:            %.3f (%.3f - %.3f), %i assays\n",
-            rho_overall$rho, rho_overall$rho_lower, rho_overall$rho_upper,
-            rho_overall$n_assays))
-
 
 # are replicated pixel-years representative? -------------------------------
 

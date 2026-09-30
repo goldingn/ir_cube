@@ -46,12 +46,8 @@ settings <- do.call(dynamical_mcmc_settings, setting_overrides)
 # find the requested fold
 before <- NULL
 experiment_label <- experiment_name
-if (experiment_name == "spatial_extrapolation") {
-  index <- match(fold_name, countries_to_validate)
-  stopifnot(!is.na(index))
-  training <- spatial_extrapolation$training[[index]]
-  test <- spatial_extrapolation$test[[index]]
-} else if (experiment_name == "spatial_interpolation") {
+stopifnot(experiment_name %in% validation_experiments)
+if (experiment_name == "spatial_interpolation") {
   training <- spatial_interpolation$training
   test <- spatial_interpolation$test
 } else if (experiment_name == "spatial_blocks") {

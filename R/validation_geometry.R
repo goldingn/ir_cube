@@ -88,14 +88,6 @@ fold_geometry <- function(training, test, experiment, fold) {
 
 geometry <- bind_rows(
   bind_rows(
-    lapply(seq_along(countries_to_validate), function(index) {
-      fold_geometry(spatial_extrapolation$training[[index]],
-                    spatial_extrapolation$test[[index]],
-                    "spatial_extrapolation",
-                    countries_to_validate[index])
-    })
-  ),
-  bind_rows(
     lapply(seq_along(spatial_blocks), function(index) {
       fold_geometry(spatial_blocks[[index]]$training,
                     spatial_blocks[[index]]$test,

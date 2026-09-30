@@ -3,10 +3,10 @@
 # extrapolation by country, spatial interpolation between sampled locations,
 # and temporal forecasting of the final years).
 #
-# Extracted from predictive_validation.R so that the null models and the
+# Separated from the scoring so that the null models and the
 # dynamical model are validated against exactly the same splits (#10). Sourcing
-# this file defines `df`, `spatial_extrapolation`, `spatial_interpolation` and
-# `temporal_forecasting`, along with the indexing the model fitting needs.
+# this file defines `df`, `spatial_interpolation` and
+# `temporal_forecasting_folds`, along with the indexing the model fitting needs.
 #
 # The interpolation diagnostic plot is drawn only when `plot_folds` is TRUE, so
 # that sourcing this file from a fitting script is silent.
@@ -150,25 +150,12 @@ split_data <- function(field_values,
   
 }
 
-spatial_extrapolation <- list(
-  training = lapply(
-    countries_to_validate,
-    split_data,
-    field_name = "country_name",
-    dataset = df,
-    keep = FALSE
-  ),
-  test = lapply(
-    countries_to_validate,
-    split_data,
-    field_name = "country_name",
-    dataset = df,
-    keep = TRUE,
-    keep_min_year = test_min_year
-  )
-)
-names(spatial_extrapolation$training) <- countries_to_validate
-names(spatial_extrapolation$test) <- countries_to_validate
+# Leave-one-country-out is not defined here. It confounds spatial prediction
+# with the country initial condition: a held-out country's init_country_raw has
+# no data, reverts to the region prior, and that error is amplified through
+# fifteen to twenty-nine years of deterministic selection, correlating with the
+# fitted country effect at r = -0.94. The sub-national blocks in
+# validation_blocks.R test spatial prediction without that confound.
 
 
 
@@ -363,7 +350,7 @@ final_year <- min(nets_final_year, irs_final_year, pop_final_year)
 # held-out records were at cells that also carried post-horizon training data.
 # The leak was asymmetric, because the nearest neighbour null masks on
 # `year + (0, -1, -2, -3)` and so could never see them, and it therefore
-# favoured the dynamical model. Inherited from predictive_validation.R, so
+# favoured the dynamical model. Inherited from the original design, so
 # results from before this fix are affected (#12 review).
 #
 # `before` is the window of equal length immediately before the cut. The
@@ -428,23 +415,20 @@ forecasting_fold <- function(cut_year, window, data = df) {
 forecast_window <- 5
 forecast_cuts <- c(2014, 2018)
 
-# The superseded 2020 three-year fold. Already fitted and scored, kept as a
-# supplementary observation — "the most recent window shows no decline" — rather
-# than as the headline forecast test.
-legacy_cut <- final_year - 2
-legacy_window <- 3
+temporal_forecasting_folds <- lapply(forecast_cuts, forecasting_fold,
+                                     window = forecast_window)
+names(temporal_forecasting_folds) <- as.character(forecast_cuts)
 
-temporal_forecasting_folds <- c(
-  lapply(forecast_cuts, forecasting_fold, window = forecast_window),
-  list(forecasting_fold(legacy_cut, legacy_window))
-)
-names(temporal_forecasting_folds) <- as.character(c(forecast_cuts, legacy_cut))
+# The three-year 2020 fold this replaces is gone: it drew its training set with
+# `year_start <= cut`, so the cut year itself appeared in both training and
+# holdout, and its window landed on the one pause in twenty years of decline
+# and was also the thinnest. Do not reinstate it.
 
-# Kept so that scripts written against the single-fold design still resolve.
-temporal_forecasting <- temporal_forecasting_folds[[as.character(legacy_cut)]]
+# the validation experiments, and the only ones scored anywhere
+validation_experiments <- c("spatial_interpolation", "spatial_blocks",
+                            "temporal_forecasting")
 
 # these are the train and test sets
-spatial_extrapolation
 spatial_interpolation
 temporal_forecasting_folds
 

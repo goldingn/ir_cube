@@ -144,11 +144,14 @@ main <- build_figure(
 # information a fold carries; the posterior of the bioassay overdispersion for
 # the ceiling. Sample sizes are in outputs/cv_variance_explained.csv - spatial
 # interpolation 1,045 assays in 94 pixels, spatial extrapolation 8,694 in 905,
-# temporal change 1,461 in 309.
+# temporal change 14,018 in 1,747.
 #
 # The three experiments hold out, respectively: records at pixels with no other
 # data, contiguous sub-national regions covering about a third of each of six
-# well-sampled countries, and a window of years after the training cut.
+# well-sampled countries, and the five years following a training cut. The last
+# two pool two folds apiece - the two sub-national blocks, and the forecast
+# origins at 2014 and 2018 - scored together over their combined held-out
+# records; outputs/cv_variance_explained_by_fold.csv has them separately.
 ggsave("figures/CV_variance_explained.png", main, width = 8.2, height = 4.2,
        dpi = 300, bg = "white")
 
@@ -289,9 +292,9 @@ by_type_figure <- wrap_plots(panels, ncol = 1)
 ggsave("figures/CV_variance_explained_by_insecticide.png", by_type_figure,
        width = 10, height = 9, dpi = 300, bg = "white", limitsize = FALSE)
 
-cat("\nper-insecticide panels: ", sum(by_insecticide_all$shown) /
-      length(unique(by_insecticide_all$quantity)), " cells shown of ",
-    nrow(distinct(by_insecticide_all, experiment, stratum)), "\n", sep = "")
+shown_cells <- by_insecticide_all %>% distinct(experiment, stratum, shown)
+cat("\nper-insecticide panels: ", sum(shown_cells$shown), " cells shown of ",
+    nrow(shown_cells), "\n", sep = "")
 print(as.data.frame(by_insecticide_all %>%
   filter(!shown) %>%
   distinct(experiment, stratum, assays, pixels, drop_reason)), row.names = FALSE)

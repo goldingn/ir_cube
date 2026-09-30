@@ -46,8 +46,7 @@ model_colours <- c("dynamical model" = "#2166AC",
 # differ by a factor of two. Origins are labelled by their cut year and ordered
 # after the spatial experiments, earliest first.
 experiment_labels <- c(spatial_interpolation = "spatial interpolation",
-                       spatial_blocks = "spatial blocks",
-                       spatial_extrapolation = "spatial extrapolation")
+                       spatial_blocks = "spatial extrapolation")
 
 label_experiments <- function(experiment) {
   cut_year <- sub("^temporal_forecasting_", "", experiment)
@@ -232,7 +231,7 @@ ggsave("figures/CV_aggregated.png", aggregate_plot, bg = "white",
 # is the practical question — at what separation from the data should the
 # mechanistic model be preferred to local interpolation (#12 review)
 fold_plot <- by_fold %>%
-  filter(experiment == "spatial_extrapolation") %>%
+  filter(experiment == "spatial_blocks") %>%
   tidy_labels() %>%
   ggplot(
     aes(x = reorder(fold, excess),
@@ -244,13 +243,13 @@ fold_plot <- by_fold %>%
   labs(
     x = "",
     y = "mean squared error above the bioassay noise floor",
-    title = "Which held-out countries carry the extrapolation result?",
+    title = "Which held-out block carries the extrapolation result?",
     subtitle = "lower is better; the insecticide mean is the no-information baseline"
   ) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
-ggsave("figures/CV_by_country.png", fold_plot, bg = "white",
+ggsave("figures/CV_by_fold.png", fold_plot, bg = "white",
        width = 8, height = 5)
 
 geometry_plot <- skill_by_geometry %>%

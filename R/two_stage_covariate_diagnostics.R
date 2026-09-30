@@ -284,10 +284,22 @@ refit_mode <- function(fit, train, z, v) {
                pc_omega = priors$pc_omega, pc_eta = priors$pc_eta,
                pc_tau = priors$pc_tau,
                persistence_prior = priors$persistence_prior)
+  # the per-pixel nugget, on when the fit has it (the final model does)
+  include_p <- isTRUE(fit$pixel_effect)
+  pixels <- if (include_p) fit$pixels else tibble(cell = unique(train$cell)) %>%
+    mutate(p_index = row_number())
+  data$include_p <- as.integer(include_p)
+  data$p_index <- as.integer(pixels$p_index[match(train$cell, pixels$cell)] - 1)
+  data$pc_sigma_p <- if (is.null(priors$pc_sigma_p)) c(1, 0.05) else
+    priors$pc_sigma_p
   parameters <- c(list(w_omega = rep(0, fit$mesh$n),
                        x = matrix(0, fit$mesh_xi$n, fit$n_years),
                        u = rep(0, nrow(fit$pixel_years))),
+                  list(p = rep(0, if (include_p) nrow(pixels) else 1)),
                   as.list(fit$opt$par))
+  # correction_adfun() maps p and its SD out when the term is off, but still
+  # expects both in the parameter list
+  if (is.null(parameters$log_sigma_p)) parameters$log_sigma_p <- log(0.3)
   obj <- correction_adfun(data, parameters, "omega_xi_u", fix_hyper = TRUE)
   obj$fn(obj$par)
   obj$env$last.par[obj$env$random]

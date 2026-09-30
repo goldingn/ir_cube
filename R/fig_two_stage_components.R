@@ -17,9 +17,9 @@
 #
 # The final model (doc/two_stage_plan.md, "Final model"): on the logit scale
 #   lambda(s, t) = m(s, t) + omega(s) + xi(s, t) + p(s) [+ u(s, t)],
-# with m the dynamical model's prediction, xi(s, t) = psi xi(s, t - 1) +
-# eta(s, t) (psi = 1 in the undamped model: xi is the sum of eta), eta AR(1)
-# in time with Matern innovations, and p iid per pixel. Beyond the last data
+# with m the dynamical model's prediction, xi(s, t) the sum of the annual
+# anomalies eta up to t, eta AR(1) in time with Matern innovations, and p iid
+# per pixel. Beyond the last data
 # year T, eta is simulated forward. u, iid per pixel-year, is observation-level
 # noise (with the assay noise), not part of the inferred process, so neither
 # figure shows it: both target m + omega + xi + p.
@@ -37,21 +37,16 @@
 
 type <- "Deltamethrin"
 
-# the model of R/two_stage_maps.R (model_config there): "omega_xi_u_p_pql", or
-# with damped xi "omega_xi_u_p_psi_pql"
+# the model of R/two_stage_maps.R (model_config there)
 model_config <- "omega_xi_u_p_pql"
-damped_xi <- grepl("_psi", model_config)
 
 code_dir <- Sys.getenv("TWO_STAGE_CODE_DIR", "R")
 template_path <- Sys.getenv("TWO_STAGE_TEMPLATE",
                             "tmb/two_stage_correction.cpp")
 
 cache_dir <- "outputs/two_stage/components"
-model_tag <- if (damped_xi) "_psi" else ""
-cache_file <- file.path(cache_dir, sprintf("%s%s_fit_cache.rds", type,
-                                           model_tag))
-draws_file <- file.path(cache_dir, sprintf("%s%s_pixel_draws.rds", type,
-                                           model_tag))
+cache_file <- file.path(cache_dir, sprintf("%s_fit_cache.rds", type))
+draws_file <- file.path(cache_dir, sprintf("%s_pixel_draws.rds", type))
 figure_dir <- "figures/two_stage"
 dir.create(cache_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
@@ -156,8 +151,7 @@ if (!file.exists(cache_file) || is.null(readRDS(cache_file)$options)) {
   time_fit <- system.time({
     fit_a <- fit_correction(train_k, variant = "omega_xi_u", t0 = t0,
                             T = T_k, mesh = meshes$omega,
-                            mesh_xi = meshes$xi, pixel_effect = TRUE,
-                            damped_xi = damped_xi)
+                            mesh_xi = meshes$xi, pixel_effect = TRUE)
     stopifnot(fit_a$opt$convergence == 0)
     fit <- fit_correction_pql(fit_a, train_k)
   })
@@ -318,7 +312,6 @@ if (!file.exists(draws_file) ||
   Q_eta_chol <- Matrix::Cholesky(Matrix::forceSymmetric(Q_eta),
                                  perm = TRUE, LDL = FALSE, super = TRUE)
 
-  psi <- correction_psi(fit)
   p_index <- fit$pixels$p_index[match(pixels$cell, fit$pixels$cell)]
 
   empty <- function() array(NA_real_, c(n_years_all, n_pix, n_draws))
@@ -342,12 +335,12 @@ if (!file.exists(draws_file) ||
       if (y > t0 && y <= T_k) {
         xi_new <- x[(y - t0 - 1) * n_nodes_xi + seq_len(n_nodes_xi), ,
                     drop = FALSE]
-        eta_nodes <- xi_new - psi * xi_nodes
+        eta_nodes <- xi_new - xi_nodes
         xi_nodes <- xi_new
       } else if (y > T_k) {
         eta_nodes <- hyper$phi * eta_nodes + sqrt(1 - hyper$phi ^ 2) *
           sample_latent_deviation(Q_eta_chol, n_nodes_xi, nb)
-        xi_nodes <- psi * xi_nodes + eta_nodes
+        xi_nodes <- xi_nodes + eta_nodes
       }
       xi[j, , batch] <- as.matrix(A_xi %*% xi_nodes)
       eta[j, , batch] <- as.matrix(A_xi %*% eta_nodes)
@@ -362,7 +355,7 @@ if (!file.exists(draws_file) ||
 
   nets <- covariates$time_varying[, , "nets"]
   saveRDS(list(cells = pixels$cell, pixels = pixels, years = years_all,
-               m = m, omega = omega, xi = xi, eta = eta, p = p, psi = psi,
+               m = m, omega = omega, xi = xi, eta = eta, p = p,
                nets = nets, hyper = hyper, T = T_k),
           draws_file)
   report("draws at %i pixels x %i years x %i draws saved", n_pix,
@@ -493,8 +486,7 @@ p_eta <- row_plot(
        geom_point(aes(y = value, colour = realisation), size = 0.6),
        realisation_colour))
 p_xi <- row_plot(
-  realisations(draws$xi, which_draws),
-  if (draws$psi < 1) "damped sum\nξ = ψξ + η" else "cumulative\nξ = Ση",
+  realisations(draws$xi, which_draws), "cumulative\nξ = Ση",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))

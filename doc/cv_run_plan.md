@@ -1,4 +1,4 @@
-# Cross-validation: run recipe, and the rebuild after the #12 review
+# Cross-validation: design, run recipe, and results
 
 Written for whoever runs the next set of fits. Sections 1–3 are the recipe and
 the constraints it exists to satisfy; sections 4–7 are the rebuild the review of
@@ -206,27 +206,22 @@ refit.
   a deterministic function of the draws, so the pairing the change score needs
   survives the split.
 
-### 4.2 Leave-one-country-out confounds spatial skill with an unidentified initial condition — retained, reported with the caveat
+### 4.2 Leave-one-country-out confounds spatial skill with an unidentified initial condition — removed
 
 A held-out country's `init_country_raw` has no data, so its initial resistant
 fraction reverts to the region prior, and that error is amplified through 15–29
 years of deterministic selection before the comparison year. The review argued
-this from the model structure; it is now confirmed empirically. Across the six
-folds, the held-out bias correlates with that country's fitted country effect in
-the full-data fit at **r = −0.94**, and excess MSE against the magnitude of that
-effect at **r = +0.91**. Côte d'Ivoire and Ethiopia have the two largest
-negative country effects (−3.4 and −4.7 on the logit initial-fraction scale) and
-are the two worst-predicted folds, both overpredicting mortality by 0.27–0.36.
+this from the model structure; it was confirmed empirically before the folds
+were dropped. Across the six folds the held-out bias correlated with that
+country's fitted country effect at **r = −0.94**, and excess MSE against the
+magnitude of that effect at **r = +0.91**. Côte d'Ivoire and Ethiopia have the
+two largest negative country effects and were the two worst-predicted folds.
 
-These folds are **not refitted**. The Côte d'Ivoire fold's worst Rhat of 2.33
-raised the possibility that the negative result was a convergence artefact; the
-per-fold breakdown rules that out — five of six countries have the dynamical
-model worse than the insecticide mean, the ordering tracks the country effect
-rather than Rhat, and Côte d'Ivoire is in fact the one country where the
-dynamical model wins. So the result is structural and the fits are informative
-as they stand. They are reported as what they measure: the difficulty of
-predicting an entirely unsampled country, which is not a situation the deployed
-model faces, since there are bioassays in every country.
+So these folds measure the difficulty of predicting an entirely unsampled
+country, which is not a situation the deployed model faces — there are bioassays
+in every country. The fold definitions and every code path that scored them have
+been deleted, and the draws are parked in `outputs/cv_draws_defunct/`. The
+sub-national blocks of §5 test spatial prediction without the confound.
 
 ### 4.3 A sub-national spatial block design replaces the national extrapolation concept — three new fits
 
@@ -567,14 +562,40 @@ Consequences for planning:
 
 ## 10. Superseded artefacts
 
-- `outputs/cv_draws_defunct/` — four folds from the earlier 2-chain run, no
-  `draws` object, Kenya did not converge. Delete once the rebuild is complete.
-- `outputs/cv_draws_leaky_forecast/` — the forecasting fold fitted on the leaky
-  split (§4.1). Keep until the corrected fold is reported, as the record of what
-  the leak was worth.
-- `predictive_validation.R` and `dynamic_predictive_validation.R` still hold the
-  plug-in deviance path and, in the latter, three copies of the model
-  definition. Left in place deliberately, pending a decision on whether to
-  report the plug-in results alongside; deleting
-  `dynamic_predictive_validation.R` is what makes "three copies became one"
-  true.
+Parked in `outputs/cv_draws_defunct/`, not read by anything, kept as the record
+of what was tried:
+
+- the six leave-one-country-out folds (§4.2);
+- the three-year 2020 forecasting fold, whose training set was drawn with
+  `year_start <= cut`, so the cut year appeared in both training and holdout,
+  and whose window landed on the one pause in twenty years of decline;
+- `cv_draws_leaky_forecast/`, the same fold before the leak was fixed;
+- four folds from the earlier two-chain run, with no `draws` object.
+
+`validation_folds.R` defines `validation_experiments`, and both
+`run_one_fold.R` and `validation_metrics.R` refuse anything outside it, so a
+stray fold cannot be scored by accident.
+
+Deleted on this branch: `predictive_validation.R` and
+`dynamic_predictive_validation.R`, which held the plug-in deviance path and
+three copies of the model definition; and `validation_metric_eval.R`, the
+simulation study that supported the choice of metric.
+
+## 11. What the validation found, and what follows
+
+The dynamical model beats the nearest-recent-survey baseline on sub-national
+spatial extrapolation (+8.8 [+3.3, +14.7] percentage points of variance
+explained, paired within bootstrap replicates) but not on forecasting
+(−3.6 [−8.5, +1.5]). Diagnosis, from the before-window predictions saved with
+each fold:
+
+- the model has the direction of local change right — 77–83% sign agreement at
+  the 2014 origin among groups whose observed change exceeds its own noise — but
+  predicts two to three times too much decline, and the signed error grows with
+  forecast horizon;
+- selection is linear in each covariate, and the net-use response saturates in
+  the raw data (#23);
+- resistance can only increase in the model: there is no fitness cost or decay
+  term (#24).
+
+Both fixes need a refit and are out of scope here.
