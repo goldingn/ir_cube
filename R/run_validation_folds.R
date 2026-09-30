@@ -173,11 +173,10 @@ for (fold in folds) {
 # Folds whose draws are already on disk are skipped, so the run resumes.
 #
 # Two folds at a time, four threads each. With the closed-form recursion (#25)
-# a fold at four chains and four threads samples at about 1.1 s per iteration
-# (interpolation fold, September 2026, machine partly loaded), so about 2 h for
-# 2,000 + 5,000 iterations, against 62 h with the greta.dynamics loop. Memory
-# was the constraint on concurrency under the loop; check free memory before
-# raising n_concurrent.
+# and the sampler settings of doc/cv_run_plan.md section 3, a fold at four
+# threads takes about 4 h (2014 forecasting fold, 3.0 s per iteration) to 6 h
+# (interpolation fold), against 62 h with the greta.dynamics loop. Each uses
+# about 3.5 GB; check free memory before raising n_concurrent.
 # The number of chains and the rest of the sampler settings are
 # dynamical_mcmc_settings() (R/dynamical_model.R), which run_one_fold.R uses
 # when passed "default".

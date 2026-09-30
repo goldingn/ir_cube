@@ -558,8 +558,8 @@ dynamical_inits <- function(cached, variables, columns = NULL,
 # (R/fit_validation_fold.R) and fit_model.R. The arguments override single
 # settings, e.g. for a smoke test. The defaults, and the evidence for them, are
 # in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with
-# target acceptance 0.65, the number of leapfrog steps
-# redrawn every 10 iterations, 4 chains, 2,000 warmup and 5,000 samples.
+# 60 to 120 leapfrog steps, redrawn every 10 iterations, target acceptance
+# 0.65, 4 chains, 2,000 warmup and 3,000 samples.
 #   sampler        "hmc", greta's hmc(), or "windowed", windowed_hmc()
 #                  (R/windowed_hmc.R), which adapts the mass matrix in windows
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
@@ -573,10 +573,10 @@ dynamical_inits <- function(cached, variables, columns = NULL,
 #   one_by_one     TRUE to redraw it every iteration (a burst of one)
 dynamical_mcmc_settings <- function(n_chains = 4,
                                     warmup = 2000,
-                                    n_samples = 5000,
+                                    n_samples = 3000,
                                     sampler = c("windowed", "hmc"),
-                                    Lmin = 15,
-                                    Lmax = 30,
+                                    Lmin = 60,
+                                    Lmax = 120,
                                     accept_target = 0.65,
                                     pb_update = 10,
                                     one_by_one = FALSE) {
