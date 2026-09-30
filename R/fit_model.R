@@ -1,9 +1,14 @@
 # fit model
 
+#   Rscript R/fit_model.R [threads]
+
 # load packages and functions
-# greta first, so python starts before terra and sf are attached
+# greta first, so python starts before terra and sf are attached; TensorFlow's
+# thread count has to be set before then too
+arguments <- commandArgs(trailingOnly = TRUE)
+threads <- if (length(arguments) >= 1) as.integer(arguments[1]) else NULL
 source("R/greta_setup.R")
-start_greta()
+start_greta(threads = threads)
 source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
