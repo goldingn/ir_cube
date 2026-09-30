@@ -87,25 +87,144 @@ Rscript R/run_one_fold.R spatial_blocks 1 2 4 5 5
 takes a few minutes and exercises everything. Delete the resulting `.rds`
 afterwards, or the real fold will be skipped.
 
-### Sampling settings
+### Sampling settings (#25)
 
-4 chains, 2,000 warmup, 5,000 post-warmup samples, `hmc(Lmin = 15, Lmax = 30)`,
-initialised from `temporary/inits.RDS`. With the closed-form recursion, about
-1.1 s per iteration at four chains and four threads, so about 2 h per fold
-(measured over 100 iterations on the interpolation fold, machine partly
-loaded); it was roughly 62 h with the greta.dynamics loop. The full fit (8
-chains, full data, four threads) runs at about 3.9 s per iteration, so about
-4.3 h for `fit_model.R`'s 2,000 warmup and 2,000 samples.
+`dynamical_mcmc_settings()` in `R/dynamical_model.R` holds them, and
+`fit_fold()`, `run_one_fold.R`, `run_validation_folds.R` and `fit_model.R` all
+take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 60 to 120
+leapfrog steps (`Lmin`, `Lmax`), redrawn every 10 iterations, target
+acceptance 0.65, 4 chains, 2,000 warmup and 3,000 samples. The model samples the
+countries' initial states centred (`dynamical_model_options(init_centred =
+"country")`, the default) and starts from `temporary/inits_refit.RDS`
+(`dynamical_inits_file`).
 
-Four chains rather than two because greta pools information across chains when
-adapting during warmup: at two chains the Kenya fold reached Rhat 7.6, and at
-four it reached 1.15. Chains cost super-linearly in this model (6.96, 15.21 and
-70.61 s per iteration at 2, 4 and 8 chains), and TensorFlow threads scale poorly
-beyond about four (8.39 s/iteration at 2 threads against 6.96 s using the whole
-machine), which is why the budget goes into concurrent folds rather than into
-threads.
+At four threads the 2014 forecasting fold took 3.7 h at 3.0 s per iteration
+(2,000 + 2,500, machine loaded to about 8 of 16 cores), so about 4.2 h at
+3,000 samples. The interpolation fold ran 1.5 times slower per iteration than
+the 2014 fold at 15-30 steps, so it should take about 6 h, and the full fit,
+now at the same settings, about as long. It was roughly 62 h per fold with
+the greta.dynamics loop.
 
-The September run reached this same 5,000 samples by taking 500 and topping up
+**Result.** On the 2014 forecasting fold, for the default model, against
+greta's `hmc()` with the non-centred hierarchy (on the interpolation fold, the
+only fold that baseline was run on):
+
+| | fold | draws | worst rank Rhat | params > 1.01 / > 1.05 | bulk ESS min / median |
+|---|---|---|---|---|---|
+| `hmc()`, non-centred, 15-30 steps | interpolation | 20,000 | 1.156 | 575 / 83 | 18 / 232 |
+| windowed, centred, 15-30 steps | 2014 | 20,000 | 1.049 | 207 / 0 | 104 / 600 |
+| **these settings** (2,500 samples) | 2014 | 10,000 | 1.013 | 1 / 0 | 361 / 2,723 |
+
+At 3,000 samples the minimum should reach about 430. These settings were not
+run on the interpolation fold, which mixed worse than the 2014 fold at every
+setting tried (at 15-30 steps, minimum ESS 33 against 104). The worst-mixing
+parameters are the countries' initial levels for type 7 (`init_country_level[,
+7]`, ESS 361-630) and `init_country_sd[7]` (586); on the interpolation fold at
+15-30 steps they were `mortality_floor`, the levels of countries with few data
+for a type, and the levels of all countries of types 2 and 3 together.
+
+**What limits mixing,** found from the posterior correlations, the principal
+components of the draws and the per-chain means, not tried blind:
+
+1. *greta's warmup.* `hmc()` sets the diagonal of the mass matrix between 10%
+   and 40% of warmup from every warmup draw so far, transient included. On the
+   interpolation fold its final `diag_sd` was 0.06 to 20 times the posterior
+   sd; on 20 independent normals with sds 0.01-100 it was 0.04 to 9.3 times,
+   with minimum ESS 14 of 4,000. `windowed_hmc()` estimates it in windows that
+   start afresh, as Stan does (0.94-1.07 times the true sds, minimum ESS 933),
+   pooled over chains.
+2. *The non-centred hierarchy on the initial state.* Most countries have data
+   for most types, which fixes each country's initial state, so the
+   non-centred deviations of all countries in a region move together against
+   their region's (correlations above 0.9, in the September fits too). The
+   countries' levels are now sampled directly, around their region's level at
+   the country's own mean initial-state covariates: an exact
+   reparameterisation (the log densities match up to the Jacobian to 1e-8,
+   and `R/check_dynamical_model.R` passes). Centring the deviations but not
+   `logit_init_mean` moved the ridge to `logit_init_mean` (rank Rhat 1.41);
+   centring the regions too put them in a funnel with `init_region_sd`, which
+   5 regions barely identify (a chain sat still for 2,000 iterations at
+   `init_region_sd` 0.06); levels at covariates of 0 traded off against the
+   covariates' coefficients (-0.6), since the covariates are standardised over
+   the whole mask and the data cells lie above its mean.
+3. *Trajectory length.* The step size adapts to the acceptance target, but
+   the number of leapfrog steps does not, and 15-30 steps were too few to
+   move along the directions that remain slow: the mortality floor against
+   the initial levels of many countries at once (correlations 0.4-0.5), the
+   levels of one type against its selection and initial-state coefficients,
+   and the levels of countries without data for a type, which in centred form
+   sit in a mild funnel with `init_country_sd`. None is a linear ridge a
+   reparameterisation removes exactly, and a dense mass matrix did not help.
+   60-120 steps cost 2.2 times as much per iteration as 15-30 on the 2014
+   fold and gave 7 times the minimum ESS per draw.
+
+**Pilots on the full folds** (4 chains, 2,000 + 5,000, 4 threads; ESS per
+core-hour is bulk ESS over threads times wall hours, warmup included; wall
+time varied with the machine's load, 8 to 20 of 16 cores):
+
+| run | fold | s/it | worst rank Rhat | > 1.05 | ESS min / median | per core-hour min / median |
+|---|---|---|---|---|---|---|
+| `hmc()`, non-centred | interp | 3.36 | 1.156 | 83 | 18 / 232 | 0.7 / 8.9 |
+| windowed, regions and countries centred as deviations | interp | 2.68 | 1.407 | 267 | 9 / 134 | 0.4 / 6.5 |
+| windowed, regions and countries centred as levels | 2014 | 1.20 | 1.233 | 480 | 14 / 164 | 1.5 / 17.6 |
+| windowed, countries centred | interp | 2.00 | 1.168 | 53 | 22 / 254 | 1.4 / 16.3 |
+| windowed, countries centred | 2014 | 1.19 | 1.059 | 7 | 56 / 539 | 6.0 / 58.2 |
+| same, dense mass matrix | 2014 | 1.16 | 1.163 | 134 | 19 / 188 | 2.1 / 20.8 |
+| + levels at the overall mean covariates | interp | 2.17 | 1.102 | 16 | 28 / 319 | 1.7 / 18.9 |
+| + levels at the overall mean covariates | 2014 | 1.20 | 1.050 | 0 | 68 / 596 | 7.3 / 64.1 |
+| + at each country's mean (**these settings**) | 2014 | 1.37 | 1.049 | 0 | 104 / 600 | 9.8 / 56.2 |
+| + step size per chain | interp | 1.97 | 1.118 | 25 | 33 / 250 | 2.1 / 16.3 |
+| + step size per chain | 2014 | 1.01 | 1.120 | 146 | 28 / 250 | 3.5 / 31.6 |
+| shared step, failed proposals as rejections | 2014 | 1.93 | 1.066 | 19 | 44 / 374 | 2.9 / 24.9 |
+| **60-120 steps** (2,000 + 2,500) | 2014 | 2.98 | 1.013 | 0 | 361 / 2,723 | 24.2 / 182.5 |
+
+The per-chain step size freed a chain that moved once in 1,000 draws among 8
+on the screening subset, but on the 2014 fold one chain then rejected 35% of
+its proposals while sampling; both it and the change to failed proposals were
+worse there, so the step size is adapted as `hmc()` does. Runs of one setting
+vary by about as much as some of these differences.
+
+**Chains, warmup and trajectory length,** screened on a smaller model: 12
+countries from all 5 regions, 7,053 assays, with the model restricted to them.
+(A subset of the data with all 46 countries in the model left whole regions
+without data, a geometry the folds do not have.) 2 threads, 4 chains and
+1,000 + 2,000 unless shown, 8,000 post-warmup draws in all:
+
+| | s/it | worst rank Rhat | > 1.05 | ESS min / median | per core-hour min / median |
+|---|---|---|---|---|---|
+| 4 chains (two runs) | 0.77-0.84 | 1.051-1.061 | 1-7 | 55-82 / 341-464 | 43-59 / 265-331 |
+| 4 chains, 2,500 warmup | 0.81 | 1.102 | 41 | 32 / 204 | 16 / 101 |
+| 8 chains, 1,000 + 1,000 | 1.46 | 1.077 | 14 | 73 / 386 | 45 / 237 |
+| 16 chains, 1,000 + 500 | 3.19 | 1.115 | 133 | 97 / 345 | 37 / 130 |
+| L 5-15 | 0.77 | 1.272 | 174 | 12 / 95 | 9 / 74 |
+| L 15-30 | 1.76 | 1.060 | 2 | 51 / 451 | 17 / 154 |
+| L 30-60 | 3.10 | 1.050 | 1 | 79 / 961 | 15 / 186 |
+| L 60-120 | 4.94 | 1.006 | 0 | 604 / 3,981 | 73 / 484 |
+| L 120-240, 1,000 + 1,000 | 7.74 | 1.010 | 0 | 189 / 2,371 | 22 / 276 |
+
+(The L runs ran together on a machine loaded to about 20 of 16 cores, so their
+s/it are comparable with each other but not with the rows above.) Neither more
+chains nor a longer warmup gave more effective samples per core-hour, and on
+the full interpolation fold chains cost at least proportionally: 2.95, 5.46
+and 15.14 s per iteration at 4, 8 and 16 chains (70 iterations, 4 threads).
+Trajectory length did: 60-120 steps gave 4 times the minimum ESS per
+core-hour of 15-30 on the subset, and 2.5 times on the 2014 fold; 120-240
+gave less. Cost per iteration grows less than linearly with the steps
+(overhead per iteration). Four chains rather than two because the metric is estimated from all
+chains pooled: at two chains, under `hmc()`, the Kenya fold reached Rhat 7.6.
+TensorFlow threads scale poorly beyond about four, which is why the budget
+goes into concurrent folds rather than threads.
+
+**Initial values.** `temporary/inits.RDS`, from the fits before the refit,
+has no `logit_init_mean`, which the centred levels need (it started wherever
+greta put it). `temporary/inits_refit.RDS` (not in git) holds the posterior
+means of the default model on the interpolation fold from the `hmc()` run
+above, before reversion was added (reversion starts at 0.01), and
+`fit_model.R` rewrites it from the full fit. From the old inits the four
+chains of that run agreed in their means: the stuck chains above came from
+the sampler and the funnels, not from the starting values.
+
+The September run reached 5,000 samples by taking 500 and topping up
 with `extra_samples()` towards a 1,000 ESS target. That target was set on the
 ~690 raw hierarchical parameters, whose minimum ESS was 76–96 on every fold, so
 it was never reachable and the cap always bound. The loop has been removed and
