@@ -102,7 +102,9 @@ classes_index <- df %>%
   pull(class_id)
 n_classes <- length(classes)
 
-default_options <- dynamical_model_options()
+# non-centred, as when this was run: the simulation reads and writes the
+# non-centred deviations, and temporary/inits.RDS has no logit_init_mean
+default_options <- dynamical_model_options(init_centred = "none")
 selection <- selection_design_matrix(unique_cells, baseline_year,
                                      final_data_year,
                                      default_options$selection_columns)

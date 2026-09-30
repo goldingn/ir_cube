@@ -52,18 +52,18 @@ source("R/windowed_hmc.R")
 #                     kappa (<= 0, one, or one per class) for sensitivity
 #                     analysis. See reversion_kappa().
 #   init_centred      how the hierarchy on the initial state is
-#                     parameterised (#25): "none", N(0, 1) deviations scaled
-#                     by the sds; "country", the countries' logit relative
-#                     initial states sampled directly (centred), the regions'
-#                     deviations still non-centred. The same model; see
-#                     dynamical_variables()
+#                     parameterised (#25): "country", the countries' logit
+#                     relative initial states sampled directly (centred), the
+#                     regions' deviations non-centred; "none", N(0, 1)
+#                     deviations scaled by the sds, as in the fits before.
+#                     The same model; see dynamical_variables()
 dynamical_model_options <- function(rho = c("type", "class"),
                                     mortality_floor = TRUE,
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
                                     reversion = "estimated",
-                                    init_centred = c("none", "country")) {
+                                    init_centred = c("country", "none")) {
   list(rho = match.arg(rho),
        mortality_floor = mortality_floor,
        init_covariates = init_covariates,
@@ -556,7 +556,10 @@ dynamical_inits <- function(cached, variables, columns = NULL,
 
 # The sampler settings for the dynamical model, used by fit_fold()
 # (R/fit_validation_fold.R) and fit_model.R. The arguments override single
-# settings, e.g. for a smoke test.
+# settings, e.g. for a smoke test. The defaults, and the evidence for them, are
+# in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with a
+# step size per chain, target acceptance 0.65, the number of leapfrog steps
+# redrawn every 10 iterations, 4 chains, 2,000 warmup and 5,000 samples.
 #   sampler        "hmc", greta's hmc(), or "windowed", windowed_hmc()
 #                  (R/windowed_hmc.R), which adapts the mass matrix in windows
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
@@ -571,11 +574,11 @@ dynamical_inits <- function(cached, variables, columns = NULL,
 dynamical_mcmc_settings <- function(n_chains = 4,
                                     warmup = 2000,
                                     n_samples = 5000,
-                                    sampler = c("hmc", "windowed"),
+                                    sampler = c("windowed", "hmc"),
                                     Lmin = 15,
                                     Lmax = 30,
-                                    accept_target = 0.5,
-                                    pb_update = 50,
+                                    accept_target = 0.65,
+                                    pb_update = 10,
                                     one_by_one = FALSE) {
   list(n_chains = n_chains,
        warmup = warmup,
@@ -599,7 +602,7 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
   sampler <- switch(
     settings$sampler %||% "hmc",
     hmc = {
-      stopifnot(settings$accept_target %||% 0.5 == 0.5)
+      # greta's hmc() fixes the target acceptance at 0.5
       hmc(Lmin = settings$Lmin, Lmax = settings$Lmax)
     },
     windowed = windowed_hmc(Lmin = settings$Lmin, Lmax = settings$Lmax,
