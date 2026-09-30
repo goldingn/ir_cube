@@ -86,7 +86,7 @@ check_dynamical_model_options <- function(options) {
   stopifnot(setequal(setdiff(names(options), "init_covariate_centre"),
                      names(defaults)),
             is.null(options$init_covariate_centre) ||
-              identical(names(options$init_covariate_centre),
+              identical(colnames(options$init_covariate_centre),
                         options$init_covariates))
   options$init_covariate_centre <- NULL
   implemented <- list(rho = list("class", "type"),
@@ -263,7 +263,7 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # non-centred deviation. The same model as the non-centred one, which puts
   # N(0, 1) on init_country_raw, the country's level less its region's and
   # divided by init_country_sd. With initial-state covariates, the level is
-  # the country's at their mean over the modelled cells: the covariates are
+  # the country's at their mean over its modelled cells: the covariates are
   # standardised over the whole mask, and the data cells lie mostly above its
   # mean, so a level at 0 trades off against their coefficients. Most countries have data for most types, which
   # pins their initial states: with non-centred deviations those of every
@@ -278,17 +278,17 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     region_level <- sweep(sweep(variables$init_region_raw, 2,
                                 variables$init_region_sd, FUN = "*"),
                           2, variables$logit_init_mean, FUN = "+")
-    # the level is at the mean initial-state covariates of the modelled
-    # cells, not at 0 (see init_covariate_shift())
+    country_mean <- region_level[country_region_index, ]
+    # the level is at the country's mean initial-state covariates, not at 0
+    # (see init_covariate_shift())
     shift <- init_covariate_shift(init_covariates$init_coef, options)
     if (!is.null(shift)) {
-      region_level <- sweep(region_level, 2, shift, FUN = "+")
+      country_mean <- country_mean + shift
     }
     country_sd <- sweep(zeros(n_countries, n_types), 2,
                         variables$init_country_sd, FUN = "+")
     variables$init_country_raw <- NULL
-    variables$init_country_level <- normal(
-      region_level[country_region_index, ], country_sd)
+    variables$init_country_level <- normal(country_mean, country_sd)
   }
 
   c(variables, rho, floor, init_covariates, reversion)
@@ -317,7 +317,7 @@ init_noncentred_draws <- function(v, country_region_index,
       mean[, k]
     if (!is.null(centre)) {
       region_level <- region_level +
-        c(matrix(v$init_coef[, , k], n_draws) %*% centre)
+        matrix(v$init_coef[, , k], n_draws) %*% t(centre)
     }
     v$init_country_raw[, , k] <- (v$init_country_level[, , k] - region_level) /
       country_sd[, k]
@@ -350,18 +350,19 @@ reversion_kappa <- function(v, classes_index, options) {
   rep_len(reversion, n_classes)[classes_index]
 }
 
-# The effect of the initial-state covariates at their mean over the modelled
-# cells, options$init_covariate_centre, per type: t(init_coef) %*% centre, or
-# NULL without covariates or a centre (#25). For greta arrays or plain R.
+# The effect of the initial-state covariates at each country's mean over its
+# modelled cells, options$init_covariate_centre (countries x covariates), as
+# countries x types: centre %*% init_coef, or NULL without covariates or a
+# centre (#25). For greta arrays or plain R.
 init_covariate_shift <- function(init_coef, options) {
   centre <- options$init_covariate_centre
   if (is.null(init_coef) || is.null(centre)) {
     return(NULL)
   }
   if (!inherits(init_coef, "greta_array")) {
-    init_coef <- matrix(init_coef, length(centre))
+    init_coef <- matrix(init_coef, ncol(centre))
   }
-  t(init_coef) %*% matrix(centre)
+  centre %*% init_coef
 }
 
 # Deterministic transforms from the variables `v` to the quantities the dynamics
@@ -413,7 +414,7 @@ dynamical_terms <- function(v, classes_index, country_region_index, types,
     # centred countries (#25), with levels at the mean covariates
     shift <- init_covariate_shift(v$init_coef, options)
     logit_init_relative <- if (is.null(shift)) v$init_country_level else
-      sweep(v$init_country_level, 2, shift, FUN = "-")
+      v$init_country_level - shift
     init_country_effect <- logit_init_relative -
       sweep(init_region_effect, 2, v$logit_init_mean,
             FUN = "+")[country_region_index, ]
@@ -502,15 +503,14 @@ dynamical_inits <- function(cached, variables, columns = NULL,
       sweep(as.matrix(cached$init_region_raw), 2, c(cached$init_region_sd),
             FUN = "*"),
       2, c(cached$logit_init_mean), FUN = "+")
-    if (!is.null(init_covariate_centre) && !is.null(cached$init_coef)) {
-      region_level <- sweep(region_level, 2,
-                            c(t(cached$init_coef) %*% init_covariate_centre),
-                            FUN = "+")
-    }
     cached$init_country_level <-
       sweep(as.matrix(cached$init_country_raw), 2,
             c(cached$init_country_sd), FUN = "*") +
       region_level[country_region_index, , drop = FALSE]
+    if (!is.null(init_covariate_centre) && !is.null(cached$init_coef)) {
+      cached$init_country_level <- cached$init_country_level +
+        init_covariate_centre %*% as.matrix(cached$init_coef)
+    }
   }
   # the selection coefficients, by covariate (row): the cached values where
   # the column is in the cached fit's design, and weak selection (a log effect
@@ -709,13 +709,20 @@ build_dynamical_model <- function(train_df,
 
   lookups <- dynamical_lookups(df)
   x_init <- select_init_covariates(x_cells_init, options, n_unique_cells)
-  # the centred country levels are at the mean initial-state covariates of
-  # the modelled cells (all of them, whatever the fold), recorded in the
-  # options for the plain-R predictions
+  # the centred country levels are at each country's mean initial-state
+  # covariates over its modelled cells (all of them, whatever the fold; the
+  # overall mean for a country with none), recorded in the options for the
+  # plain-R predictions
   options$init_covariate_centre <- NULL
   if (identical(options$init_centred, "country") && !is.null(x_init)) {
-    options$init_covariate_centre <- colMeans(x_init[seq_len(n_unique_cells),
-                                                     , drop = FALSE])
+    x_cells <- x_init[seq_len(n_unique_cells), , drop = FALSE]
+    centre <- t(vapply(seq_len(n_countries), function(country) {
+      rows <- lookups$cell_country_lookup == country
+      if (any(rows)) colMeans(x_cells[rows, , drop = FALSE]) else
+        colMeans(x_cells)
+    }, numeric(ncol(x_cells))))
+    colnames(centre) <- colnames(x_cells)
+    options$init_covariate_centre <- centre
   }
 
   variables <- dynamical_variables(n_covs = n_covs,
