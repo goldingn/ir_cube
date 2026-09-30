@@ -559,7 +559,6 @@ dynamical_inits <- function(cached, variables, columns = NULL,
 # settings, e.g. for a smoke test.
 #   sampler        "hmc", greta's hmc(), or "windowed", windowed_hmc()
 #                  (R/windowed_hmc.R), which adapts the mass matrix in windows
-#   metric         "diag" or "dense" mass matrix ("windowed" only)
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
 #                  burst of iterations
 #   accept_target  target acceptance of the step-size adaptation ("windowed"
@@ -573,7 +572,6 @@ dynamical_mcmc_settings <- function(n_chains = 4,
                                     warmup = 2000,
                                     n_samples = 5000,
                                     sampler = c("hmc", "windowed"),
-                                    metric = c("diag", "dense"),
                                     Lmin = 15,
                                     Lmax = 30,
                                     accept_target = 0.5,
@@ -583,7 +581,6 @@ dynamical_mcmc_settings <- function(n_chains = 4,
        warmup = warmup,
        n_samples = n_samples,
        sampler = match.arg(sampler),
-       metric = match.arg(metric),
        Lmin = Lmin,
        Lmax = Lmax,
        accept_target = accept_target,
@@ -606,7 +603,6 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
       hmc(Lmin = settings$Lmin, Lmax = settings$Lmax)
     },
     windowed = windowed_hmc(Lmin = settings$Lmin, Lmax = settings$Lmax,
-                            metric = settings$metric %||% "diag",
                             accept_target = settings$accept_target)
   )
   mcmc(m,
