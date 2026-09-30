@@ -557,8 +557,8 @@ dynamical_inits <- function(cached, variables, columns = NULL,
 # The sampler settings for the dynamical model, used by fit_fold()
 # (R/fit_validation_fold.R) and fit_model.R. The arguments override single
 # settings, e.g. for a smoke test. The defaults, and the evidence for them, are
-# in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with a
-# step size per chain, target acceptance 0.65, the number of leapfrog steps
+# in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with
+# target acceptance 0.65, the number of leapfrog steps
 # redrawn every 10 iterations, 4 chains, 2,000 warmup and 5,000 samples.
 #   sampler        "hmc", greta's hmc(), or "windowed", windowed_hmc()
 #                  (R/windowed_hmc.R), which adapts the mass matrix in windows

@@ -1,5 +1,4 @@
-# HMC with Stan-style windowed warmup and a step size per chain, as a subclass
-# of greta's hmc sampler.
+# HMC with Stan-style windowed warmup, as a subclass of greta's hmc sampler.
 #
 # greta's hmc() estimates the diagonal of the mass matrix (diag_sd) between
 # 10% and 40% of warmup from every warmup draw so far, including the transient
@@ -9,17 +8,20 @@
 # the end of each window the metric is set from them and step-size adaptation
 # restarts. The last part of warmup adapts the step size only.
 #
-# greta's hmc() also adapts one step size for all chains, from their mean
-# acceptance, and leaves proposals whose acceptance is not finite out of that
-# mean. A chain in a region that needs a smaller step than the others then
-# rejects nearly everything, and stays there: with 8 chains, one chain moved
-# once in 1,000 draws. Here each chain adapts its own step size, and a
-# proposal with a non-finite acceptance counts as a rejection.
+# greta's hmc() also adapts one step size for all chains from their mean
+# acceptance, leaving proposals whose acceptance is not finite out of that
+# mean, so a chain whose proposals all fail does not shrink the step: with 8
+# chains, one chain moved once in 1,000 draws. Here a non-finite acceptance
+# counts as a rejection. The step size can also be adapted per chain, from
+# each chain's own acceptance; on the 2014 forecasting fold that was worse
+# (one chain rejected 35% of its proposals while sampling), so by default the
+# chains share it.
 #
 #   windows        fractions of warmup at which the metric windows end; the
 #                  first starts at `buffer`
 #   accept_target  target mean acceptance probability of the step-size
 #                  adaptation (greta's hmc() uses 0.5)
+#   per_chain      TRUE to adapt a step size per chain
 
 # The R6 class, built on first use so that sourcing this file does not need
 # greta.
@@ -82,7 +84,7 @@ windowed_hmc_class <- function() {
         self$tune_step_size(iterations_completed == total_iterations)
       },
 
-      # dual averaging, per chain
+      # dual averaging, per chain or shared
       tune_step_size = function(final) {
         kappa <- 0.75
         gamma <- 0.05
@@ -90,8 +92,12 @@ windowed_hmc_class <- function() {
         self$da_updates <- self$da_updates + 1
         t <- self$da_updates
         w1 <- 1 / (t + t0)
+        accept <- self$chain_accept
+        if (!isTRUE(self$parameters$per_chain)) {
+          accept <- mean(accept)
+        }
         self$hbar <- (1 - w1) * self$hbar +
-          w1 * (self$accept_target - self$chain_accept)
+          w1 * (self$accept_target - accept)
         log_epsilon <- self$da_mu - self$hbar * sqrt(t) / gamma
         w2 <- t^-kappa
         self$log_epsilon_bar <- w2 * log_epsilon +
@@ -171,10 +177,10 @@ windowed_hmc_class <- function() {
 # The sampler object for mcmc(), as greta's hmc() builds it.
 windowed_hmc <- function(Lmin = 15, Lmax = 30, epsilon = 0.1, diag_sd = 1,
                          buffer = 0.15, windows = c(0.25, 0.45, 0.9),
-                         accept_target = 0.5) {
+                         accept_target = 0.5, per_chain = FALSE) {
   obj <- list(parameters = list(Lmin = Lmin, Lmax = Lmax, epsilon = epsilon,
                                 diag_sd = diag_sd, buffer = buffer,
-                                windows = windows),
+                                windows = windows, per_chain = per_chain),
               name = "hmc",
               class = R6::R6Class("windowed_hmc_sampler_target",
                                   inherit = windowed_hmc_class(),

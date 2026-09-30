@@ -172,8 +172,10 @@ cell_country_lookup <- built$lookups$cell_country_lookup
 init_frac_min <- init_frac_constants(types)$min
 init_range <- 1 - init_frac_min
 
-# the sampler settings (R/dynamical_model.R), with 8 chains
-settings <- dynamical_mcmc_settings(n_chains = 8)
+# the sampler settings (R/dynamical_model.R), as for the folds: more chains
+# cost about proportionally more per iteration or worse, and did not give more
+# effective samples per core-second (doc/cv_run_plan.md, section 3)
+settings <- dynamical_mcmc_settings()
 
 # used cached posterior means as inits
 inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built$variables,
