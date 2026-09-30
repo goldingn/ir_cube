@@ -8,14 +8,15 @@
 # the end of each window the metric is set from them and step-size adaptation
 # restarts. The last part of warmup adapts the step size only.
 #
-# greta's hmc() also adapts one step size for all chains from their mean
-# acceptance, leaving proposals whose acceptance is not finite out of that
-# mean, so a chain whose proposals all fail does not shrink the step: with 8
-# chains, one chain moved once in 1,000 draws. Here a non-finite acceptance
-# counts as a rejection. The step size can also be adapted per chain, from
-# each chain's own acceptance; on the 2014 forecasting fold that was worse
-# (one chain rejected 35% of its proposals while sampling), so by default the
-# chains share it.
+# The step size is adapted as greta's hmc() does, one for all chains from
+# their mean acceptance, leaving out proposals whose acceptance is not finite.
+# It can instead be adapted per chain (per_chain = TRUE), from each chain's
+# own acceptance with a non-finite acceptance counted as a rejection. That
+# freed a chain that moved once in 1,000 draws among 8 on a screening subset,
+# but on the 2014 forecasting fold mixed worse (worst rank Rhat 1.120 against
+# 1.049, one chain rejecting 35% of its proposals while sampling); counting
+# non-finite acceptances as rejections with the step shared was also worse
+# there (1.066), though runs of one setting vary by about as much.
 #
 #   windows        fractions of warmup at which the metric windows end; the
 #                  first starts at `buffer`
@@ -92,10 +93,8 @@ windowed_hmc_class <- function() {
         self$da_updates <- self$da_updates + 1
         t <- self$da_updates
         w1 <- 1 / (t + t0)
-        accept <- self$chain_accept
-        if (!isTRUE(self$parameters$per_chain)) {
-          accept <- mean(accept)
-        }
+        accept <- if (isTRUE(self$parameters$per_chain)) self$chain_accept else
+          self$mean_accept_stat
         self$hbar <- (1 - w1) * self$hbar +
           w1 * (self$accept_target - accept)
         log_epsilon <- self$da_mu - self$hbar * sqrt(t) / gamma
@@ -136,8 +135,8 @@ windowed_hmc_class <- function() {
           num_leapfrog_steps = hmc_l)
       },
 
-      # greta's run_burst(), recording the mean acceptance of each chain with
-      # a non-finite acceptance counted as 0
+      # greta's run_burst(), also recording the mean acceptance of each chain
+      # with a non-finite acceptance counted as 0
       run_burst = function(n_samples, thin = 1L) {
         param_vec <- unlist(self$sampler_parameter_values())
         self$n_bursts <- self$n_bursts + 1L
@@ -163,10 +162,10 @@ windowed_hmc_class <- function() {
         is_accepted <- as.array(batch_results$trace$is_accepted)
         self$accept_history <- rbind(self$accept_history, is_accepted)
         accept <- pmin(1, exp(log_accept))
+        # greta's: non-finite proposals left out
+        self$mean_accept_stat <- mean(accept, na.rm = TRUE)
         accept[!is.finite(log_accept)] <- 0
-        accept <- matrix(accept, ncol = self$n_chains)
-        self$chain_accept <- colMeans(accept)
-        self$mean_accept_stat <- mean(accept)
+        self$chain_accept <- colMeans(matrix(accept, ncol = self$n_chains))
         self$numerical_rejections <- self$numerical_rejections +
           sum(!is.finite(log_accept))
       }
