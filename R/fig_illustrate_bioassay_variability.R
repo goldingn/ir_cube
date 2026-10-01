@@ -225,7 +225,16 @@ start <- initials(
   beta_mean = as.numeric(mean_start[type_names]),
   log_beta_conc = as.numeric(log(conc_start[type_names])))
 
+# seeded, so the overdispersion estimates the whole pipeline scores against can
+# be reproduced from this script
+set.seed(2026 - 9 - 30)
+# Twice greta's default leapfrog steps (Lmin 5, Lmax 10). The binding
+# constraint is mixing in the hierarchy variances, not warmup: at the default
+# this fit reached worst Rhat 1.083 with minimum effective sample size 211 over
+# 16,000 post-warmup draws. Longer trajectories cost proportionally more time
+# per iteration but decorrelate those parameters.
 rho_draws <- mcmc(m, n_samples = 4000, warmup = 5000, chains = 4,
+                  sampler = hmc(Lmin = 10, Lmax = 20),
                   initial_values = replicate(4, start, simplify = FALSE))
 
 worst_rhat <- max(coda::gelman.diag(rho_draws, multivariate = FALSE,
@@ -245,6 +254,16 @@ rho_type_lower <- rho_summary$quantiles[paste0("rho_type[", seq_len(n_types), ",
 rho_type_upper <- rho_summary$quantiles[paste0("rho_type[", seq_len(n_types), ",1]"),
                                         "97.5%"]
 names(rho_type_mean) <- type_names
+
+# The joint draws, not only the summaries. The hierarchy correlates rho between
+# types, so rebuilding them as independent logit-normals from each type's
+# interval - which is what the noise-share interval used to do - understates the
+# uncertainty in any quantity averaged over types (#12 review).
+rho_type_draws <- do.call(rbind, lapply(rho_draws, function(chain) {
+  chain[, paste0("rho_type[", seq_len(n_types), ",1]"), drop = FALSE]
+}))
+colnames(rho_type_draws) <- type_names
+saveRDS(rho_type_draws, "outputs/bioassay_rho_type_draws.rds")
 
 rho_hierarchical <- data.frame(
   insecticide_type = type_names,

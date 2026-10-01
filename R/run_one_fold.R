@@ -124,30 +124,21 @@ cat(sprintf("%s | fit complete in %.1f hours\n",
 
 dir.create(draws_dir, showWarnings = FALSE, recursive = TRUE)
 
+# Everything fit_fold() returns, under the three labels that identify the fold.
+# That includes the draws object and the greta arrays the predictions came from,
+# so that calculate() can be used on a reloaded fold to predict a quantity that
+# was not asked for at fitting time - the only supported way to predict from a
+# fitted greta model, kept deliberately even though the scoring path reads only
+# the matrices, and the bulk of each file's size.
+#
+# This used to list fit's fourteen fields one by one. Copying them wholesale
+# saves the same names in the same order, since fit_fold() returns them in it
+# (#12 review).
 saveRDS(
-  list(model = "dynamical",
-       experiment = experiment_label,
-       fold = fold_name,
-       # The draws object, and the greta arrays the predictions came from, so
-       # that calculate() can be used on a reloaded fold to predict a quantity
-       # that was not asked for at fitting time. This is the only supported way
-       # to predict from a fitted greta model, so it is kept deliberately even
-       # though the scoring path reads only the matrices below; it is also the
-       # bulk of each file's size.
-       draws = fit$draws,
-       prediction_arrays = fit$prediction_arrays,
-       p_draws = fit$p_draws,
-       rho_class_draws = fit$rho_class_draws,
-       class_id = fit$class_id,
-       test_df = fit$test_df,
-       p_draws_before = fit$p_draws_before,
-       before_df = fit$before_df,
-       convergence = fit$convergence,
-       ess = fit$ess,
-       ess_p = fit$ess_p,
-       ess_rho = fit$ess_rho,
-       n_sampled = fit$n_sampled,
-       n_chains = fit$n_chains),
+  c(list(model = "dynamical",
+         experiment = experiment_label,
+         fold = fold_name),
+    fit),
   destination
 )
 

@@ -37,9 +37,9 @@ save_fold <- function(fit, model, experiment, fold, label = experiment) {
     experiment = label,
     fold = fold,
     p_draws = fit$p_draws,
-    # the overdispersion each null's own residuals imply, a diagnostic only:
-    # every model is scored at the external replicate-based estimate
-    rho_implied = fit$rho_implied,
+    # no fitted overdispersion: every model is scored at the external
+    # replicate-based estimate, and a null that fits its own only buys coverage
+    # by being vague (#12 review)
     test_df = fit$test_df
   )
   file <- file.path(draws_dir,

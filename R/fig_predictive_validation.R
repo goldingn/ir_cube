@@ -26,7 +26,6 @@ scores <- read.csv("outputs/cv_scores.csv")
 aggregated <- read.csv("outputs/cv_aggregate_summary.csv")
 rho_comparison <- read.csv("outputs/cv_rho_comparison.csv")
 by_fold <- read.csv("outputs/cv_by_fold.csv", encoding = "UTF-8")
-skill_by_geometry <- read.csv("outputs/cv_skill_by_geometry.csv")
 
 # The nearest neighbour null is reported twice: as the practice baseline a
 # person would actually apply (one neighbour, the most recent two available
@@ -99,11 +98,13 @@ reliability_plot <- reliability %>%
         y = observed,
         colour = model)
   ) +
-  # the scatter a perfect model would still show, given bioassay noise and the
-  # number of assays in each bin
+  # the scatter a perfect model would still show: the 95% range of the gap
+  # between bin mean observation and bin mean prediction over replicate datasets
+  # drawn from the model's own posterior predictive distribution, so bioassay
+  # noise, overdispersion, posterior uncertainty and the bin size are all in it
   geom_ribbon(
-    aes(ymin = predicted - 1.96 * envelope,
-        ymax = predicted + 1.96 * envelope),
+    aes(ymin = predicted + ppc_lower,
+        ymax = predicted + ppc_upper),
     fill = grey(0.85),
     colour = NA,
     alpha = 0.6
@@ -118,7 +119,7 @@ reliability_plot <- reliability %>%
   labs(
     x = "predicted mortality",
     y = "observed mortality",
-    subtitle = "When the model predicts a mortality, is that the average outcome? Grey band is the scatter bioassay noise alone would produce"
+    subtitle = "When the model predicts a mortality, is that the average outcome? Grey band is the scatter a correct model would still show"
   ) +
   theme_minimal() +
   theme(legend.position = "none")
@@ -156,7 +157,6 @@ table_out <- summaries %>%
     `bioassay noise floor` = round(mse_floor, 4),
     `MSE above the floor` = round(excess, 4),
     `RMS error in the fraction` = round(rms_p, 3),
-    `variance explained vs insecticide mean` = round(skill, 3),
     `Cramer-von Mises` = round(cvm, 2)
   ) %>%
   arrange(experiment, model)
@@ -167,27 +167,32 @@ print(as.data.frame(table_out))
 
 # supplementary figures ----------------------------------------------------
 
-# fitted overdispersion against the external, replicate-based estimate. A
-# fitted value above the external one means the model is absorbing process
-# misfit into the observation process
+# The dynamical model's fitted overdispersion against the external,
+# replicate-based estimate. A fitted value above the external one means the
+# model is absorbing process misfit into the observation process.
+#
+# The dynamical model only. The null models no longer fit an overdispersion of
+# their own: they earn their place on point prediction - mean squared error and
+# variance explained - and fitting one per null made the comparison a contest in
+# vagueness rather than in prediction (#12 review). So this is a diagnostic of
+# the one model, not a comparison across four.
 rho_plot <- rho_comparison %>%
+  filter(model == "dynamical") %>%
   tidy_labels() %>%
   ggplot(
     aes(x = rho_external,
         y = rho_fitted,
-        colour = model,
         shape = insecticide_class)
   ) +
   geom_abline(intercept = 0, slope = 1, linetype = 2, colour = grey(0.6)) +
-  geom_point(size = 3) +
+  geom_point(size = 3, colour = model_colours[["dynamical model"]]) +
   facet_wrap(~ experiment, nrow = 1) +
-  scale_colour_manual(values = model_colours, name = "") +
   scale_shape_discrete(name = "") +
   coord_equal() +
   labs(
     x = "overdispersion estimated from replicate bioassays",
-    y = "overdispersion fitted by the model",
-    title = "Is the model treating its own error as bioassay noise?",
+    y = "overdispersion fitted by the dynamical model",
+    title = "Is the dynamical model treating its own error as bioassay noise?",
     subtitle = "points above the line indicate process misfit absorbed into the observation model"
   ) +
   theme_minimal() +
@@ -252,29 +257,3 @@ fold_plot <- by_fold %>%
 ggsave("figures/CV_by_fold.png", fold_plot, bg = "white",
        width = 8, height = 5)
 
-geometry_plot <- skill_by_geometry %>%
-  filter(axis == "km to nearest same-insecticide training record",
-         n > 50) %>%
-  tidy_labels() %>%
-  ggplot(
-    aes(x = bin,
-        y = excess,
-        colour = model,
-        group = model)
-  ) +
-  geom_line(linewidth = 0.7) +
-  geom_point(size = 2) +
-  facet_wrap(~ experiment, nrow = 1, scales = "free_x") +
-  scale_colour_manual(values = model_colours, name = "") +
-  labs(
-    x = "km to the nearest training bioassay of the same insecticide",
-    y = "mean squared error above the bioassay noise floor",
-    title = "Predictive error against separation from the data",
-    subtitle = "bins with fewer than fifty held-out bioassays are omitted"
-  ) +
-  theme_minimal() +
-  theme(legend.position = "bottom",
-        axis.text.x = element_text(angle = 45, hjust = 1))
-
-ggsave("figures/CV_skill_by_distance.png", geometry_plot, bg = "white",
-       width = 11, height = 4.5)

@@ -77,14 +77,6 @@ scored_experiments <- c("spatial_interpolation", "spatial_blocks",
 rho_source <- rho_lookup()
 cat("overdispersion:", rho_source$source, "\n")
 
-# Every model is scored at that external estimate, so the only thing differing
-# between models is the posterior on the population fraction. Set this to FALSE
-# to score each model at its own fitted overdispersion instead, which is the
-# sensitivity behind the choice: the dynamical model's posterior on p was
-# fitted jointly with its own rho, so the swap is not perfectly clean without a
-# refit, and it is worth reporting both.
-score_at_external_rho <- TRUE
-
 files <- list.files(draws_dir, pattern = "\\.rds$", full.names = TRUE)
 if (length(files) == 0) {
   stop("no draws found in ", draws_dir, "; run R/run_validation_folds.R first")
@@ -110,24 +102,27 @@ score_fold <- function(file) {
   # are analytic. Either way they are not recomputed here
   p_draws <- thin_draws(fold$p_draws)
 
-  # the overdispersion each model's own fit implies, kept for the diagnostic
-  # table: a posterior for the dynamical model, a single fitted value for the
-  # nulls, and absent from folds saved before the two were separated
+  # the overdispersion the fit implies, kept for the diagnostic table: a
+  # posterior for the dynamical model, and a single fitted value for null folds
+  # saved while the nulls still fitted their own. They no longer do - a null
+  # earns its place on point prediction, and letting it choose its own
+  # dispersion made coverage a comparison of vagueness (#12 review) - so folds
+  # written from now on carry none and read as missing here
   rho_fitted <- if (!is.null(fold$rho_class_draws)) {
     # saved compactly as draws by insecticide class, expanded here
     thin_draws(fold$rho_class_draws)[, fold$class_id, drop = FALSE]
   } else if (!is.null(fold$rho_draws)) {
     thin_draws(fold$rho_draws)
-  } else {
+  } else if (!is.null(fold$rho_implied)) {
     matrix(fold$rho_implied, nrow = nrow(p_draws), ncol = nrow(test))
+  } else {
+    matrix(NA_real_, nrow = nrow(p_draws), ncol = nrow(test))
   }
 
+  # every model is scored at the external, replicate-based estimate
   rho_scoring <- rho_for_record(test, rho_source)
-  rho_draws <- if (score_at_external_rho) {
-    matrix(rho_scoring, nrow = nrow(p_draws), ncol = nrow(test), byrow = TRUE)
-  } else {
-    rho_fitted
-  }
+  rho_draws <- matrix(rho_scoring, nrow = nrow(p_draws), ncol = nrow(test),
+                      byrow = TRUE)
 
   summary <- ppd_summary(test$died,
                          test$mosquito_number,
@@ -258,9 +253,7 @@ summaries <- summaries %>%
   group_by(experiment) %>%
   mutate(
     excess = mse - mse_floor,
-    rms_p = sqrt(pmax(excess, 0)),
-    mse_null = mse[model == "intercept"],
-    skill = mse_skill(mse, mse_null, mse_floor)
+    rms_p = sqrt(pmax(excess, 0))
   ) %>%
   ungroup()
 
@@ -269,7 +262,7 @@ write.csv(summaries, "outputs/cv_summary.csv", row.names = FALSE)
 cat("\nsummary by experiment and model:\n")
 print(summaries %>%
         select(experiment, model, n, coverage_95, mean_pit, crps, mse,
-               mse_floor, excess, rms_p, skill, cvm) %>%
+               mse_floor, excess, rms_p, cvm) %>%
         mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
         as.data.frame())
 
@@ -303,18 +296,7 @@ write.csv(coverage_curves, "outputs/cv_coverage.csv", row.names = FALSE)
 # experiment, weighting each fold by its held-out records.
 reliability <- all_scores %>%
   group_by(model, experiment) %>%
-  group_modify(~ {
-    bins <- reliability_bins(.x$predicted, .x$observed, n_bins = 10)
-    # kept for reference: the analytic envelope, which assumes the assays in a
-    # bin are independent and conditions on the prediction being the truth
-    bins$envelope <- reliability_envelope(
-      p = bins$predicted,
-      mosquito_number = median(.x$mosquito_number),
-      k = bins$n,
-      rho = mean(.x$rho_external)
-    )
-    bins
-  }) %>%
+  group_modify(~ reliability_bins(.x$predicted, .x$observed, n_bins = 10)) %>%
   ungroup()
 
 reliability_checks <- bind_rows(lapply(scored, function(entry) {
@@ -336,6 +318,21 @@ reliability_checks <- bind_rows(lapply(scored, function(entry) {
 })) %>%
   mutate(gap = observed - predicted,
          beyond_ppc = gap < ppc_lower | gap > ppc_upper)
+
+# and the same envelope carried onto the pooled bins the figure draws, each
+# fold weighted by its held-out records. An analytic envelope also used to sit
+# on this table; it conditioned on the prediction being the truth, so it could
+# not express posterior uncertainty, and reliability_envelope() is gone with it.
+reliability <- reliability %>%
+  left_join(
+    reliability_checks %>%
+      group_by(model, experiment, bin) %>%
+      summarise(ppc_lower = weighted.mean(ppc_lower, n),
+                ppc_upper = weighted.mean(ppc_upper, n),
+                .groups = "drop"),
+    by = c("model", "experiment", "bin")
+  )
+stopifnot(!anyNA(reliability$ppc_lower))
 
 write.csv(reliability, "outputs/cv_reliability.csv", row.names = FALSE)
 write.csv(reliability_checks, "outputs/cv_reliability_ppc.csv",
@@ -461,10 +458,11 @@ print(rho_comparison %>%
 
 # The pooled numbers hide which folds carry the result, and master reported a
 # per-country and a per-lead-year breakdown that the first version of this
-# pipeline dropped. `excess` is again mean squared error above the noise floor,
-# and `explained` is the share of the intercept null's excess that this model
-# removes, computed within each group so that groups of differing difficulty are
-# not compared on a common denominator (#12 review).
+# pipeline dropped. `excess` is again mean squared error above the noise floor.
+# A per-group share of the intercept null's excess used to sit here too; it was
+# the intercept-referenced, floor-corrected variance explained under another
+# name, and variance_explained.R carries the one definition of that (#12
+# review).
 by_group <- function(scores, ...) {
   scores %>%
     group_by(experiment, ..., model) %>%
@@ -480,10 +478,7 @@ by_group <- function(scores, ...) {
       mse_floor = noise_floor_mse(died, mosquito_number, rho_external),
       .groups = "drop"
     ) %>%
-    group_by(experiment, ...) %>%
-    mutate(excess = mse - mse_floor,
-           explained = 1 - excess / excess[model == "intercept"]) %>%
-    ungroup()
+    mutate(excess = mse - mse_floor)
 }
 
 by_fold <- by_group(all_scores, fold)
@@ -491,8 +486,7 @@ write.csv(by_fold, "outputs/cv_by_fold.csv", row.names = FALSE)
 
 cat("\nby fold:\n")
 print(by_fold %>%
-        select(experiment, fold, model, n, bias, coverage_95, excess,
-               explained) %>%
+        select(experiment, fold, model, n, bias, coverage_95, excess) %>%
         mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
         as.data.frame())
 
@@ -506,8 +500,7 @@ if (nrow(by_year) > 0) {
   cat("\nforecasting, by lead year:\n")
   print(by_year %>%
           select(experiment, year_start, model, n, mean_observed,
-                 mean_predicted, bias,
-                 mean_pit, excess, explained) %>%
+                 mean_predicted, bias, mean_pit, excess) %>%
           mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
           as.data.frame())
 }
@@ -515,95 +508,9 @@ if (nrow(by_year) > 0) {
 
 # uncertainty --------------------------------------------------------------
 
-# Bioassays cluster hard by pixel — the interpolation fold is 1,045 assays in 94
-# pixels — so the number of assays badly overstates the information in a fold,
-# and the differences between models were previously reported as point estimates
-# with nothing to say whether they were distinguishable at all.
-#
-# Resample pixels within each fold, with all three models' scores for a pixel
-# moving together, and take the paired difference in excess mean squared error.
-# Paired because the models are scored on exactly the same held-out records, so
-# the shared difficulty of those records cancels; that is what makes the
-# difference far better determined than either model's excess on its own.
-n_bootstrap <- 2000
-
-bootstrap_excess <- function(scores) {
-
-  wide <- scores %>%
-    select(cell, model, observed, predicted, died, mosquito_number,
-           rho_external) %>%
-    pivot_wider(names_from = model, values_from = predicted,
-                id_cols = c(cell, observed, died, mosquito_number,
-                            rho_external),
-                names_prefix = "p_", values_fn = list) %>%
-    unnest(cols = starts_with("p_"))
-
-  model_names <- sort(unique(scores$model))
-  columns <- paste0("p_", model_names)
-
-  excess_for <- function(data) {
-    floor_mse <- noise_floor_mse(data$died, data$mosquito_number,
-                                 data$rho_external)
-    vapply(columns, function(column) {
-      mean((data$observed - data[[column]]) ^ 2) - floor_mse
-    }, numeric(1))
-  }
-
-  cells <- unique(wide$cell)
-  rows_by_cell <- split(seq_len(nrow(wide)), wide$cell)
-
-  replicates <- t(replicate(n_bootstrap, {
-    picked <- sample(cells, length(cells), replace = TRUE)
-    excess_for(wide[unlist(rows_by_cell[as.character(picked)]), ])
-  }))
-  colnames(replicates) <- model_names
-
-  point <- excess_for(wide)
-  names(point) <- model_names
-  reference <- "intercept"
-
-  data.frame(
-    model = model_names,
-    n_assays = nrow(wide),
-    n_pixels = length(cells),
-    excess = point,
-    excess_se = apply(replicates, 2, sd),
-    excess_lower = apply(replicates, 2, quantile, 0.025),
-    excess_upper = apply(replicates, 2, quantile, 0.975),
-    explained = 1 - point / point[reference],
-    explained_lower = apply(1 - replicates / replicates[, reference], 2,
-                            quantile, 0.025),
-    explained_upper = apply(1 - replicates / replicates[, reference], 2,
-                            quantile, 0.975),
-    difference = point - point[reference],
-    difference_se = apply(replicates - replicates[, reference], 2, sd),
-    probability_worse = colMeans(replicates - replicates[, reference] > 0),
-    row.names = NULL
-  )
-
-}
-
-uncertainty <- bind_rows(
-  all_scores %>%
-    group_by(experiment) %>%
-    group_modify(~ bootstrap_excess(.x)) %>%
-    ungroup() %>%
-    mutate(fold = "pooled", .after = experiment),
-  all_scores %>%
-    group_by(experiment, fold) %>%
-    group_modify(~ bootstrap_excess(.x)) %>%
-    ungroup()
-)
-
-write.csv(uncertainty, "outputs/cv_uncertainty.csv", row.names = FALSE)
-
-cat("\nexcess MSE with a pixel-cluster bootstrap, against the intercept null:\n")
-print(uncertainty %>%
-        transmute(experiment, fold, model, n_pixels,
-                  excess = round(excess, 4),
-                  explained = sprintf("%.2f [%.2f, %.2f]", explained,
-                                      explained_lower, explained_upper),
-                  difference = round(difference, 4),
-                  difference_se = round(difference_se, 4),
-                  probability_worse = round(probability_worse, 2)) %>%
-        as.data.frame())
+# The paired pixel-cluster bootstrap on excess MSE that used to sit here is
+# gone with the intercept-null skill metric it supported. variance_explained.R
+# carries the one bootstrap and the one definition of variance explained; two
+# of each, differing in reference and in floor treatment, was the confusion the
+# review objected to. It also pivoted models wide on value columns, which would
+# have collapsed genuinely duplicate assays had any two matched exactly.

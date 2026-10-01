@@ -22,24 +22,17 @@
 #
 # The floor is the sampling variance of the observed proportion, p(1-p) k_i,
 # with k_i = (1 + (m_i - 1) rho_t) / m_i the beta-binomial design effect over
-# the assay size. What p(1-p) should be is the awkward part. Plugging in the
-# observed proportion gives exactly zero wherever an assay reads 0% or 100% -
-# which, with this much overdispersion, is a large share of the records for the
-# insecticides that sit against the top of the scale - and it is noisy
-# everywhere else. So p is instead regularised: each assay carries the
-# information of m_eff = 1/k_i independent draws, so under a Beta(a_t, b_t)
-# prior on the true proportion the posterior is
-#   Beta(a_t + y_i m_eff, b_t + (1 - y_i) m_eff)
-# and its mean of p(1-p) is AB / ((A+B)(A+B+1)), which is never zero. The prior
-# is fitted by maximum likelihood per insecticide type over all of that type's
-# held-out records, so the floor stays a property of the record rather than of
-# whichever subset is being summarised.
+# the assay size, and it is noise_floor_mse() from validation_functions.R - the
+# same estimator every other script uses. See the note above that function for
+# why: it is exactly unbiased for a subset's mean sampling variance and assumes
+# nothing about how p is distributed, which matters because p is bimodal for
+# DDT and Alpha-cypermethrin.
 #
-# This is the honest estimator, not a fix for the saturated insecticides: for
-# Fenitrothion in the interpolation fold the floor exceeds the observed
-# variance however p is estimated, because a constant rho overstates assay
-# noise as mortality approaches 100%. Those cells are excluded from the
-# per-insecticide figure by the rule below rather than papered over.
+# A constant rho overstates assay noise as mortality approaches 100%, so for the
+# near-saturated insecticides the floor can exceed the observed variance however
+# p is estimated - Fenitrothion in the interpolation fold does. Those cells are
+# excluded from the per-insecticide figure by the rule below rather than papered
+# over.
 #
 # Writes outputs/cv_variance_explained.csv (pooled per experiment) and
 # outputs/cv_variance_explained_by_insecticide.csv.
@@ -90,12 +83,31 @@ models <- c(dynamical = "dynamical model",
 # rho_table, not rho_lookup: the latter is the function that supplies it.
 rho_spec <- rho_lookup()
 rho_key <- rho_spec$key
-rho_table <- rho_spec$table %>%
-  mutate(se_logit = (qlogis(rho_upper) - qlogis(rho_lower)) / (2 * 1.96))
+rho_table <- rho_spec$table
+
+# the joint posterior of rho by type, saved by the fit that produced it
+rho_draws_file <- "outputs/bioassay_rho_type_draws.rds"
+if (!file.exists(rho_draws_file)) {
+  stop("no rho draws at ", rho_draws_file,
+       "; run R/fig_illustrate_bioassay_variability.R first")
+}
+rho_draws <- readRDS(rho_draws_file)
+stopifnot(all(rho_table$key %in% colnames(rho_draws)))
 cat("overdispersion used for the noise share:", rho_spec$source, "\n")
 
 
 # assemble the held-out records, with one prediction column per model ---------
+
+# the key identifying a held-out assay, so that predictions from different
+# models are matched on the record rather than on row order
+record_key <- function(x) {
+  columns <- c("cell", "year_start", "insecticide_type", "died",
+               "mosquito_number")
+  # paste() drops a NULL argument silently, so a missing column would make two
+  # keys agree on fewer fields, or on none at all
+  stopifnot(all(columns %in% names(x)))
+  do.call(paste, x[columns])
+}
 
 read_fold <- function(model, experiment, fold) {
   file <- file.path(draws_dir, sprintf("%s__%s__%s.rds", model, experiment, fold))
@@ -117,7 +129,17 @@ records <- bind_rows(lapply(experiments, function(spec) {
     wide <- predictions %>%
       pivot_wider(names_from = model, values_from = predicted,
                   names_prefix = "p_")
+    # every model must describe the same records, in the same order. They do,
+    # being built from one fold definition, but nothing else enforces it and a
+    # silent misalignment would swap predictions between assays (#12 review).
     stopifnot(nrow(wide) == nrow(reference))
+    for (model in names(models)) {
+      other <- readRDS(file.path(draws_dir, sprintf("%s__%s__%s.rds", model,
+                                                    spec$experiment, fold)))
+      stopifnot(identical(record_key(other$test_df), record_key(reference)))
+      rm(other)
+      invisible(gc())
+    }
 
     reference %>%
       transmute(experiment = spec$label, fold = fold,
@@ -145,57 +167,20 @@ cat(sprintf("%i held-out records across %i experiments\n",
 
 # the two quantities ---------------------------------------------------------
 
-# beta-binomial design effect over the assay size: the variance of the observed
-# proportion is p(1-p) k
-design_effect <- function(m, rho) (1 + (m - 1) * rho) / m
-
-# marginal likelihood of a Beta(a, b) prior on the true proportion, at the
-# effective sample size the overdispersion leaves each assay
-beta_prior_nll <- function(par, observed, m_eff) {
-  a <- exp(par[1])
-  b <- exp(par[2])
-  successes <- observed * m_eff
-  -sum(lbeta(a + successes, b + m_eff - successes) - lbeta(a, b))
-}
-
-fit_beta_priors <- function(data) {
-  bind_rows(lapply(split(data, data[[rho_key]]), function(d) {
-    m_eff <- 1 / design_effect(d$mosquito_number, d$rho_type)
-    fit <- optim(c(0, 0), beta_prior_nll, observed = d$observed, m_eff = m_eff,
-                 method = "Nelder-Mead", control = list(reltol = 1e-10))
-    data.frame(key = d[[rho_key]][1], a = exp(fit$par[1]), b = exp(fit$par[2]),
-               prior_mean = exp(fit$par[1]) / sum(exp(fit$par)),
-               converged = fit$convergence == 0, records = nrow(d))
-  }))
-}
-
-# per-record floor contributions at a given vector of rho values. The Beta
-# prior is held at its fit under the point estimate of rho while rho varies for
-# the interval: refitting it inside every posterior draw would cost thousands of
-# optimisations for a second-order effect on the prior.
-floor_contributions <- function(data, rho_vector) {
-  k <- design_effect(data$mosquito_number, rho_vector)
-  usable <- data$mosquito_number > 1 & is.finite(k) & k > 0 & k < 1
-  out <- rep(NA_real_, nrow(data))
-  m_eff <- 1 / k[usable]
-  shape_a <- data$a[usable] + data$observed[usable] * m_eff
-  shape_b <- data$b[usable] + (1 - data$observed[usable]) * m_eff
-  out[usable] <- shape_a * shape_b /
-    ((shape_a + shape_b) * (shape_a + shape_b + 1)) * k[usable]
-  out
-}
-
-# fitted once, per insecticide type, over all of that type's held-out records
-beta_priors <- fit_beta_priors(records)
-stopifnot(all(beta_priors$converged))
-records <- records %>%
-  left_join(beta_priors %>% select(key, a, b), by = setNames("key", rho_key))
-stopifnot(!any(is.na(records$a)), !any(is.na(records$b)))
-
-cat("\nBeta prior on the true proportion, fitted per insecticide type:\n")
-print(as.data.frame(beta_priors %>%
-  transmute(type = key, records, a = round(a, 2), b = round(b, 2),
-            prior_mean = round(prior_mean, 3))), row.names = FALSE)
+# The noise floor is noise_floor_mse() from validation_functions.R, the same
+# estimator the rest of the pipeline uses. It is y(1-y) k / (1-k), and since
+# E[y(1-y)] = p(1-p)(1-k) the division makes it exactly unbiased for the mean
+# sampling variance of a subset, with no assumption about how p is distributed.
+#
+# It replaces an empirical Bayes floor fitted here: a Beta(a_t, b_t) prior per
+# insecticide type with each assay treated as 1/k independent draws. That was
+# introduced because the plug-in is exactly zero for an assay reading 0% or
+# 100%, which a large share of records for the near-saturated insecticides do.
+# But the zero is a per-record artefact and only the subset mean is ever used,
+# where the de-attenuation on the unsaturated records compensates for it
+# exactly - which is what makes the plug-in unbiased. Simulation put the Beta
+# version 1.4 to 9.6% high depending on rho, and it is the more fragile of the
+# two where p is bimodal, as it is for DDT and Alpha-cypermethrin (#12 review).
 
 explained_for <- function(data) {
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
@@ -217,19 +202,23 @@ bootstrap_explained <- function(data) {
   replicates
 }
 
-# posterior draws of the noise share, propagating rho only. The logit-scale
-# standard errors come from the fit that produced rho, so this carries the
-# uncertainty in the overdispersion but treats Var(y) as known - that is where
+# Posterior draws of the noise share, propagating rho only: this carries the
+# uncertainty in the overdispersion but treats Var(y) as known, which is where
 # essentially all of the floor's uncertainty sits.
+#
+# The draws come from the hierarchical fit itself rather than being rebuilt as
+# independent logit-normals from each type's interval. The hierarchy correlates
+# rho between types, so independent draws understate the uncertainty in a share
+# averaged over types (#12 review).
 noise_posterior <- function(data) {
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
-  index <- match(data[[rho_key]], rho_table$key)
-  centre <- qlogis(rho_table$rho)
-  spread <- rho_table$se_logit
-  vapply(seq_len(n_posterior), function(i) {
-    drawn <- plogis(rnorm(nrow(rho_table), centre, spread))
-    100 * mean(floor_contributions(data, drawn[index]), na.rm = TRUE) / variance
-  }, numeric(1))
+  index <- match(data$insecticide_type, colnames(rho_draws))
+  stopifnot(!any(is.na(index)))
+  vapply(sample(nrow(rho_draws), n_posterior, replace = nrow(rho_draws) < n_posterior),
+         function(i) {
+           100 * noise_floor_mse(data$died, data$mosquito_number,
+                                 rho_draws[i, index]) / variance
+         }, numeric(1))
 }
 
 summarise_subset <- function(data, label, stratum = NA_character_) {
@@ -238,8 +227,8 @@ summarise_subset <- function(data, label, stratum = NA_character_) {
   point <- explained_for(data)
   replicates <- bootstrap_explained(data)
   noise <- noise_posterior(data)
-  noise_point <- 100 * mean(floor_contributions(data, data$rho_type),
-                            na.rm = TRUE) / variance
+  noise_point <- 100 * noise_floor_mse(data$died, data$mosquito_number,
+                                       data$rho_type) / variance
 
   bind_rows(
     bind_rows(lapply(prediction_columns, function(column) {
