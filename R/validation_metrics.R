@@ -81,9 +81,24 @@ files <- list.files(draws_dir, pattern = "\\.rds$", full.names = TRUE)
 if (length(files) == 0) {
   stop("no draws found in ", draws_dir, "; run R/run_validation_folds.R first")
 }
+names(files) <- sub("__.*$", "", basename(files))
+# the models saved elsewhere (extra_draws, in validation_functions.R), named by
+# the model they are reported as
+files <- c(files, extra_draws_files())
+# They draw their random numbers from a stream of their own and leave the main
+# stream where it was, so every number for the models above is the same whether
+# or not they are scored.
+own_stream <- function(model, expr) {
+  if (!model %in% names(extra_draws)) return(expr)
+  saved <- .Random.seed
+  on.exit(assign(".Random.seed", saved, envir = globalenv()))
+  set.seed(sum(utf8ToInt(model)))
+  expr
+}
+
 # refuse anything outside the three experiments rather than silently scoring it
 experiment_of <- function(file) {
-  sub("^[a-z_]+__([a-z_]+)__.*$", "\\1", basename(file))
+  vapply(strsplit(basename(file), "__"), `[`, "", 2)
 }
 stopifnot(all(experiment_of(files) %in% scored_experiments))
 
@@ -92,9 +107,11 @@ cat(sprintf("scoring %i saved folds\n", length(files)))
 
 # per record ---------------------------------------------------------------
 
-score_fold <- function(file) {
+score_fold <- function(file, model) {
 
   fold <- readRDS(file)
+  # reported under the name it was listed by, not the one saved in the file
+  fold$model <- model
   test <- fold$test_df
 
   # predictions come from the saved object. For model folds these were produced
@@ -178,12 +195,12 @@ score_fold <- function(file) {
 
 # scored one at a time, with an explicit collection between folds: reading a
 # model fold means holding its 1.8 GB saved object briefly
-scored <- lapply(files, function(file) {
+scored <- lapply(seq_along(files), function(i) {
   cat(sprintf("%s | scoring %s\n", format(Sys.time(), "%H:%M:%S"),
-              basename(file)))
+              basename(files[i])))
   flush(stdout())
   on.exit(gc(verbose = FALSE))
-  score_fold(file)
+  own_stream(names(files)[i], score_fold(files[i], names(files)[i]))
 })
 names(scored) <- basename(files)
 
@@ -303,7 +320,7 @@ reliability_checks <- bind_rows(lapply(scored, function(entry) {
   bins <- reliability_bins(colMeans(entry$p_draws),
                            entry$scores$observed,
                            n_bins = 10)
-  bind_cols(
+  own_stream(entry$fold$model, bind_cols(
     data.frame(model = entry$fold$model,
                experiment = entry$fold$experiment,
                fold = entry$fold$fold),
@@ -314,7 +331,7 @@ reliability_checks <- bind_rows(lapply(scored, function(entry) {
                     rho = entry$rho_scoring,
                     n_bins = 10,
                     n_rep = 200)
-  )
+  ))
 })) %>%
   mutate(gap = observed - predicted,
          beyond_ppc = gap < ppc_lower | gap > ppc_upper)
@@ -374,7 +391,10 @@ aggregate_fold <- function(entry, grouping) {
 }
 
 aggregated <- bind_rows(
-  unname(lapply(scored, aggregate_fold, grouping = "country_year"))
+  unname(lapply(scored, function(entry) {
+    own_stream(entry$fold$model,
+               aggregate_fold(entry, grouping = "country_year"))
+  }))
 )
 
 write.csv(aggregated, "outputs/cv_aggregate.csv", row.names = FALSE)

@@ -46,7 +46,8 @@ model_axis_labels <- c(
   "insecticide mean"        = "insecticide\nmean",
   "nearest recent survey"   = "nearest\nrecent\nsurvey",
   "nearest surveys, best k" = "nearest\nsurveys,\nbest k",
-  "dynamical model"         = "dynamical\nmodel")
+  "dynamical model"         = "dynamical\nmodel",
+  "two-stage model"         = "two-stage\nmodel")
 
 # lay the bars out within an experiment, and give the noise block one position
 # per experiment so it is drawn once per bar group
@@ -72,7 +73,7 @@ lay_out <- function(data, model_levels) {
 # between experiments. It has to be a good multiple of the gap between bars
 # within a panel or the grouping does not read, and since that gap is a fixed
 # share of a panel whose width depends on how many bars it holds, the spacing
-# has to be set per figure: 22 pt over four bars, 36 pt over two.
+# has to be set per figure: 18 pt over five bars, 28 pt over three.
 build_figure <- function(data, model_levels,
                          key_model = "dynamical model",
                          panel_spacing = 22,
@@ -117,10 +118,12 @@ build_figure <- function(data, model_levels,
     theme(panel.spacing.x = unit(panel_spacing, "pt"))
 }
 
+# the key is aligned against the last bar in its panel, which it sits beside
 main <- build_figure(
   pooled,
-  c("nearest recent survey", "dynamical model"),
-  panel_spacing = 36)
+  c("nearest recent survey", "dynamical model", "two-stage model"),
+  key_model = "two-stage model",
+  panel_spacing = 28)
 
 # For the caption. Out-of-sample predictive skill against the bioassay noise
 # ceiling, for the dynamical model and the baseline a person would apply
@@ -152,14 +155,15 @@ main <- build_figure(
 # two pool two folds apiece - the two sub-national blocks, and the forecast
 # origins at 2014 and 2018 - scored together over their combined held-out
 # records; outputs/cv_variance_explained_by_fold.csv has them separately.
-ggsave("figures/CV_variance_explained.png", main, width = 8.2, height = 4.2,
+ggsave("figures/CV_variance_explained.png", main, width = 9.4, height = 4.2,
        dpi = 300, bg = "white")
 
 all_models <- build_figure(
   pooled,
   c("insecticide mean", "nearest recent survey", "dynamical model",
-    "nearest surveys, best k"),
+    "two-stage model", "nearest surveys, best k"),
   key_model = "nearest surveys, best k",
+  panel_spacing = 18,
   # the key is aligned against the best-k bar, which leaves an unexplained
   # band too short to hold its label on one line
   wrap_key = c(FALSE, TRUE))
@@ -173,7 +177,7 @@ all_models <- build_figure(
 # upper bound on what any such rule could achieve rather than an achievable
 # skill. The key is aligned against it for that reason.
 ggsave("figures/CV_variance_explained_all_models.png", all_models,
-       width = 9.6, height = 4.4, dpi = 300, bg = "white")
+       width = 11.4, height = 4.4, dpi = 300, bg = "white")
 
 # per insecticide, one panel per experiment ----------------------------------
 
@@ -205,20 +209,21 @@ key_experiment <- by_insecticide %>%
   slice(1) %>%
   pull(experiment)
 
+insecticide_models <- c("nearest recent survey", "dynamical model",
+                        "two-stage model")
+
 panel_for <- function(experiment_label, show_key = FALSE) {
 
   data <- by_insecticide %>% filter(experiment == experiment_label)
   if (nrow(data) == 0) return(NULL)
 
   models <- data %>%
-    filter(kind == "model",
-           quantity %in% c("dynamical model", "nearest recent survey")) %>%
-    mutate(quantity = factor(quantity,
-             levels = c("nearest recent survey", "dynamical model"))) %>%
+    filter(kind == "model", quantity %in% insecticide_models) %>%
+    mutate(quantity = factor(quantity, levels = insecticide_models)) %>%
     arrange(stratum, quantity) %>%
     group_by(stratum) %>% mutate(offset = row_number()) %>% ungroup() %>%
     mutate(position = match(stratum, insecticide_levels) +
-             (offset - 1.5) * 0.38)
+             (offset - 2) * 0.28)
   noise <- data %>% filter(kind == "noise") %>%
     select(stratum, estimate, lower, upper, assays, pixels) %>%
     right_join(models %>% select(stratum, position), by = "stratum") %>%
@@ -234,13 +239,12 @@ panel_for <- function(experiment_label, show_key = FALSE) {
   key_x <- length(insecticide_levels) + 0.45
 
   ggplot() +
-    bar_layers(laid, width = 0.32) +
+    bar_layers(laid, width = 0.24) +
     (if (show_key) {
       region_key(reference$estimate[1], reference_noise$estimate[1], key_x,
                  label_size = 2.3, wrap = TRUE)
     } else NULL) +
-    scale_fill_manual(values = model_colours,
-                      breaks = c("nearest recent survey", "dynamical model")) +
+    scale_fill_manual(values = model_colours, breaks = insecticide_models) +
     scale_x_continuous(
       breaks = seq_along(insecticide_levels),
       labels = gsub("-", "-\n", insecticide_levels),
@@ -272,8 +276,8 @@ by_type_figure <- wrap_plots(panels, ncol = 1)
 # For the caption. The same comparison broken down by insecticide, one panel
 # per experiment, grouped by insecticide class. Only cells where the comparison
 # can be read are drawn: at least half the observed spread in held-out mortality
-# has to be real variation rather than assay noise, and both models' 95%
-# intervals have to be narrower than 100 points. That excludes 12 of the 27
+# has to be real variation rather than assay noise, and the 95% intervals of the
+# dynamical model and the nearest survey have to be narrower than 100 points. That excludes 12 of the 27
 # experiment-insecticide cells, and Fenitrothion and Malathion in every
 # experiment - for Fenitrothion because its held-out mortality barely varies
 # (standard deviation 2.3 points in the interpolation fold, 83% of assays

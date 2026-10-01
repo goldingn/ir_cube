@@ -69,12 +69,14 @@ experiments <- list(
 # each contrast is the first model less the second, in percentage points of the
 # observed variance
 contrasts <- list(
+  c("two_stage", "dynamical"),
   c("dynamical", "nearest_neighbour"),
   c("dynamical", "nearest_neighbour_oracle"),
   c("dynamical", "intercept"),
   c("nearest_neighbour", "intercept"))
 
 models <- c(dynamical = "dynamical model",
+            two_stage = "two-stage model",
             nearest_neighbour = "nearest recent survey",
             nearest_neighbour_oracle = "nearest surveys, best k",
             intercept = "insecticide mean")
@@ -110,7 +112,7 @@ record_key <- function(x) {
 }
 
 read_fold <- function(model, experiment, fold) {
-  file <- file.path(draws_dir, sprintf("%s__%s__%s.rds", model, experiment, fold))
+  file <- draws_file(model, experiment, fold, draws_dir)
   if (!file.exists(file)) return(NULL)
   x <- readRDS(file)
   stopifnot(ncol(x$p_draws) == nrow(x$test_df))
@@ -121,8 +123,8 @@ read_fold <- function(model, experiment, fold) {
 records <- bind_rows(lapply(experiments, function(spec) {
   bind_rows(lapply(spec$folds, function(fold) {
 
-    reference <- readRDS(file.path(
-      draws_dir, sprintf("dynamical__%s__%s.rds", spec$experiment, fold)))$test_df
+    reference <- readRDS(draws_file("dynamical", spec$experiment, fold,
+                                    draws_dir))$test_df
 
     predictions <- bind_rows(lapply(names(models), read_fold,
                                     experiment = spec$experiment, fold = fold))
@@ -134,8 +136,7 @@ records <- bind_rows(lapply(experiments, function(spec) {
     # silent misalignment would swap predictions between assays (#12 review).
     stopifnot(nrow(wide) == nrow(reference))
     for (model in names(models)) {
-      other <- readRDS(file.path(draws_dir, sprintf("%s__%s__%s.rds", model,
-                                                    spec$experiment, fold)))
+      other <- readRDS(draws_file(model, spec$experiment, fold, draws_dir))
       stopifnot(identical(record_key(other$test_df), record_key(reference)))
       rm(other)
       invisible(gc())

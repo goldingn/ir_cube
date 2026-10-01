@@ -451,3 +451,34 @@ rho_for_record <- function(data, lookup) {
   stopifnot(!any(is.na(out)))
   out
 }
+
+
+# where the saved draws are -------------------------------------------------
+
+# Models scored beside the folds in outputs/cv_draws, named by the model they are
+# reported as, with the path prefix of their files, <prefix>__<experiment>__<fold>.rds.
+# Only the final two-stage model is listed; its variants and mesh runs are
+# compared in R/two_stage_metrics.R.
+extra_draws <- c(
+  two_stage = "outputs/cv_draws_two_stage/two_stage_omega_xi_u_p_pql_mesh-omega5000_xi2500"
+)
+
+# the saved draws of one model on one fold
+draws_file <- function(model, experiment, fold, draws_dir = "outputs/cv_draws") {
+  prefix <- if (model %in% names(extra_draws)) {
+    extra_draws[[model]]
+  } else {
+    file.path(draws_dir, model)
+  }
+  sprintf("%s__%s__%s.rds", prefix, experiment, fold)
+}
+
+# every saved fold of the extra models, named by model
+extra_draws_files <- function() {
+  unlist(lapply(names(extra_draws), function(model) {
+    prefix <- extra_draws[[model]]
+    found <- list.files(dirname(prefix), pattern = "\\.rds$", full.names = TRUE)
+    found <- found[startsWith(basename(found), paste0(basename(prefix), "__"))]
+    setNames(found, rep(model, length(found)))
+  }))
+}
