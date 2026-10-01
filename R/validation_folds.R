@@ -32,12 +32,6 @@ ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
-# an Africa polygon for plotting
-gadm_polys <- readRDS("data/clean/gadm_polys.RDS")
-africa <- gadm_polys %>%
-  # st_combine() %>%
-  st_union()
-
 baseline_year <- 1995
 final_data_year <- 2024
 
@@ -151,45 +145,6 @@ countries_to_validate <- country_bioassay_counts %>%
 
 countries_to_validate
 
-# make a list of training and test datasets for out-of-sample validation
-
-# Subset a dataset based on values in a field. If keep == TRUE (the default),
-# return the subset of the dataset where field_name (a character for the column
-# name) is one of the elements in field_values (a character vector), if keep =
-# FALSE, return everything except for those records. When keep = TRUE, records
-# are only kept if they are after 'keep_min_year' - to optionally limit test
-# sets to recent years
-split_data <- function(field_values,
-                       field_name,
-                       dataset,
-                       keep = TRUE,
-                       keep_min_year = 1900) {
-  
-  if (keep) {
-    
-    subsetted <- dataset %>%
-      filter_at(
-        vars(starts_with(field_name)),
-        any_vars(. %in% field_values)
-      ) %>%
-      filter(
-        year_start >= keep_min_year
-      )
-    
-  } else {
-    
-    subsetted <- dataset %>%
-      filter_at(
-        vars(starts_with(field_name)),
-        any_vars(!(. %in% field_values))
-      )
-    
-  }
-  
-  subsetted
-  
-}
-
 # Leave-one-country-out is not defined here. It confounds spatial prediction
 # with the country initial condition: a held-out country's init_country_raw has
 # no data, reverts to the region prior, and that error is amplified through
@@ -285,74 +240,65 @@ df_interp %>%
   )
   
 
-# plot the training and test split, with circles and coloured points.
-mask_poly <- mask %>%
-  as.polygons() %>%
-  simplifyGeom(tolerance = 0.05)
-
-train_test_col <- RColorBrewer::brewer.pal(3, "Set1")[1:2]
-
-interp_plot <- df_interp %>%
-  st_as_sf(
-    coords = c("longitude", "latitude"),
-    crs = crs(mask)
-  ) %>%
-  arrange(fold) %>%
-  ggplot(
-    aes(
-      colour = fold
-    )
-  ) +
-  geom_spatvector(
-    data = mask_poly,
-    colour = "transparent",
-    fill = grey(0.9)
-  ) +
-  # geom_spatraster(
-  #   data = mask
-  # ) +
-  # scale_fill_gradient(
-  #   low = grey(0.95),
-  #   high = grey(0.95),
-  #   na.value = "transparent",
-  #   guide = "none"
-  # ) +
-  geom_sf() +
-  scale_colour_manual(
-    values = c(
-      "training" = train_test_col[2],
-      "test" = train_test_col[1],
-      "excluded" = grey(0.8)
-    )
-  ) +
-  coord_sf(
-    ylim = range(df$latitude)
-  ) +
-  theme_minimal()
-
-interp_plot_small <- interp_plot +
-  coord_sf(
-    xlim = c(0, 5),
-    ylim = c(5, 10)
-  )
-
+# plot the training and test split, with circles and coloured points. Built
+# inside the condition: polygonising the mask took a few seconds on every
+# source() of this file, including from the fitting scripts, which never draw it
 if (plot_folds) {
+
+  mask_poly <- mask %>%
+    as.polygons() %>%
+    simplifyGeom(tolerance = 0.05)
+
+  train_test_col <- RColorBrewer::brewer.pal(3, "Set1")[1:2]
+
+  interp_plot <- df_interp %>%
+    st_as_sf(
+      coords = c("longitude", "latitude"),
+      crs = crs(mask)
+    ) %>%
+    arrange(fold) %>%
+    ggplot(
+      aes(
+        colour = fold
+      )
+    ) +
+    geom_spatvector(
+      data = mask_poly,
+      colour = "transparent",
+      fill = grey(0.9)
+    ) +
+    geom_sf() +
+    scale_colour_manual(
+      values = c(
+        "training" = train_test_col[2],
+        "test" = train_test_col[1],
+        "excluded" = grey(0.8)
+      )
+    ) +
+    coord_sf(
+      ylim = range(df$latitude)
+    ) +
+    theme_minimal()
+
+  interp_plot_small <- interp_plot +
+    coord_sf(
+      xlim = c(0, 5),
+      ylim = c(5, 10)
+    )
+
   print(interp_plot / interp_plot_small)
+
 }
 
+# `fold` already encodes the test year cutoff, so this is just the two sides of
+# that column. It used to go through a general split_data() helper, whose other
+# modes - a name prefix match across several columns, exclusion rather than
+# selection, and a minimum year - had no remaining caller (#12 review)
 spatial_interpolation <- list(
-  training = split_data(
-    field_values = "training",
-    field_name = "fold",
-    dataset = df_interp,
-    keep = TRUE
-  ),
-  test = split_data(
-    field_values = "test",
-    field_name = "fold",
-    dataset = df_interp,
-    keep = TRUE
-  )
+  training = df_interp %>%
+    filter(fold == "training"),
+  test = df_interp %>%
+    filter(fold == "test")
 )
 
 
@@ -443,7 +389,7 @@ forecasting_fold <- function(cut_year, window, data = df) {
 # groups against 1,436 at a 2013 origin. Five-year windows give 30-50% more
 # paired pixels and a signal roughly 5/3 larger, because the gap between window
 # midpoints is the window length, and a five-year window spans the pause as well
-# as the decline either side of it. See R/fig_change_power.R, which measures
+# as the decline either side of it. The power analysis behind this, which measures
 # this, and the PR #12 discussion.
 #
 # The two cuts train on 52% and 82% of the data and hold out windows whose true
