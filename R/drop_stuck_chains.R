@@ -14,6 +14,10 @@
 # both leave them out; the original is kept as `draws_all_chains`, and the
 # chains in `stuck_chains`.
 #
+# DROP_CHAINS="1,2" names the chains to drop instead, e.g. chains trapped in a
+# minor mode of the posterior (lower log posterior), which are not stuck but
+# disagree with the others.
+#
 # A file already processed, or with no stuck chain, is left as it is. Run with
 # the greta library (R/packages.R), which the saved objects need.
 
@@ -24,6 +28,15 @@ suppressMessages({
 })
 source("R/dynamical_predictions.R")
 
+chains_to_drop <- function(draws) {
+  named <- Sys.getenv("DROP_CHAINS")
+  if (nzchar(named)) {
+    as.integer(strsplit(named, ",")[[1]])
+  } else {
+    stuck_chains(draws)
+  }
+}
+
 for (file in commandArgs(trailingOnly = TRUE)) {
 
   if (grepl("\\.RData$", file)) {
@@ -33,7 +46,7 @@ for (file in commandArgs(trailingOnly = TRUE)) {
       cat(file, ": already processed, chains", fit$stuck_chains, "dropped\n")
       next
     }
-    stuck <- stuck_chains(fit$draws)
+    stuck <- chains_to_drop(fit$draws)
     if (length(stuck) == 0) {
       cat(file, ": no stuck chains\n")
       next
@@ -55,7 +68,7 @@ for (file in commandArgs(trailingOnly = TRUE)) {
     cat(file, ": already processed, chains", fold$stuck_chains, "dropped\n")
     next
   }
-  stuck <- stuck_chains(fold$draws)
+  stuck <- chains_to_drop(fold$draws)
   if (length(stuck) == 0) {
     cat(file, ": no stuck chains\n")
     next
