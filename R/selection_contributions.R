@@ -52,7 +52,11 @@ fits <- tribble(
   "r1_unconstrained", "temporary/fitted_model_unconstrained_init.RData",
   NA_character_, "Round 1, unconstrained init",
   "legacy", "temporary/fitted_model_legacy.RData", NA_character_,
-  "Before the PR")
+  "Before the PR",
+  "r2_dhalf5", "outputs/fits/r2_sens_dhalf5.RData", NA_character_,
+  "Round 2, d_half 5",
+  "r2_dhalf200", "outputs/fits/r2_sens_dhalf200.RData", NA_character_,
+  "Round 2, d_half 200")
 cache_dir <- "outputs/selection_contributions"
 n_draws_keep <- 400
 report_years <- c(2010, 2020, 2024)
@@ -314,7 +318,7 @@ p <- ggplot(plot_data, aes(term, median, fill = fit)) +
                 position = position_dodge(0.8), width = 0.25,
                 linewidth = 0.3) +
   facet_grid(type ~ measure) +
-  scale_fill_manual(values = c("#08306b", "#4292c6", "#9ecae1", "#bdbdbd"),
+  scale_fill_manual(values = c("#08306b", "#4292c6", "#9ecae1", "#bdbdbd", "#e6550d", "#fdae6b"),
                     name = NULL) +
   scale_y_continuous(labels = scales::percent) +
   labs(x = NULL, y = "Share of cumulative selection, 1995-2020",
