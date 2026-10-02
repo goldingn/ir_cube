@@ -266,6 +266,52 @@ physical cores the four fits ran at 12-15 s per iteration each. Stopping two
 of the four for 7 minutes roughly doubled the other two's rate, so the
 machine has about 8 cores' worth of TensorFlow throughput, not 16.
 
+### Constrained refit, October 2026: two modes in the mortality floor
+
+The refit with the initial-state coefficients constrained to be at most 0
+(`12e51b4`) has two posterior modes: the mortality floor near 0.25-0.32 with
+more susceptible initial country levels, or near 0.001-0.002. In the full fit
+two chains found each; the low-floor chains had a log posterior about 59
+higher, and the other two were dropped (`DROP_CHAINS=1,2 Rscript
+R/drop_stuck_chains.R`; the original is kept as `draws_all_chains`, and in
+`temporary/fitted_model_raw_constrained.RData`). The folds and the half-length
+sensitivity fits (4 chains, 2,000 + 1,500), run on RunPod, checked the same
+way: per-chain means of every parameter, rank Rhat (`posterior`), and where
+chains disagree the log posterior per chain (60 draws each).
+
+| fit | floor per chain | chains kept | worst rank Rhat before / after |
+|---|---|---|---|
+| full data | 0.269, 0.269, 0.0015, 0.0016 | 3, 4 | 1.74 / 1.03 |
+| interpolation | 0.002 × 4 | all | 1.007 |
+| spatial blocks 1 | 0.246 × 4 | all | 1.005 |
+| spatial blocks 2 | 0.300 × 4 | all | 1.005 |
+| forecasting 2014 | 0.0014 × 4 | all | 1.004 |
+| forecasting 2018 | 0.0008 × 4 | all | 1.008 |
+| d_half 5 | 0.002 × 4 | all | 1.037 |
+| d_half 200 | 0.318 × 4 | all | 1.010 |
+| crop trend 0.37 | 0.002 × 4 | all | 1.020 |
+| crop and population trends 0.37 | 0.0012 × 4 | all | 1.023 |
+| net weight 0.47 | 0.272 × 4 | all | 1.015 |
+| legacy net use | 0.001 × 4 | all | 1.024 |
+| no reversion | 0.268, 0.268, 0.0015, 0.269 | 3 | 1.54 / 1.06 (split, one chain) |
+
+Without reversion the low-floor chain had a log posterior about 60 higher than
+the other three (−94,284 against −94,342 to −94,350), as in the full fit, so it
+alone is kept. Rhat after the drop is the split Rhat of that chain.
+
+Every other fit has all four chains in one mode, so no chain can be dropped,
+but five of them are in the high-floor mode: both block folds, d_half 200 and
+net weight 0.47. Whether that is the minor mode in those fits is not known.
+Evaluating each one's log posterior at the full fit's draws (which were not
+fitted to that data) put both of the full fit's modes 65-1,160 below the
+fit's own draws, and which of the two was higher varied: the low floor by 35
+(blocks 1) and 100 (net weight 0.47), the high floor by 30 (blocks 2) and 420
+(d_half 200). On the interpolation fold, a low-floor fit, the full fit's
+low-floor draws were 45-95 below its own and the high-floor ones 140-150
+below. So that check cannot settle it. The comparisons involving those fits — the block
+folds against the previous rounds, and those two sensitivities against the
+full fit — are partly a comparison between modes.
+
 ## 4. What is being changed, and why
 
 The review of PR #12 found one blocking defect and one set of experiments that
