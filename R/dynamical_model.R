@@ -223,14 +223,16 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # one survives), so a floor f makes it f + (1 - f) q_t: f is the mortality
   # of a fully resistant population, from resistance mechanisms that give
   # finite protection at the discriminating dose, and from deaths by handling
-  # rather than insecticide. Beta(1, 9): the density is highest at 0 (no floor,
-  # the model without it), with mean 0.1, P(f < 0.2) = 0.87 and
-  # P(f < 0.3) = 0.96. WHO tests with control mortality above 20% are
-  # discarded and those at 5-20% Abbott-corrected, so handling mortality in the
-  # data should be below 0.2, and the discriminating doses are set to kill
-  # susceptible mosquitoes with a margin, not resistant ones.
+  # rather than insecticide. Beta(1, 49): the density is highest at 0 (no
+  # floor, the model without it), with mean 0.02, P(f > 0.1) = 0.006 and
+  # P(f > 0.2) < 1e-4. WHO tests with control mortality above 20% are
+  # discarded and those at 5-20% Abbott-corrected, and the discriminating
+  # doses are set to kill susceptible mosquitoes with a margin, not resistant
+  # ones. Beta(1, 9) left a second mode once the initial state was constrained
+  # (#19): f near 0.27 with more susceptible initial states, about 59 lower in
+  # log posterior than f near 0.002, which trapped whole chains and folds.
   floor <- if (isTRUE(options$mortality_floor)) {
-    list(mortality_floor = beta(1, 9))
+    list(mortality_floor = beta(1, 49))
   }
 
   # Coefficients of the standardised initial-state covariates on the logit
