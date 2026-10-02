@@ -238,7 +238,9 @@ print(as.data.frame(inventory %>%
 # memory -----------------------------------------------------------------------
 
 # RAM is shared with long MCMC runs, and a dynamical fold takes 4-8 GB once
-# loaded, so wait until there is room before reading a large file
+# loaded, so wait until there is room before reading a large file.
+# IR_CUBE_NO_MEMORY_WAIT=1 turns the wait off, where a scheduler outside R
+# budgets the memory (in a container /proc/meminfo is the host's)
 available_gb <- function() {
   meminfo <- readLines("/proc/meminfo")
   line <- grep("^MemAvailable:", meminfo, value = TRUE)
@@ -247,7 +249,8 @@ available_gb <- function() {
 
 wait_for_memory <- function(file, minimum_gb = 12, large_bytes = 5e8,
                             poll_seconds = 60, give_up_hours = 3) {
-  if (file.size(file) < large_bytes) return(invisible())
+  if (file.size(file) < large_bytes ||
+      Sys.getenv("IR_CUBE_NO_MEMORY_WAIT") == "1") return(invisible())
   waited <- 0
   while (available_gb() < minimum_gb) {
     if (waited == 0) {
