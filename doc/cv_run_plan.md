@@ -231,6 +231,41 @@ it was never reachable and the cap always bound. The loop has been removed and
 the samples are asked for directly; the two are statistically equivalent, since
 `extra_samples()` continues the same chains without re-adapting.
 
+### Production run, October 2026
+
+The full fit and the five folds at the settings above, from frozen copies of
+`R/` (commit `ecad4ba`), 4 threads each, the full fit and three folds at once
+(16 threads, load 17-19 of 16 cores). Wall time includes prediction; the old
+inits file is kept as `temporary/inits_refit_before_production.RDS`, and
+`fit_model.R` rewrote `inits_refit.RDS` from this fit. Diagnostics over the
+raw parameters (733), rank-normalised (`posterior`):
+
+| fit | wall time | chains kept | worst rank Rhat | > 1.01 / > 1.05 | bulk ESS min / median | tail ESS min |
+|---|---|---|---|---|---|---|
+| full data | 20.3 h | 4 of 4 | 1.016 | 1 / 0 | 226 / 2,527 | 43 |
+| spatial blocks 1 | 16.7 h | 3 of 4 | 1.007 | 0 / 0 | 740 / 2,369 | 416 |
+| spatial blocks 2 | 17.7 h | 4 of 4 | 1.029 | 207 / 0 | 163 / 2,000 | 34 |
+| interpolation | 19.0 h | 4 of 4 | 1.008 | 0 / 0 | 513 / 2,370 | 377 |
+| forecasting 2014 | | | | | | |
+| forecasting 2018 | | | | | | |
+
+The full fit's worst parameter is `init_country_level[38, 6]`; blocks 2's are
+`sigma_overall[11]` and the class-level coefficients of column 11, with one
+chain's draws 20% repeated. The interpolation fold, which mixed worst at every
+setting before, is now among the best (minimum ESS on `mortality_floor`).
+
+One chain of blocks 1 repeated a single draw for all 3,000 samples (rank Rhat
+1.53 on every parameter with it). `R/drop_stuck_chains.R` drops such a chain
+from a fold's stored predictions and records it in `stuck_chains`, which
+`paired_draw_index()` reads; the fold then keeps 1,500 of its 2,000 stored
+draws. No other fit had a stuck chain (`stuck_chains()`: under half the draws
+distinct).
+
+Wall times are 3-4 times the pilots' estimate (4-6 h): with 16 threads on 8
+physical cores the four fits ran at 12-15 s per iteration each. Stopping two
+of the four for 7 minutes roughly doubled the other two's rate, so the
+machine has about 8 cores' worth of TensorFlow throughput, not 16.
+
 ## 4. What is being changed, and why
 
 The review of PR #12 found one blocking defect and one set of experiments that
