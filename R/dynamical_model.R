@@ -242,7 +242,14 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # fit).
   n_init_covs <- length(options$init_covariates)
   init_covariates <- if (n_init_covs > 0) {
-    list(init_coef = normal(0, 1, dim = c(n_init_covs, n_types)))
+    # constrained to be <= 0, so each covariate can only make the initial state
+    # more resistant, as the selection effects can only make selection faster.
+    # The bioassays sit at the populated end of these covariates, so an
+    # unconstrained slope extrapolates a correlative effect without a mechanism
+    # across most of the map (positive for population in the first refit, and
+    # traded against population-driven selection)
+    list(init_coef = normal(0, 1, dim = c(n_init_covs, n_types),
+                            truncation = c(-Inf, 0)))
   }
 
   # Reversion to susceptibility (#24), estimated: a per-year rate per class,
@@ -537,13 +544,17 @@ dynamical_inits <- function(cached, variables, columns = NULL,
               as.integer(dim(variables[[name]])))
   }, logical(1))
   out <- out[matches]
+  # inside the constraint on the initial-state coefficients
+  if (!is.null(out$init_coef)) {
+    out$init_coef <- pmin(as.matrix(out$init_coef), -0.05)
+  }
   if ("rho_mu" %in% names(variables) && !is.null(cached$rho_classes)) {
     out$rho_mu <- mean(qlogis(c(cached$rho_classes)))
   }
   # the other new terms start near the model without them. Left to greta, the
   # reversion rate starts around 1 per year, which drives p to 1 at most
   # assays and stalled a short run at its initial values
-  starts <- c(mortality_floor = 0.02, init_coef = 0, reversion_rate = 0.01)
+  starts <- c(mortality_floor = 0.02, init_coef = -0.05, reversion_rate = 0.01)
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
