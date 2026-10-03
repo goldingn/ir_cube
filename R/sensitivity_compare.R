@@ -7,7 +7,7 @@
 #     <name>=<out.rds> [<name>=<out.rds> ...]
 #
 # predict: posterior mean predicted mortality of one fit, by predict.R's path
-# (map_covariates(), map_logit_init(), map_type_logit(), with the fit's model
+# (map_covariates(), map_logit_init(), dynamical_logit_cells(), with the fit's model
 # options), for every type,
 #   - at the bioassay pixels (the cells of the fit's data), every year from the
 #     baseline year to 2025, over n_px draws (default 500, the draws predict.R
@@ -118,24 +118,15 @@ if (identical(mode, "predict")) {
   parameters_table <- do.call(rbind, parameter_rows)
   print(parameters_table, digits = 3)
 
-  logit_init_mean <- logit_init_mean_draws(fold, draw_index)
-  parameters <- dynamical_parameter_draws(fold, df = df,
-                                          classes_index = classes_index,
-                                          types = types,
+  parameters <- dynamical_parameter_draws(fold, classes_index, types, df,
                                           draw_index = draw_index,
-                                          logit_init_mean = logit_init_mean,
                                           options = options)
-  lookup <- country_region_lookup()
-  logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
-                                   classes_index, countries, regions, lookup,
-                                   seed = 1, options = options)
+  set.seed(1)
+  logit_init_all <- map_logit_init(parameters, countries, regions, df)
   select_draws <- function(n) {
     d <- round(seq(1, length(draw_index), length.out = n))
-    list(effect = parameters$effect_type[d, , , drop = FALSE],
-         logit_init = subset_logit_init(logit_init_all, d),
-         floor = parameters$mortality_floor[d],
-         kappa = if (!is.null(parameters$kappa_type))
-           parameters$kappa_type[d, , drop = FALSE])
+    list(parameters = subset_draws(parameters, d),
+         logit_init = logit_init_all[d, , , drop = FALSE])
   }
   draws_px <- select_draws(n_px)
   draws_all <- select_draws(n_all)
@@ -185,14 +176,18 @@ if (identical(mode, "predict")) {
     for (chunk in split(seq_along(rows), ceiling(seq_along(rows) / 1000))) {
       ok <- chunk[!is.na(country_index[rows[chunk]])]
       if (length(ok) == 0) next
+      x <- map_x(covariates, rows[ok], max(keep) - baseline_year + 1)
       for (k in seq_along(types)) {
-        dyn <- map_type_logit(k, rows[ok], country_index[rows[ok]], d$effect,
-                              d$logit_init, covariates, years_predict, keep,
-                              d$floor, d$kappa)
+        dyn <- dynamical_logit_cells(
+          d$parameters, k,
+          matrix(d$logit_init[, country_index[rows[ok]], k],
+                 d$parameters$n_draws),
+          x, keep - baseline_year + 1,
+          x_init = covariates$init[rows[ok], , drop = FALSE])
         for (j in seq_along(keep)) {
           p <- plogis(dyn[[j]])
-          mean_out[ok, k, j] <- rowMeans(p)
-          if (sd) sd_out[ok, k, j] <- row_sds(p)
+          mean_out[ok, k, j] <- colMeans(p)
+          if (sd) sd_out[ok, k, j] <- col_sds(p)
         }
       }
     }

@@ -11,9 +11,10 @@
 #   Rscript R/diag_init_selection_draws.R   # once, to extract the draws
 #   Rscript R/diag_init_selection.R
 #
-# Predictions use the shared plain-R functions (map_covariates(),
-# map_type_logit(), R/two_stage_map_functions.R) with the fit's parameter
-# draws from dynamical_parameter_draws(). Writes figures/diag_*.png and
+# Predictions use the shared plain-R functions (map_covariates(), map_x(),
+# R/two_stage_map_functions.R; dynamical_logit_cells(),
+# R/dynamical_predictions.R) with the fit's parameter draws from
+# dynamical_parameter_draws(). Writes figures/diag_*.png and
 # outputs/diag_init_selection_correlations.csv.
 
 suppressMessages({
@@ -162,31 +163,24 @@ stopifnot(isTRUE(all.equal(unname(covariates$init[, fit$options$init_covariates]
                            unname(fit$x_cells_init[, fit$options$init_covariates]),
                            tolerance = 1e-6)))
 
-# logit relative initial state per country, with the coefficients attached,
-# as map_logit_init() returns it
-logit_init <- par$logit_init_relative[pred_draws, , , drop = FALSE]
-dimnames(logit_init) <- list(NULL, fit$countries, types)
-attr(logit_init, "init_coef") <- array(
-  par$init_coef[pred_draws, , , drop = FALSE],
-  c(length(pred_draws), length(fit$options$init_covariates), length(types)),
-  dimnames = list(NULL, fit$options$init_covariates, types))
-effect <- par$effect_type[pred_draws, , , drop = FALSE]
-floor <- par$mortality_floor[pred_draws]
-kappa_type <- par$kappa_type[pred_draws, , drop = FALSE]
+pred <- subset_draws(par, pred_draws)
 
-# each cell's country, from its first record as dynamical_predictions() takes
-# it (a few cells have records in two countries)
-cell_country <- fit$df %>%
-  distinct(cell_id, .keep_all = TRUE) %>%
-  arrange(cell_id)
-cell_country <- cell_country$country_id[match(seq_along(fit$unique_cells),
-                                              cell_country$cell_id)]
+# each cell's country, from its first record as the model takes it (a few
+# cells have records in two countries)
+cell_country <- dynamical_lookups(fit$df)$cell_country_lookup
+
+# the logit relative initial state of type k at cells `rows`
+cell_init <- function(k, rows) {
+  matrix(pred$logit_init_relative[, cell_country[rows], k], pred$n_draws)
+}
 
 # mortality draws (cells x draws per year) of type k at cells `rows`
 predict_cells <- function(k, rows) {
-  logit <- map_type_logit(k, rows, cell_country[rows], effect, logit_init,
-                          covariates, years, years, floor, kappa_type)
-  lapply(logit, plogis)
+  logit <- dynamical_logit_cells(pred, k, cell_init(k, rows),
+                                 map_x(covariates, rows, length(years)),
+                                 seq_along(years),
+                                 x_init = covariates$init[rows, , drop = FALSE])
+  lapply(logit, function(l) t(plogis(l)))
 }
 
 # for each type: the posterior mean at every cell with its bioassays and
@@ -344,12 +338,12 @@ decomp_type <- "Deltamethrin"
 k <- match(decomp_type, types)
 rows <- sort(unique(fit$df$cell_id[fit$df$type_id == k]))
 n_d <- length(pred_draws)
-effect_k <- matrix(effect[, , k], nrow = n_d)
+effect_k <- matrix(pred$effect_type[, , k], nrow = n_d)
 term_of <- c("Nets", "IRS", "Population x g_dom",
              rep("Crops x g_ag", length(par$covariate_names) - 3))
 terms <- c("Nets", "IRS", "Population x g_dom", "Crops x g_ag", "Reversion")
-logit_q0 <- map_cell_logit_init(logit_init, cell_country[rows], k,
-                                covariates$init[rows, , drop = FALSE])
+logit_q0 <- t(cell_logit_init(pred, k, cell_init(k, rows),
+                              covariates$init[rows, , drop = FALSE]))
 
 # log w_t = log1p(sum_j x_j e_j) split over the terms in proportion to
 # x_j e_j; the cumulative logit change in mortality from a term is minus its
@@ -370,7 +364,7 @@ for (j in seq_along(years)) {
     part <- Reduce(`+`, parts[term_of == term])
     cumulative[[term]] <- cumulative[[term]] - part * share
   }
-  cumulative$Reversion <- matrix(-kappa_type[, k] * j, length(rows), n_d,
+  cumulative$Reversion <- matrix(-pred$kappa_type[, k] * j, length(rows), n_d,
                                  byrow = TRUE)
   for (name in terms) {
     decomp[[length(decomp) + 1]] <- tibble(

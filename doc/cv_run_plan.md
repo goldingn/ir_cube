@@ -60,11 +60,19 @@ confusing ways if they are disturbed:
 ## 3. Running the folds
 
 ```bash
-Rscript R/run_validation_folds.R        # nulls, then dispatch the model folds
-Rscript R/validation_metrics.R          # score everything on disk
-Rscript R/validation_geometry.R         # skill against distance and data volume
-Rscript R/fig_predictive_validation.R   # figures and the table
+Rscript R/fig_illustrate_bioassay_variability.R  # overdispersion per type; everything downstream needs it
+Rscript R/run_validation_folds.R                 # nulls, then dispatch the model folds
+Rscript R/validation_metrics.R                   # score everything on disk
+Rscript R/validation_change.R                    # score predicted change, per forecast origin
+Rscript R/validation_geometry.R                  # fold separation, and the leak check
+Rscript R/variance_explained.R                   # variance explained and the noise ceiling
+Rscript R/fig_variance_explained.R               # the bar figures
+Rscript R/fig_predictive_validation.R            # figures and the table
 ```
+
+The overdispersion fit comes first: `rho_lookup()` stops rather than falling
+back, so nothing scores until `outputs/bioassay_rho_hierarchical.csv` and
+`outputs/bioassay_rho_type_draws.rds` exist.
 
 `run_validation_folds.R` fits the nulls in process (minutes) and then dispatches
 each model fold as a separate `Rscript R/run_one_fold.R <experiment> <fold>`,
@@ -350,9 +358,8 @@ It extrapolates the historical rate faithfully; the rate stopped.
 pixels and a signal roughly 5/3 larger, because the gap between window midpoints
 is the window length, and a five-year window spans the 2018–2020 pause as well
 as the decline either side of it. The 2018 origin's signal-to-resolvable ratio
-goes from 0.2 at three years to 3.8 at five. `R/fig_change_power.R` measures
-this and draws `figures/CV_change_power.png` (five-year sliding origin) and
-`figures/CV_change_window_size.png` (the 1/2/3/5-year comparison).
+goes from 0.2 at three years to 3.8 at five. The power analysis measures
+this; the script and its figures are in the stub branch (§6).
 
 **Two origins, fitted:**
 
@@ -369,19 +376,27 @@ carry a fixed slope forward? Earlier origins have a stronger signal still — a
 they are not the model being deployed and their skill would not transfer.
 Covariates end in 2022, so 2018 is the latest feasible five-year origin.
 
-The 2020 three-year fold is kept and reported as a supplementary observation —
-"the most recent window shows no decline" — not as the headline forecast test.
-It is already paid for.
+The 2020 three-year fold is deleted, not reported. Its training set was drawn
+with `year_start <= cut`, so the cut year appeared in both training and holdout,
+and its window landed on the one pause in twenty years of decline and was also
+the thinnest. Its draws are parked in `outputs/cv_draws_defunct/`.
+
+**The two origins are not independent.** The 2018 fold's before-window, 2013 to
+2017, sits inside the 2014 fold's holdout, 2014 to 2018, and 2018 itself is in
+both holdouts. Pooling them is still the right way to report a single forecasting
+bar - the alternative is two bars whose difference is mostly window difficulty -
+but the pooled interval carries roughly one and a bit folds' worth of
+information rather than two, and should not be read as though the origins were
+replicates. `outputs/cv_variance_explained_by_fold.csv` has them separately.
 
 **How it is coded.** `validation_folds.R` exposes `forecasting_fold(cut_year,
-window)` and a named list `temporal_forecasting_folds`; `temporal_forecasting`
-still resolves, to the 2020 fold. Dispatch is `Rscript R/run_one_fold.R
+window)` and a named list `temporal_forecasting_folds`, holding 2014 and 2018.
+The single-fold alias `temporal_forecasting` is gone. Dispatch is `Rscript R/run_one_fold.R
 temporal_forecasting 2014 4 4`. Each origin is stored under
 `experiment = "temporal_forecasting_<cut>"` so that scoring never pools two
 holdout windows whose true rates of decline differ by a factor of two; the file
 name keeps the plain experiment name, so the origins sit together in
-`outputs/cv_draws/`. The already-fitted 2020 fold was relabelled in place, no
-refit.
+`outputs/cv_draws/`.
 
 **Two changes the five-year window forced:**
 
@@ -393,10 +408,9 @@ refit.
   a global mean wearing a nearest-neighbour label, silently. `n_years_prior` is
   now the window length, and `predict_null_fixed_nn_counts()` stops rather than
   falling back. The three-year fold escaped this by one year, so its result is
-  unaffected. The number of neighbours is left at the tuned 5 for every origin,
-  which keeps the origins comparable — note that the tuning in
-  `predictive_validation.R` was itself run at the default `n_years_prior = 1`,
-  an inconsistency that predates this change.
+  unaffected. The nearest-neighbour null is no longer tuned at all: it is
+  reported at one neighbour, as a practice baseline, and separately at its best
+  k on the held-out records, as an oracle bound.
 - *Prediction volume.* The 2014 fold asks for 20,522 predictions against the
   three-year fold's 5,724. `fit_fold()` now thins the stored draws to 2,000 —
   which is what the scoring and the change score thin to anyway, and ESS is
@@ -423,13 +437,24 @@ in every country. The fold definitions and every code path that scored them have
 been deleted, and the draws are parked in `outputs/cv_draws_defunct/`. The
 sub-national blocks of §5 test spatial prediction without the confound.
 
-### 4.3 A sub-national spatial block design replaces the national extrapolation concept — three new fits
+### 4.3 A sub-national spatial block design replaces the national extrapolation concept — two new fits
 
 Holding out blocks of cells within countries keeps every country intercept
 identified, so the test isolates spatial prediction rather than compounding it
 with the initial condition. See §5.
 
 ### 4.4 Scoring and reporting changes, all made without refitting
+
+**One noise floor, one definition of variance explained.** The floor is
+`noise_floor_mse()`: `y(1-y) k / (1-k)`, which since `E[y(1-y)] = p(1-p)(1-k)`
+is exactly unbiased for a subset's mean sampling variance and assumes nothing
+about how p is distributed. An empirical Bayes floor fitted per insecticide type
+was tried and dropped — it was 1.4 to 9.6% high depending on rho, and is the
+more fragile of the two where p is bimodal, as it is for DDT and
+Alpha-cypermethrin. Variance explained is `1 - MSE/Var(y)`, floor-free, with the
+noise share shown alongside as a band rather than divided out; the
+intercept-null-referenced skill that also carried that name is gone, with the
+second pixel-cluster bootstrap that supported it.
 
 - **The PIT column was the mid-P value, not a randomised PIT.** `rowMeans()` over
   100 randomisations converges to `cdf_below + 0.5 * pmf_at`, which is not
@@ -445,12 +470,15 @@ with the initial condition. See §5.
 - **Every model is scored at the external replicate-based overdispersion.**
   Letting each model fit its own made coverage a comparison of dispersion rather
   than of prediction: the intercept null reached 0.96 coverage by inflating rho
-  to 0.45 against an external estimate of 0.12–0.22. What each model's own
-  residuals imply is kept as a diagnostic in `cv_rho_comparison.csv`.
-  `score_at_external_rho <- FALSE` in `validation_metrics.R` recovers the old
-  behaviour as a sensitivity. The caveat to state in the paper: the dynamical
-  model's posterior on p was fitted jointly with its own rho ≈ 0.3, so the swap
-  is not perfectly clean without a refit.
+  to 0.45 against an external estimate of 0.12–0.22. Fitting a rho per null model
+  is gone entirely — the nulls earn their place through mean squared error and
+  variance explained, which need point predictions only, and the dynamical
+  model's calibration is judged against held-out data directly. What the
+  dynamical model's own residuals imply is still reported, in
+  `cv_rho_comparison.csv` and its figure: a fitted 0.28 against an external 0.16
+  is the model treating its own misfit as bioassay noise. The caveat to state in
+  the paper: that posterior on p was fitted jointly with that rho, so scoring at
+  the external value is not perfectly clean without a refit.
 - **The metric surface is smaller.** Coverage, mean PIT and Cramér–von Mises are
   three functionals of one PIT distribution, which is enough; the
   Kolmogorov–Smirnov statistic and the PIT ECDF figure are gone. The CvM null
@@ -497,7 +525,7 @@ identified throughout. That is the entire purpose of blocking rather than
 holding out countries.
 
 **Construction** (`R/validation_blocks.R`). Within each split country, its
-cells are partitioned into three contiguous blocks that are **large and even in
+cells are partitioned into two contiguous blocks that are **large and even in
 area**, subject to a floor on the bioassays each one carries. Two families of
 cut are tried — slabs (project the cells onto a direction and cut across it) and
 sectors (cut on the bearing from the country's area centroid) — at 36
@@ -523,8 +551,8 @@ This is the third objective tried, and the reasoning behind it is worth keeping.
   and the block holding a third of the records occupies a small area. Short
   separations then occur exactly where most of the data is.
 - *Even areas with a record floor.* Lets a dense cluster sit whole inside one
-  block, which keeps all three blocks large and lengthens the separation for the
-  two sparse blocks. The cost is an uneven split of records between folds, which
+  block, which keeps both blocks large and lengthens the separation for the
+  sparser one. The cost is an uneven split of records between folds, which
   costs nothing overall: every record is still held out exactly once, so only the
   per-fold counts differ.
 
@@ -537,9 +565,8 @@ boundary cannot carry the result, and a buffer would remove training records
 from exactly the countries whose intercepts this design exists to keep
 identified.
 
-**What the folds look like.** 2,879 / 3,563 / 2,252 held-out assays — 8,694 in
-total, the same count as the national experiment, since both use the same six
-countries and the same "2010 and later" test window. All nine insecticide types
+**What the folds look like.** 5,382 / 3,312 held-out assays — 8,694 in total,
+over the same six countries and the same "2010 and later" test window. All nine insecticide types
 appear in every fold. Every blocked record from 2010 on is held out exactly
 once; records at a held-out cell from before 2010 are dropped from the
 experiment rather than returned to training, which is what the national folds
@@ -592,102 +619,28 @@ improved, a longer warmup is available for these folds, because they are a new
 experiment and do not have to match the sampling settings of the retained
 national folds.
 
-## 6. Change-based scoring for the forecasting experiment
+## 6. Change-based scoring, and two analyses that are not here
 
-With the leak fixed, the experiment is still substantially a spatial test: most
-held-out site-years are at sites with training data one to three years earlier,
-so a local method gets the level nearly free. Scoring the *change* differences
-the site level out and leaves the local slope, which is what the model claims to
-know.
+`validation_change.R` scores predicted change between the before-window and the
+holdout, per forecast origin, which is the quantity the forecasting experiment is
+actually about. The before-window predictions it needs are saved with each fold
+by `fit_validation_fold.R`; because sampling cannot be resumed across sessions
+(§8), that has to be in place before a fit starts and cannot be added afterwards.
 
-For each group *g* — a (cell, insecticide) or (country, insecticide) pair with
-data in both windows — with before window *B* (the `window` years preceding the
-cut, the same length as the holdout) and holdout window *H*:
+Two supporting analyses were written and are not in this branch, having served
+their purpose:
 
-```
-delta_obs(g)  = sum_H died / sum_H tested  -  sum_B died / sum_B tested
-delta_pred(g) = mean over draws of ( weighted mean of p over H
-                                     - weighted mean of p over B )
-```
+- the power analysis over window length and origin, which chose the five-year
+  window and showed 2014 to be the strongest feasible origin;
+- skill against separation from the training data, which was a negative result:
+  the joint test gave p = 0.058 for the dynamical model and 0.264 for the
+  nearest survey. Distance has an intraclass correlation of 0.91 by pixel, so a
+  pixel random effect absorbs the identifying contrast rather than controlling
+  for it, and binned weighted least squares with a pixel-cluster bootstrap is
+  what the design supports. The raw distance bins that preceded it were
+  confounded in exactly that way and are also gone.
 
-The target is a difference of two empirical proportions, with no model
-assumptions in it. The floor is the sum of the two windows' irreducible
-variances, which is what `noise_floor_var_pooled()` computes (added to
-`validation_functions.R`, with checks: it reduces to `noise_floor_mse()` for a
-single assay, and recovers the variance of a pooled proportion to within 2% over
-3,000 simulated groups). So the existing MSE-minus-floor framework applies
-unchanged, anchored at "no change" — which is what the nearest neighbour null
-predicts by construction, so it needs no separate treatment.
-
-Report a sign test alongside: the proportion of groups where the model gets the
-direction of change right, among groups whose |delta_obs| exceeds its own noise
-standard deviation.
-
-Run it at both scales. Cell-insecticide is the most local and the thinnest, and
-the floor handles that honestly; country-insecticide has 17–18 assays per group,
-so the floor falls roughly seventeen-fold and the comparison is almost purely
-about the population fraction.
-
-**What this requires at fit time.** Predictions at the before-window cell-years,
-which means a second index into `dynamic_cells$all_states` and one more term in
-the `calculate()` call in `fit_validation_fold.R`. Because sampling cannot be
-resumed across sessions (§8), this has to be in place before the refit starts —
-it cannot be added to a finished fold. The before-window records are defined in
-`validation_folds.R` alongside the training and test sets.
-
-A single temporal origin means the conclusion rests on one realisation of the
-recent trend. A rolling origin would cost another full run and is not worth it;
-the limitation should be stated.
-
-## 6b. Skill against distance: a negative result
-
-`R/validation_distance.R`, writing `outputs/cv_distance.csv`.
-
-The raw distance-stratified skill table on the block folds looks structured — a
-dip at short range, a peak near 200 km — but the strata are confounded. Records
-within 50 km are 48% Kenya, records beyond 400 km are 60% Tanzania, and how far
-a held-out record sits from training data is largely a function of which country
-it is in and how large that country's blocks are. The denominator moves too, by
-a factor of 2.4 across bins.
-
-**The conclusion is that these folds cannot resolve a distance effect.** Under a
-binned weighted least squares with country, insecticide class, fold and year as
-fixed effects, and a pixel-cluster bootstrap over 905 pixels, the joint test
-that skill differs across distance bins gives p = 0.058 for the dynamical model
-and p = 0.264 for the one-neighbour null. (That first figure sits near the
-conventional threshold and moves between 0.06 and 0.08 with the bootstrap seed,
-which is itself a reason not to lean on it.) The dynamical model's 100–200 km bin
-is individually clear of zero at +19.0 [5.8, 30.7] % of the intercept null's
-excess MSE, and reappears under every estimator tried, but one bin of five is
-not a finding and it does not survive the joint test. A one-degree-of-freedom
-slope in log distance is also indistinguishable from zero: +7.2 [−1.25, +15.7] %
-per e-fold, so the direction favours the mechanistic model doing relatively
-better further from data, but it cannot be claimed.
-
-Findings should therefore be reported at the level of the folds themselves —
-interpolation, and sub-national blocks — not stratified by distance.
-
-Three things worth not repeating, all established the hard way:
-
-- **The noise floor cancels in a paired difference.** The response is the
-  per-record difference in squared error against the intercept null; writing
-  `y = p + e`, the `e²` terms are identical in the two squared errors and
-  subtract out. No floor estimate is needed and assay size stops being a
-  confounder.
-- **Aggregation to (cell, insecticide, year) is exact.** The difference is
-  affine in the observed proportion, so the group mean is an exact function of
-  `(n, mean(y))`. 8,690 records become 6,987 strata with no loss, and the
-  replicate structure that a smoother would otherwise read as a distance trend
-  goes with it.
-- **A pixel term cannot go in the mean model.** Distance is very nearly a
-  pixel-level covariate (ICC 0.91), so a random intercept per pixel absorbs the
-  between-pixel contrast that identifies it — the effect collapses, and so does
-  an explicitly between-pixel Mundlak term. Clustering has to be handled in the
-  inference instead. This was reached first with a penalised spline, whose
-  effective degrees of freedom tracked the basis dimension (5.6, 9.6, 13.0 at
-  k = 8, 20, 30) because a flexible smooth of a covariate near-collinear with
-  pixel is partly smoothing pixel; the binned model reaches the same place with
-  nothing to tune.
+Both live in the stub branch if they are wanted again.
 
 ## 7. Cost
 

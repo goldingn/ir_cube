@@ -34,9 +34,6 @@ radius_km <- 100
 # breaks chosen so that no bin is so thin that its excess MSE is noise: the
 # distance breaks straddle the ~13 km minimum separation the interpolation fold
 # guarantees, and the ~5 km grid resolution
-distance_breaks <- c(0, 10, 25, 50, 100, 250, 500, Inf)
-volume_breaks <- c(0, 1, 5, 20, 100, Inf)
-lag_breaks <- c(-Inf, 0, 1, 2, 3, 5, 10, Inf)
 
 cell_coordinates <- function(cells) {
   xy <- terra::xyFromCell(mask, cells)
@@ -138,54 +135,3 @@ print(geometry %>%
                   max = suppressWarnings(max(years_since_cell, na.rm = TRUE)),
                   .groups = "drop") %>%
         as.data.frame())
-
-
-# skill against each axis --------------------------------------------------
-
-scores <- read.csv("outputs/cv_scores.csv", encoding = "UTF-8") %>%
-  left_join(geometry,
-            by = c("experiment", "fold", "cell", "year_start",
-                   "insecticide_type"))
-stopifnot(!anyNA(scores$distance_same))
-
-# excess mean squared error, and the share of the intercept null's excess that
-# each model removes, within bins of one axis
-by_axis <- function(scores, axis, breaks, label) {
-  scores %>%
-    filter(!is.na(.data[[axis]])) %>%
-    mutate(bin = cut(.data[[axis]], breaks = breaks, include.lowest = TRUE)) %>%
-    group_by(experiment, bin, model) %>%
-    summarise(n = n(),
-              mse = mean((observed - predicted) ^ 2),
-              mse_floor = noise_floor_mse(died, mosquito_number, rho_external),
-              .groups = "drop") %>%
-    group_by(experiment, bin) %>%
-    mutate(axis = label,
-           excess = mse - mse_floor,
-           explained = 1 - excess / excess[model == "intercept"]) %>%
-    ungroup() %>%
-    select(axis, experiment, bin, model, n, mse, mse_floor, excess, explained)
-}
-
-skill_by_geometry <- bind_rows(
-  by_axis(scores, "distance_same", distance_breaks,
-          "km to nearest same-insecticide training record"),
-  by_axis(scores, "n_within_radius", volume_breaks,
-          sprintf("same-insecticide training records within %i km", radius_km)),
-  by_axis(scores, "years_since_cell", lag_breaks,
-          "years since the last observation at that pixel")
-)
-
-write.csv(skill_by_geometry, "outputs/cv_skill_by_geometry.csv",
-          row.names = FALSE)
-
-for (this_axis in unique(skill_by_geometry$axis)) {
-  cat("\nexcess MSE by", this_axis, ":\n")
-  print(skill_by_geometry %>%
-          filter(axis == this_axis) %>%
-          select(experiment, bin, model, n, excess, explained) %>%
-          pivot_wider(names_from = model,
-                      values_from = c(n, excess, explained)) %>%
-          mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
-          as.data.frame())
-}

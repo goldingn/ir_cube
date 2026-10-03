@@ -7,10 +7,10 @@
 # z and the fitted latent is not extreme enough (doc/two_stage_plan.md, "Stage
 # B diagnostic"). PQL replaces (z, v) by the working response and variance of
 # the quasi-binomial likelihood, re-expanded around the current latent mode
-# lambda = m + omega + xi + u, p = logit^-1(lambda):
+# lambda = m + omega + xi + u + p, pi = logit^-1(lambda):
 #
-#   z_i = lambda_i + (y_i / n_i - p_i) / (p_i (1 - p_i))
-#   v_i = (1 + (n_i - 1) rho) / (n_i p_i (1 - p_i))
+#   z_i = lambda_i + (y_i / n_i - pi_i) / (pi_i (1 - pi_i))
+#   v_i = (1 + (n_i - 1) rho) / (n_i pi_i (1 - pi_i))
 #
 # With the hyperparameters fixed, one pass is one Newton step on the penalised
 # quasi-log-likelihood
@@ -30,17 +30,12 @@
 # with the final working (z, v) as data, and the PQL passes are re-run at the
 # new hyperparameters.
 #
-# The optional pixel effect p is one more Gaussian latent term, with columns in
-# A: nothing here changes form, and the refit keeps it if the stage-A fit has it.
-#
 # The result is a correction_fit with mode, H, H_chol, precision_obs (= the
-# final D) and the hyperparameters replaced, so predict_correction() uses it
-# unchanged: joint latent draws from H, the AR(1) forecast, and the
+# final D) and the hyperparameters replaced, so the prediction functions use
+# it unchanged: joint latent draws from H, the AR(1) forecast, and the
 # cut-posterior shift H^-1 A' D (m_ref - m_k) at the final D.
 #
-# Functions only; source R/two_stage_correction.R first.
-
-stopifnot(exists("fit_correction"), exists("predict_correction"))
+# Functions only; sourced by R/two_stage_correction.R.
 
 # log(1 + e^x) without overflow
 log1pexp <- function(x) pmax(x, 0) + log1p(exp(-abs(x)))
@@ -159,10 +154,10 @@ pql_passes <- function(fit, died, n, rho,
        damped = any(vapply(history, function(h) h$step < 1, logical(1))))
 }
 
-# Stage B from a stage-A fit. train is the data frame the stage-A fit was
-# given (with died, mosquito_number and rho, in the same order); t0 and T as
-# for fit_correction(). Returns the stage-B correction_fit, with $stage_b
-# holding the diagnostics
+# Stage B from a stage-A fit (fit_stage_a()). train is the data frame the
+# stage-A fit was given (with died, mosquito_number and rho, in the same
+# order). Returns the stage-B correction_fit, with $stage_b holding the
+# diagnostics
 fit_correction_pql <- function(fit_a, train,
                                tol = 0.01,
                                max_passes = 30,
@@ -176,39 +171,29 @@ fit_correction_pql <- function(fit_a, train,
   stopifnot(length(died) == fit_a$n_obs)
 
   lambda_a <- fit_a$m_ref + as.vector(fit_a$A_latent %*% fit_a$mode)
-
   first <- pql_passes(fit_a, died, n, rho, tol = tol, max_passes = max_passes,
                       clamp = clamp, verbose = verbose)
   rms_move <- sqrt(mean((first$lambda - lambda_a) ^ 2))
-  time_first <- difftime(Sys.time(), start_time, units = "secs")
 
   # re-estimate the hyperparameters once if lambda moved materially: the
   # stage-A marginal likelihood with the working (z, v) as the response,
-  # started at the stage-A hyperparameters, then PQL again at the new ones
+  # with the stage-A priors and control, started at the stage-A
+  # hyperparameters; then PQL again at the new ones
   refit <- rms_move > refit_threshold
   base <- fit_a
   final <- first
-  time_refit <- 0
-  time_second <- 0
   if (refit) {
-    hyper_names <- c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
-                     "log_kappa_eta", "logit_phi", "log_tau", "log_sigma_p")
-    hyper_names <- intersect(hyper_names, names(fit_a$par_list))
-    start <- lapply(fit_a$par_list[hyper_names], as.numeric)
     train_w <- train
     train_w$z <- first$working$z
     train_w$v <- first$working$v
-    t_refit <- Sys.time()
-    base <- fit_correction(train_w, variant = fit_a$variant, t0 = fit_a$t0,
-                           T = fit_a$T, mesh = fit_a$mesh,
-                           mesh_xi = fit_a$mesh_xi, start = start,
-                           pixel_effect = isTRUE(fit_a$pixel_effect))
-    time_refit <- difftime(Sys.time(), t_refit, units = "secs")
-    t_second <- Sys.time()
+    hyper_names <- setdiff(names(fit_a$par_list), c("w_omega", "x", "iid"))
+    base <- fit_stage_a(train_w, t0 = fit_a$t0, T = fit_a$T,
+                        meshes = list(omega = fit_a$mesh, xi = fit_a$mesh_xi),
+                        priors = fit_a$priors, control = fit_a$control,
+                        start = fit_a$par_list[hyper_names])
     final <- pql_passes(base, died, n, rho, tol = tol,
                         max_passes = max_passes, clamp = clamp,
                         verbose = verbose)
-    time_second <- difftime(Sys.time(), t_second, units = "secs")
   }
 
   out <- base
@@ -219,6 +204,8 @@ fit_correction_pql <- function(fit_a, train,
   out$tmb_data$z <- final$working$z
   out$tmb_data$v <- final$working$v
   out$stage_b <- list(
+    hyper_a = fit_a$hyper,
+    objective_a = fit_a$opt$objective,
     lambda_a = lambda_a,
     lambda = final$lambda,
     passes_first = first$passes,
@@ -228,22 +215,15 @@ fit_correction_pql <- function(fit_a, train,
     rms_move = rms_move,
     max_move = max(abs(first$lambda - lambda_a)),
     refit = refit,
-    refit_threshold = refit_threshold,
-    refit_convergence = if (refit) base$opt$convergence else NA_integer_,
-    hyper_a = fit_a$hyper,
     passes_second = if (refit) final$passes else NA_integer_,
     converged_second = if (refit) final$converged else NA,
-    damped_second = if (refit) final$damped else NA,
     history_second = if (refit) final$history else NULL,
     rms_move_second = if (refit)
       sqrt(mean((final$lambda - first$lambda) ^ 2)) else NA_real_,
     final_change = final$final_change,
     n_clamped = final$working$n_clamped,
-    timings = c(passes_first = as.numeric(time_first),
-                refit = as.numeric(time_refit),
-                passes_second = as.numeric(time_second),
-                total = as.numeric(difftime(Sys.time(), start_time,
-                                            units = "secs")))
+    time_stage_a = fit_a$timings[["total"]],
+    time_pql = as.numeric(Sys.time() - start_time, units = "secs")
   )
   out
 }

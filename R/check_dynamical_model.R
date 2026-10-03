@@ -102,8 +102,9 @@ stopifnot(identical(unname(trace),
                     unname(built_one$model$dag$trace_values(
                       matrix(free, nrow = 1)))))
 fold <- list(draws = coda::mcmc.list(coda::mcmc(trace)),
-             options = model_options)
-# the plain-R path takes the covariates as an argument here, not from the fold
+             options = model_options, x_cells_init = x_cells_init)
+parameters <- dynamical_parameter_draws(fold, classes_index, types, df,
+                                        draw_index = 1)
 
 # greta, at these values: calculate() on a one-draw greta_mcmc_list, as on a
 # fitted model's draws
@@ -119,12 +120,9 @@ p_greta <- greta_values[1, grep("^p\\[", colnames(greta_values))]
 rho_greta <- greta_values[1, grep("^rho\\[", colnames(greta_values))]
 
 # plain R
-p_r <- c(dynamical_predictions(fold, select(df, -country_id), df,
-                               x_cell_years, cell_years_index, classes_index,
-                               types, draw_index = 1,
-                               x_cells_init = x_cells_init))
-rho_r <- c(dynamical_parameter_draws(fold, df, classes_index, types,
-                                     draw_index = 1)$rho_types)
+p_r <- plogis(c(dynamical_logit(parameters, df, df, x_cell_years,
+                                cell_years_index)))
+rho_r <- c(parameters$rho_types)
 
 # the betabinomial log likelihood, parameterised as in betabinomial_p_rho() and
 # not clamped (dbetabinom() clamps p away from 0 and 1)
@@ -145,7 +143,7 @@ cat(sprintf("log likelihood of assays 2..n: greta %.10g, plain R %.10g, diff %.3
             ld_all - ld_one - sum(loglik_r[-1])))
 
 # the map path (R/two_stage_map_functions.R), at the data cells in 2000, 2012
-# and 2024, against dynamical_predictions()
+# and 2024, against dynamical_logit()
 map_years <- c(2000, 2012, 2024)
 map_rows <- df %>%
   distinct(cell, cell_id) %>%
@@ -153,15 +151,12 @@ map_rows <- df %>%
     built$lookups$cell_country_lookup[cell_id]])
 covariates <- map_covariates(map_rows$cell, baseline_year, max(map_years),
                              model_options$selection_columns)
-parameters <- dynamical_parameter_draws(fold, df, classes_index, types,
-                                        draw_index = 1)
 
 # the map path's covariates are x_cell_years at the data cells
 n_fit_years <- max(cell_years_index$year_id)
-x_map <- do.call(rbind, lapply(seq_len(nrow(map_rows)), function(i) {
-  cbind(covariates$time_varying[i, seq_len(n_fit_years), , drop = FALSE][1, , ],
-        covariates$flat[rep(i, n_fit_years), , drop = FALSE])
-}))
+x_map <- matrix(aperm(map_x(covariates, seq_len(nrow(map_rows)), n_fit_years),
+                      c(2, 1, 3)),
+                ncol = ncol(x_cell_years))
 x_fit <- x_cell_years[match(paste(rep(map_rows$cell_id, each = n_fit_years),
                                   rep(seq_len(n_fit_years), nrow(map_rows))),
                             paste(cell_years_index$cell_id,
@@ -179,33 +174,26 @@ if (length(trend_columns) > 0) {
   stopifnot(all(x_baseline == 0))
 }
 
-logit_init_all <- map_logit_init(trace, NULL, types, classes_index, countries,
-                                 regions, country_region_lookup(),
-                                 options = model_options)
+logit_init_all <- map_logit_init(parameters, countries, regions, df)
 cell_country_index <- match(map_rows$country_name,
                             dimnames(logit_init_all)[[2]])
+x_years <- map_x(covariates, seq_len(nrow(map_rows)),
+                 max(map_years) - baseline_year + 1)
+clamp <- function(l) pmin(pmax(l, qlogis(1e-12)), qlogis(1 - 1e-12))
 map_difference <- 0
 for (k in seq_along(types)) {
-  dyn <- dynamical_logit_chunk(
-    effect = matrix(parameters$effect_type[, , k], nrow = 1),
-    logit_init = map_cell_logit_init(logit_init_all, cell_country_index, k,
-                                     covariates$init),
-    time_varying = covariates$time_varying,
-    flat = covariates$flat,
-    years = baseline_year:max(map_years), years_keep = map_years,
-    floor = parameters$mortality_floor,
-    kappa = if (!is.null(parameters$kappa_type)) parameters$kappa_type[, k])
+  dyn <- dynamical_logit_cells(parameters, k,
+                               matrix(logit_init_all[, cell_country_index, k],
+                                      1),
+                               x_years, map_years - baseline_year + 1,
+                               x_init = covariates$init)
   for (y in map_years) {
     rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
                    year_id = y - baseline_year + 1)
-    p_rows <- c(dynamical_predictions(fold, rows, df, x_cell_years,
-                                      cell_years_index, classes_index, types,
-                                      draw_index = 1,
-                                      x_cells_init = x_cells_init))
-    l_rows <- qlogis(pmin(pmax(p_rows, 1e-12), 1 - 1e-12))
-    l_map <- pmin(pmax(c(dyn[[as.character(y)]]), qlogis(1e-12)),
-                  qlogis(1 - 1e-12))
-    map_difference <- max(map_difference, abs(l_map - l_rows))
+    l_rows <- c(dynamical_logit(parameters, rows, df, x_cell_years,
+                                cell_years_index))
+    l_map <- c(dyn[[as.character(y - baseline_year + 1)]])
+    map_difference <- max(map_difference, abs(clamp(l_map) - clamp(l_rows)))
   }
 }
 cat(sprintf("map path vs plain R, logit, %d cells x %d types x %d years: max abs diff %.3g\n",

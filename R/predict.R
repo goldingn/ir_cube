@@ -14,8 +14,9 @@
 # The predictions are computed in plain R from the draws, with the model's own
 # parameter transforms (dynamical_terms(), R/dynamical_model.R) and the closed
 # form of the recursion on the logit scale, via map_covariates(),
-# map_logit_init() and dynamical_logit_chunk() (R/two_stage_map_functions.R),
-# as R/two_stage_maps.R does, with the fit's model options (fold_options();
+# map_logit_init() (R/two_stage_map_functions.R) and dynamical_logit_cells()
+# (R/dynamical_predictions.R), as R/two_stage_maps.R does, with the fit's
+# model options (fold_options();
 # fits saved without options take the legacy ones). Countries and regions without data take their
 # initial state from the hierarchical prior, drawn once per posterior draw
 # with a fixed seed, so the maps are reproducible. Cells without a country in
@@ -81,38 +82,23 @@ options <- fold_options(fold)
 rm(fit_env)
 invisible(gc())
 
-draw_index <- paired_draw_index(fold)
-draws_matrix <- as.matrix(fold$draws)[draw_index, , drop = FALSE]
-logit_init_mean <- logit_init_mean_draws(fold, draw_index)
-parameters <- dynamical_parameter_draws(fold, df = df,
-                                        classes_index = classes_index,
-                                        types = types,
-                                        draw_index = draw_index,
-                                        logit_init_mean = logit_init_mean,
+parameters <- dynamical_parameter_draws(fold, classes_index, types, df,
                                         options = options)
 
-# initial states for every country in the lookup. The prior draws for countries
-# and regions without data are made for all 2000 draws and then subset, so a
-# draw has the same initial states whatever n_draws is. With initial-state
-# covariates these are the logit relative initial states, with the covariates'
-# coefficients as an attribute (see map_logit_init())
-lookup <- country_region_lookup()
-logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
-                                 classes_index, countries, regions, lookup,
-                                 seed = 1, options = options)
-init_covariates <- !is.null(options$init_covariates)
-stopifnot(isTRUE(all.equal(
-  logit_init_all[, countries, , drop = FALSE],
-  if (init_covariates) parameters$logit_init_relative else
-    parameters$logit_init,
-  check.attributes = FALSE)))
+# the logit relative initial states for every country in the lookup. The
+# prior draws for countries and regions without data are made for all 2000
+# draws and then subset, so a draw has the same initial states whatever
+# n_draws is
+set.seed(1)
+logit_init_all <- map_logit_init(parameters, countries, regions, df)
+stopifnot(isTRUE(all.equal(logit_init_all[, countries, , drop = FALSE],
+                           parameters$logit_init_relative,
+                           check.attributes = FALSE)))
 
-predict_draws <- round(seq(1, length(draw_index), length.out = n_draws))
-effect <- parameters$effect_type[predict_draws, , , drop = FALSE]
-logit_init <- subset_logit_init(logit_init_all, predict_draws)
-mortality_floor <- parameters$mortality_floor[predict_draws]
-kappa_type <- parameters$kappa_type[predict_draws, , drop = FALSE]
-rm(parameters, logit_init_all, draws_matrix, fold)
+predict_draws <- round(seq(1, parameters$n_draws, length.out = n_draws))
+parameters <- subset_draws(parameters, predict_draws)
+logit_init <- logit_init_all[predict_draws, , , drop = FALSE]
+rm(logit_init_all, fold)
 invisible(gc())
 report("%i draws of %i types", n_draws, length(types))
 
@@ -155,20 +141,22 @@ predict_output <- function(output) {
     ok <- chunk[!is.na(cell_country_index[chunk])]
     if (length(ok) == 0) next
     p <- NULL
+    x_chunk <- map_x(covariates, ok, length(years_predict))
     for (type in names(weights)) {
       k <- match(type, types)
-      dyn <- map_type_logit(k, ok, cell_country_index[ok], effect,
-                            logit_init, covariates, years_predict,
-                            years_predict, mortality_floor, kappa_type)
+      dyn <- dynamical_logit_cells(
+        parameters, k, matrix(logit_init[, cell_country_index[ok], k], n_draws),
+        x_chunk, seq_along(years_predict),
+        x_init = covariates$init[ok, , drop = FALSE])
       p_type <- lapply(dyn, function(x) weights[[type]] * plogis(x))
       p <- if (is.null(p)) p_type else Map(`+`, p, p_type)
       rm(dyn, p_type)
     }
     for (j in seq_along(years_predict)) {
-      mean_out[ok, j] <- rowMeans(p[[j]])
-      sd_out[ok, j] <- row_sds(p[[j]])
+      mean_out[ok, j] <- colMeans(p[[j]])
+      sd_out[ok, j] <- col_sds(p[[j]])
     }
-    rm(p)
+    rm(p, x_chunk)
   }
 
   # a fresh raster handle in this process

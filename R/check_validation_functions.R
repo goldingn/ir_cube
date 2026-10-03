@@ -139,19 +139,16 @@ report("MSE cannot separate the dispersion errors",
                         tolerance = 1e-8)))
 
 
-# the randomised PIT, against the mid-P value it is easily confused with -----
+# the randomised PIT where the predictive distribution has a large atom --------
 
-# A single randomisation replicate is uniform under calibration; the average
-# over replicates converges to the mid-P value `cdf_below + 0.5 * pmf_at`,
-# which is not, because the distribution is discrete. This mattered: the first
-# version of validation_metrics.R stored the mean and the figures read it as a
-# PIT (#12 review).
-#
-# The distortion is driven by the size of the atom at the observation, so it is
-# invisible in the simulation above, where the fractions span the range and no
-# single count is very likely, and it bites in the real held-out data, where
-# about 30% of assays record 100% mortality. So it is checked here on data
-# generated with fractions close to one.
+# The distortion a discrete predictive distribution can introduce is driven by
+# the size of the atom at the observation, so it is invisible in the simulation
+# above, where the fractions span the range and no single count is very likely.
+# It bites in the real held-out data, where about 30% of assays record 100%
+# mortality, so the randomised PIT is checked here on data generated with
+# fractions close to one. (The pipeline stores one randomisation replicate; the
+# mean over replicates is the mid-P value, which is not a PIT, and the figures
+# once read it as one - #12 review.)
 n_atom <- 4000
 p_atom <- rbeta(n_atom, 20, 1.2)
 size_atom <- rep(100, n_atom)
@@ -164,7 +161,6 @@ pit_atom <- ppd_pit(
   n_rep = 100
 )
 randomised <- pit_atom[, 1]
-mid_p <- rowMeans(pit_atom)
 
 cat(sprintf("\n  %.0f%% of these assays are at 100%% mortality\n",
             100 * mean(died_atom == size_atom)))
@@ -172,17 +168,9 @@ cat(sprintf("\n  %.0f%% of these assays are at 100%% mortality\n",
 report("randomised PIT gives nominal coverage",
        abs(mean(randomised > 0.025 & randomised < 0.975) - 0.95) < 0.02,
        sprintf("(%.3f)", mean(randomised > 0.025 & randomised < 0.975)))
-report("the mid-P value reads over-covered, so is not a PIT",
-       mean(mid_p > 0.025 & mid_p < 0.975) - 0.95 > 0.01,
-       sprintf("(%.3f)", mean(mid_p > 0.025 & mid_p < 0.975)))
-report("randomised PIT is uniform, the mid-P value is under-dispersed",
-       var(randomised) > var(mid_p) &&
-         abs(var(randomised) - 1 / 12) < 0.005,
-       sprintf("(variance %.4f vs %.4f, uniform is %.4f)",
-               var(randomised), var(mid_p), 1 / 12))
-report("the mid-P value fails a uniformity test the randomised PIT passes",
-       cvm_stat(mid_p) > 10 * cvm_stat(randomised),
-       sprintf("(CvM %.2f vs %.2f)", cvm_stat(mid_p), cvm_stat(randomised)))
+report("randomised PIT is uniform under a large atom",
+       abs(var(randomised) - 1 / 12) < 0.005,
+       sprintf("(variance %.4f, uniform is %.4f)", var(randomised), 1 / 12))
 
 
 # the noise floor ----------------------------------------------------------

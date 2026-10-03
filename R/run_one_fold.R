@@ -123,36 +123,21 @@ cat(sprintf("%s | fit complete in %.1f hours\n",
 
 dir.create(draws_dir, showWarnings = FALSE, recursive = TRUE)
 
+# Everything fit_fold() returns, under the three labels that identify the fold.
+# That includes the draws object and the greta arrays the predictions came from,
+# so that calculate() can be used on a reloaded fold to predict a quantity that
+# was not asked for at fitting time - the only supported way to predict from a
+# fitted greta model, kept deliberately even though the scoring path reads only
+# the matrices, and the bulk of each file's size.
+#
+# This used to list fit's fields one by one. Copying them wholesale
+# saves the same names in the same order, since fit_fold() returns them in it
+# (#12 review).
 saveRDS(
-  list(model = "dynamical",
-       experiment = experiment_label,
-       fold = fold_name,
-       # The draws object, and the greta arrays the predictions came from, so
-       # that calculate() can be used on a reloaded fold to predict a quantity
-       # that was not asked for at fitting time. This is the only supported way
-       # to predict from a fitted greta model, so it is kept deliberately even
-       # though the scoring path reads only the matrices below; it is also the
-       # bulk of each file's size.
-       draws = fit$draws,
-       prediction_arrays = fit$prediction_arrays,
-       p_draws = fit$p_draws,
-       rho_type_draws = fit$rho_type_draws,
-       type_id = fit$type_id,
-       # the model options (dynamical_model_options()), which the plain-R
-       # predictions need to rebuild the model's terms
-       options = fit$options,
-       # the initial-state covariates at each cell (#19), for the same
-       x_cells_init = fit$x_cells_init,
-       test_df = fit$test_df,
-       p_draws_before = fit$p_draws_before,
-       before_df = fit$before_df,
-       convergence = fit$convergence,
-       ess = fit$ess,
-       ess_p = fit$ess_p,
-       ess_rho = fit$ess_rho,
-       n_sampled = fit$n_sampled,
-       n_chains = fit$n_chains,
-       settings = fit$settings),
+  c(list(model = "dynamical",
+         experiment = experiment_label,
+         fold = fold_name),
+    fit),
   destination
 )
 

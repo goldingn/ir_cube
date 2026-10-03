@@ -305,9 +305,9 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
 
 # The non-centred deviations of the countries' initial states
 # (init_country_raw) from the centred levels (#25), for draws x dim arrays of
-# each variable (as variable_draws() gives); `v` is returned with the levels
-# replaced. The prediction code draws the deviations of countries without data
-# on the non-centred scale.
+# each variable (as dynamical_parameter_draws() reads them); `v` is returned
+# with the levels replaced. The prediction code draws the deviations of
+# countries without data on the non-centred scale.
 init_noncentred_draws <- function(v, country_region_index,
                                   options = NULL) {
   if (is.null(v$init_country_level)) {

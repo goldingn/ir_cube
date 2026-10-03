@@ -49,21 +49,6 @@ rbetabinom <- function(n, size, p, rho) {
   extraDistr::rbbinom(n, size, alpha = shape$a, beta = shape$b)
 }
 
-# probability mass of a beta-binomial over the values in `y`, for each of the
-# draws implied by vectors of shape parameters `a` and `b`. Returns a matrix
-# with one row per draw and one column per element of `y`
-bb_pmf_matrix <- function(y, size, a, b) {
-  n_draws <- length(a)
-  n_y <- length(y)
-  density <- extraDistr::dbbinom(
-    x = rep(y, each = n_draws),
-    size = size,
-    alpha = rep(a, times = n_y),
-    beta = rep(b, times = n_y)
-  )
-  matrix(density, nrow = n_draws, ncol = n_y)
-}
-
 
 # posterior predictive summaries -------------------------------------------
 
@@ -81,7 +66,8 @@ bb_pmf_matrix <- function(y, size, a, b) {
 # metrics below need: the log predictive density at the observation, the
 # mixture cdf just below the observation and the mixture mass at it (the two
 # ingredients of a randomised quantile residual), and the predictive mean.
-ppd_summary <- function(died, mosquito_number, p_draws, rho_draws) {
+ppd_summary <- function(died, mosquito_number, p_draws, rho_draws,
+                        chunk_size = 1000) {
 
   n_obs <- length(died)
   stopifnot(
@@ -96,24 +82,33 @@ ppd_summary <- function(died, mosquito_number, p_draws, rho_draws) {
   }
   stopifnot(all(dim(rho_draws) == dim(p_draws)))
 
-  log_score <- numeric(n_obs)
+  n_draws <- nrow(p_draws)
   cdf_below <- numeric(n_obs)
   pmf_at <- numeric(n_obs)
 
-  # loop over observations, vectorising over draws and over the support below
-  # each observation. This keeps memory to n_draws x (died + 1) at a time
-  for (i in seq_len(n_obs)) {
+  # Both ingredients are means over draws of a single extraDistr evaluation:
+  # the mixture mass at the observation is dbbinom at y, and the mixture cdf
+  # just below it is pbbinom at y - 1, which is 0 at y = 0 as it should be.
+  # There is no need to evaluate the pmf over the whole support below y.
+  #
+  # Observations are taken in chunks purely to bound peak memory at
+  # n_draws x chunk_size rather than n_draws x n_obs; the largest held-out
+  # fold has ~10,000 records against 2,000 draws.
+  for (index in split(seq_len(n_obs), ceiling(seq_len(n_obs) / chunk_size))) {
 
-    shape <- bb_shape(p_draws[, i], rho_draws[, i])
-    support <- 0:died[i]
-    # mixture pmf over 0:died[i], averaging the per-draw pmfs
-    mixture <- colMeans(
-      bb_pmf_matrix(support, mosquito_number[i], shape$a, shape$b)
+    shape <- bb_shape(as.vector(p_draws[, index, drop = FALSE]),
+                      as.vector(rho_draws[, index, drop = FALSE]))
+    y <- rep(died[index], each = n_draws)
+    size <- rep(mosquito_number[index], each = n_draws)
+
+    pmf_at[index] <- colMeans(
+      matrix(extraDistr::dbbinom(y, size, alpha = shape$a, beta = shape$b),
+             nrow = n_draws)
     )
-
-    pmf_at[i] <- mixture[length(mixture)]
-    cdf_below[i] <- sum(mixture) - pmf_at[i]
-    log_score[i] <- log(pmf_at[i])
+    cdf_below[index] <- colMeans(
+      matrix(extraDistr::pbbinom(y - 1, size, alpha = shape$a, beta = shape$b),
+             nrow = n_draws)
+    )
 
   }
 
@@ -122,7 +117,7 @@ ppd_summary <- function(died, mosquito_number, p_draws, rho_draws) {
     mosquito_number = mosquito_number,
     observed = died / mosquito_number,
     predicted = colMeans(p_draws),
-    log_score = log_score,
+    log_score = log(pmf_at),
     cdf_below = cdf_below,
     pmf_at = pmf_at
   )
@@ -336,21 +331,13 @@ reliability_bins <- function(predicted, observed, n_bins = 10) {
   do.call(rbind, out)
 }
 
-# the scatter a perfect model would still show in a reliability bin: the
-# standard error of the mean of k assays of size n at fraction p, with
-# overdispersion rho. Drawn as an envelope around the 1:1 line, this separates
-# measurement noise from model error, and narrows visibly as k grows
-reliability_envelope <- function(p, mosquito_number, k, rho) {
-  variance <- p * (1 - p) * (1 + (mosquito_number - 1) * rho) / mosquito_number
-  sqrt(variance / k)
-}
-
-# The same envelope obtained by simulation instead, which is both correct and
-# more useful. `reliability_envelope()` above assumes the assays in a bin are
-# independent and uses a single assay size for all of them; more importantly it
-# conditions on the model's predicted fraction being the truth, so it cannot say
-# how much of a reliability gap posterior uncertainty in that fraction would
-# produce on its own.
+# The scatter a perfect model would still show in a reliability bin, obtained by
+# simulation. An analytic envelope - the standard error of the mean of k assays
+# of size n at fraction p - was also computed here once, and is gone: it assumes
+# the assays in a bin are independent and uses a single assay size for all of
+# them; more importantly it conditions on the model's predicted fraction being
+# the truth, so it cannot say how much of a reliability gap posterior
+# uncertainty in that fraction would produce on its own.
 #
 # This instead generates replicate held-out datasets from the model's own
 # posterior predictive distribution and re-runs the identical binning on each.

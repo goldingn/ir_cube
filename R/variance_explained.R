@@ -22,39 +22,28 @@
 #
 # The floor is the sampling variance of the observed proportion, p(1-p) k_i,
 # with k_i = (1 + (m_i - 1) rho_t) / m_i the beta-binomial design effect over
-# the assay size. What p(1-p) should be is the awkward part. Plugging in the
-# observed proportion gives exactly zero wherever an assay reads 0% or 100% -
-# which, with this much overdispersion, is a large share of the records for the
-# insecticides that sit against the top of the scale - and it is noisy
-# everywhere else. So p is instead regularised: each assay carries the
-# information of m_eff = 1/k_i independent draws, so under a Beta(a_t, b_t)
-# prior on the true proportion the posterior is
-#   Beta(a_t + y_i m_eff, b_t + (1 - y_i) m_eff)
-# and its mean of p(1-p) is AB / ((A+B)(A+B+1)), which is never zero. The prior
-# is fitted by maximum likelihood per insecticide type over all of that type's
-# held-out records, so the floor stays a property of the record rather than of
-# whichever subset is being summarised.
+# the assay size, and it is noise_floor_mse() from validation_functions.R - the
+# same estimator every other script uses. See the note above that function for
+# why: it is exactly unbiased for a subset's mean sampling variance and assumes
+# nothing about how p is distributed, which matters because p is bimodal for
+# DDT and Alpha-cypermethrin.
 #
-# This is the honest estimator, not a fix for the saturated insecticides: for
-# Fenitrothion in the interpolation fold the floor exceeds the observed
-# variance however p is estimated, because a constant rho overstates assay
-# noise as mortality approaches 100%. Those cells are excluded from the
-# per-insecticide figure by the rule below rather than papered over.
+# A constant rho overstates assay noise as mortality approaches 100%, so for the
+# near-saturated insecticides the floor can exceed the observed variance however
+# p is estimated - Fenitrothion in the interpolation fold does. Those cells are
+# excluded from the per-insecticide figure by the rule below rather than papered
+# over.
 #
-# Writes outputs/cv_variance_explained.csv (pooled per experiment) and
-# outputs/cv_variance_explained_by_insecticide.csv.
+# Writes outputs/cv_variance_explained.csv (pooled per experiment),
+# outputs/cv_variance_explained_by_fold.csv,
+# outputs/cv_variance_explained_by_horizon.csv (forecasting, origins pooled)
+# and outputs/cv_variance_explained_by_insecticide.csv.
 
-source("R/validation_functions.R")
-suppressMessages({
-  library(dplyr)
-  library(tidyr)
-})
+source("R/validation_scoring.R")
 
 set.seed(2026 - 9 - 24)
 n_bootstrap <- 2000
 n_posterior <- 4000
-
-draws_dir <- "outputs/cv_draws"
 
 # the three out-of-sample experiments worth reporting. Leave-one-country-out is
 # excluded: it measures the difficulty of an entirely unsampled country, which
@@ -76,12 +65,14 @@ experiments <- list(
 # each contrast is the first model less the second, in percentage points of the
 # observed variance
 contrasts <- list(
+  c("two_stage", "dynamical"),
   c("dynamical", "nearest_neighbour"),
   c("dynamical", "nearest_neighbour_oracle"),
   c("dynamical", "intercept"),
   c("nearest_neighbour", "intercept"))
 
 models <- c(dynamical = "dynamical model",
+            two_stage = "two-stage model",
             nearest_neighbour = "nearest recent survey",
             nearest_neighbour_oracle = "nearest surveys, best k",
             intercept = "insecticide mean")
@@ -90,41 +81,57 @@ models <- c(dynamical = "dynamical model",
 # rho_table, not rho_lookup: the latter is the function that supplies it.
 rho_spec <- rho_lookup()
 rho_key <- rho_spec$key
-rho_table <- rho_spec$table %>%
-  mutate(se_logit = (qlogis(rho_upper) - qlogis(rho_lower)) / (2 * 1.96))
+rho_table <- rho_spec$table
+
+# the joint posterior of rho by type, saved by the fit that produced it
+rho_draws_file <- "outputs/bioassay_rho_type_draws.rds"
+if (!file.exists(rho_draws_file)) {
+  stop("no rho draws at ", rho_draws_file,
+       "; run R/fig_illustrate_bioassay_variability.R first")
+}
+rho_draws <- readRDS(rho_draws_file)
+stopifnot(all(rho_table$key %in% colnames(rho_draws)))
 cat("overdispersion used for the noise share:", rho_spec$source, "\n")
 
 
 # assemble the held-out records, with one prediction column per model ---------
 
-read_fold <- function(model, experiment, fold) {
+# predictions are matched on the record (record_key(), in validation_scoring.R).
+# Each fold file is read once, keeping its held-out records and the posterior
+# mean predictions. Every model must describe the reference's records (the
+# dynamical model's), in the same order. They do, being built from one fold
+# definition, but nothing else enforces it and a silent misalignment would swap
+# predictions between assays (#12 review)
+read_fold <- function(model, experiment, fold, reference = NULL) {
   file <- file.path(draws_dir, sprintf("%s__%s__%s.rds", model, experiment, fold))
-  if (!file.exists(file)) return(NULL)
+  stopifnot(file.exists(file))
   x <- readRDS(file)
-  stopifnot(ncol(x$p_draws) == nrow(x$test_df))
-  data.frame(row = seq_len(nrow(x$test_df)), model = model,
-             predicted = colMeans(x$p_draws))
+  stopifnot(ncol(x$p_draws) == nrow(x$test_df),
+            is.null(reference) ||
+              identical(record_key(x$test_df), record_key(reference)))
+  out <- list(test_df = x$test_df, predicted = colMeans(x$p_draws))
+  rm(x)
+  invisible(gc())
+  out
 }
 
 records <- bind_rows(lapply(experiments, function(spec) {
   bind_rows(lapply(spec$folds, function(fold) {
 
-    reference <- readRDS(file.path(
-      draws_dir, sprintf("dynamical__%s__%s.rds", spec$experiment, fold)))$test_df
-
-    predictions <- bind_rows(lapply(names(models), read_fold,
-                                    experiment = spec$experiment, fold = fold))
-    wide <- predictions %>%
-      pivot_wider(names_from = model, values_from = predicted,
-                  names_prefix = "p_")
-    stopifnot(nrow(wide) == nrow(reference))
+    dynamical <- read_fold("dynamical", spec$experiment, fold)
+    reference <- dynamical$test_df
+    predictions <- lapply(setNames(names(models), names(models)), function(m) {
+      if (m == "dynamical") return(dynamical$predicted)
+      read_fold(m, spec$experiment, fold, reference)$predicted
+    })
 
     reference %>%
       transmute(experiment = spec$label, fold = fold,
-                cell, insecticide_type, insecticide_class,
+                cell, insecticide_type, insecticide_class, year_start,
                 died, mosquito_number,
                 observed = died / mosquito_number) %>%
-      bind_cols(wide %>% select(starts_with("p_")))
+      bind_cols(as_tibble(setNames(predictions,
+                                   paste0("p_", names(predictions)))))
   }))
 }))
 
@@ -145,57 +152,20 @@ cat(sprintf("%i held-out records across %i experiments\n",
 
 # the two quantities ---------------------------------------------------------
 
-# beta-binomial design effect over the assay size: the variance of the observed
-# proportion is p(1-p) k
-design_effect <- function(m, rho) (1 + (m - 1) * rho) / m
-
-# marginal likelihood of a Beta(a, b) prior on the true proportion, at the
-# effective sample size the overdispersion leaves each assay
-beta_prior_nll <- function(par, observed, m_eff) {
-  a <- exp(par[1])
-  b <- exp(par[2])
-  successes <- observed * m_eff
-  -sum(lbeta(a + successes, b + m_eff - successes) - lbeta(a, b))
-}
-
-fit_beta_priors <- function(data) {
-  bind_rows(lapply(split(data, data[[rho_key]]), function(d) {
-    m_eff <- 1 / design_effect(d$mosquito_number, d$rho_type)
-    fit <- optim(c(0, 0), beta_prior_nll, observed = d$observed, m_eff = m_eff,
-                 method = "Nelder-Mead", control = list(reltol = 1e-10))
-    data.frame(key = d[[rho_key]][1], a = exp(fit$par[1]), b = exp(fit$par[2]),
-               prior_mean = exp(fit$par[1]) / sum(exp(fit$par)),
-               converged = fit$convergence == 0, records = nrow(d))
-  }))
-}
-
-# per-record floor contributions at a given vector of rho values. The Beta
-# prior is held at its fit under the point estimate of rho while rho varies for
-# the interval: refitting it inside every posterior draw would cost thousands of
-# optimisations for a second-order effect on the prior.
-floor_contributions <- function(data, rho_vector) {
-  k <- design_effect(data$mosquito_number, rho_vector)
-  usable <- data$mosquito_number > 1 & is.finite(k) & k > 0 & k < 1
-  out <- rep(NA_real_, nrow(data))
-  m_eff <- 1 / k[usable]
-  shape_a <- data$a[usable] + data$observed[usable] * m_eff
-  shape_b <- data$b[usable] + (1 - data$observed[usable]) * m_eff
-  out[usable] <- shape_a * shape_b /
-    ((shape_a + shape_b) * (shape_a + shape_b + 1)) * k[usable]
-  out
-}
-
-# fitted once, per insecticide type, over all of that type's held-out records
-beta_priors <- fit_beta_priors(records)
-stopifnot(all(beta_priors$converged))
-records <- records %>%
-  left_join(beta_priors %>% select(key, a, b), by = setNames("key", rho_key))
-stopifnot(!any(is.na(records$a)), !any(is.na(records$b)))
-
-cat("\nBeta prior on the true proportion, fitted per insecticide type:\n")
-print(as.data.frame(beta_priors %>%
-  transmute(type = key, records, a = round(a, 2), b = round(b, 2),
-            prior_mean = round(prior_mean, 3))), row.names = FALSE)
+# The noise floor is noise_floor_mse() from validation_functions.R, the same
+# estimator the rest of the pipeline uses. It is y(1-y) k / (1-k), and since
+# E[y(1-y)] = p(1-p)(1-k) the division makes it exactly unbiased for the mean
+# sampling variance of a subset, with no assumption about how p is distributed.
+#
+# It replaces an empirical Bayes floor fitted here: a Beta(a_t, b_t) prior per
+# insecticide type with each assay treated as 1/k independent draws. That was
+# introduced because the plug-in is exactly zero for an assay reading 0% or
+# 100%, which a large share of records for the near-saturated insecticides do.
+# But the zero is a per-record artefact and only the subset mean is ever used,
+# where the de-attenuation on the unsaturated records compensates for it
+# exactly - which is what makes the plug-in unbiased. Simulation put the Beta
+# version 1.4 to 9.6% high depending on rho, and it is the more fragile of the
+# two where p is bimodal, as it is for DDT and Alpha-cypermethrin (#12 review).
 
 explained_for <- function(data) {
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
@@ -204,42 +174,34 @@ explained_for <- function(data) {
   }, numeric(1))
 }
 
-# bootstrap the explained fraction by resampling pixels
-bootstrap_explained <- function(data) {
-  cells <- unique(data$cell)
-  rows_by_cell <- split(seq_len(nrow(data)), data$cell)
-  replicates <- t(replicate(n_bootstrap, {
-    picked <- sample(cells, length(cells), replace = TRUE)
-    explained_for(data[unlist(rows_by_cell[as.character(picked)],
-                              use.names = FALSE), ])
-  }))
-  colnames(replicates) <- prediction_columns
-  replicates
-}
-
-# posterior draws of the noise share, propagating rho only. The logit-scale
-# standard errors come from the fit that produced rho, so this carries the
-# uncertainty in the overdispersion but treats Var(y) as known - that is where
+# Posterior draws of the noise share, propagating rho only: this carries the
+# uncertainty in the overdispersion but treats Var(y) as known, which is where
 # essentially all of the floor's uncertainty sits.
+#
+# The draws come from the hierarchical fit itself rather than being rebuilt as
+# independent logit-normals from each type's interval. The hierarchy correlates
+# rho between types, so independent draws understate the uncertainty in a share
+# averaged over types (#12 review).
 noise_posterior <- function(data) {
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
-  index <- match(data[[rho_key]], rho_table$key)
-  centre <- qlogis(rho_table$rho)
-  spread <- rho_table$se_logit
-  vapply(seq_len(n_posterior), function(i) {
-    drawn <- plogis(rnorm(nrow(rho_table), centre, spread))
-    100 * mean(floor_contributions(data, drawn[index]), na.rm = TRUE) / variance
-  }, numeric(1))
+  index <- match(data$insecticide_type, colnames(rho_draws))
+  stopifnot(!any(is.na(index)))
+  vapply(sample(nrow(rho_draws), n_posterior, replace = nrow(rho_draws) < n_posterior),
+         function(i) {
+           100 * noise_floor_mse(data$died, data$mosquito_number,
+                                 rho_draws[i, index]) / variance
+         }, numeric(1))
 }
 
 summarise_subset <- function(data, label, stratum = NA_character_) {
 
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
   point <- explained_for(data)
-  replicates <- bootstrap_explained(data)
+  # resampling pixels (pixel_bootstrap(), in validation_scoring.R)
+  replicates <- pixel_bootstrap(data, explained_for, n_bootstrap)
   noise <- noise_posterior(data)
-  noise_point <- 100 * mean(floor_contributions(data, data$rho_type),
-                            na.rm = TRUE) / variance
+  noise_point <- 100 * noise_floor_mse(data$died, data$mosquito_number,
+                                       data$rho_type) / variance
 
   bind_rows(
     bind_rows(lapply(prediction_columns, function(column) {
@@ -390,3 +352,22 @@ print(as.data.frame(cells %>%
             ci_width = round(ci_width, 1),
             shown = ifelse(shown, "yes", drop_reason)) %>%
   arrange(desc(shown == "yes"), experiment, insecticide)), row.names = FALSE)
+
+
+# and by forecast horizon --------------------------------------------------
+
+# The two forecasting origins pooled, by years ahead of the last training year
+# (training is year_start < the fold's cut year, so the cut year is one year
+# ahead). A pixel's records from both origins move together in the bootstrap.
+# Last in the script, so the bootstraps above draw the random numbers they did
+# before it was added
+forecasts <- records %>%
+  filter(experiment == "temporal change") %>%
+  mutate(horizon = year_start - as.integer(fold) + 1)
+by_horizon <- bind_rows(lapply(split(forecasts, forecasts$horizon),
+                               function(data) {
+  summarise_subset(data, data$experiment[1], as.character(data$horizon[1]))
+}))
+row.names(by_horizon) <- NULL
+write.csv(by_horizon, "outputs/cv_variance_explained_by_horizon.csv",
+          row.names = FALSE)

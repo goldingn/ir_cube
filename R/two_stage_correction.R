@@ -1,33 +1,71 @@
 # Second-stage geostatistical correction to the dynamical model (#21).
 #
-# The dynamical model captures broad trends, but its residuals carry
-# fine-scale spatiotemporal structure. Rather than add a space-time random
-# effect inside the dynamical model (infeasible, and confounded with the process
-# covariates), this fits a Gaussian model to the residuals on the logit scale,
-# conditioning on the dynamical model without ever updating it: a cut posterior.
+# A Gaussian model for the dynamical model's residuals on the logit scale,
+# conditioning on the dynamical model without ever updating it (a cut
+# posterior):
 #
-#   z_i = m_i + omega(s_i) + xi(s_i, t_i) + u_j(i) + e_i,   e_i ~ N(0, v_i)
+#   lambda_i = m_i + omega(s_i) + xi(s_i, t_i) + u[pixel-year(i)] + p[pixel(i)]
 #
-# z and v are the empirical logit and its variance, inflated for beta-binomial
-# noise by the replicate-based rho (stage A of the issue). m is the dynamical
-# model's logit prediction. omega corrects the initial conditions, xi
-# accumulates an AR(1) field of annual selection anomalies eta, so that
-# forecasts of the correction plateau, and u is the pixel-year deviation from
-# the smooth fields.
+# m is the dynamical model's posterior mean logit at the training assays
+# (m_ref). omega is a Matern field correcting the initial conditions; xi
+# accumulates an AR(1)-in-time, Matern-in-space field of annual anomalies eta
+# from xi(., t0) = 0, so that forecasts of the correction plateau; u (per
+# pixel-year) and p (per pixel) are iid.
 #
-# Optional term (doc/two_stage_plan.md, "Error structure"), off by default so
-# that the default reproduces the model above exactly:
+# The prediction target (what the maps show) is m + omega + xi. u and p are
+# observation-level noise, shared by the assays of a pixel-year or a pixel:
+# they are fitted so that this noise stays out of omega and xi, and enter
+# predictions of new assays only as fresh draws from N(0, tau^2) and
+# N(0, sigma_p^2), never as their fitted values, even at pixel-years or
+# pixels with training data.
 #
-#   + p_c(i)  static pixel effect, iid N(0, sigma_p^2) per pixel (raster cell):
-#             a persistent local deviation that omega otherwise absorbs as a
-#             node spike. Part of the final model and of its prediction target.
+# Fitting, per insecticide type (fit_correction()):
+#   stage A  z, v = empirical logit and its variance, inflated by the per-type
+#            replicate-based rho; hyperparameters by penalised maximum
+#            marginal likelihood (TMB, tmb/two_stage_correction.cpp), latent
+#            posterior exactly Gaussian given them (fit_stage_a());
+#   stage B  PQL on the beta-binomial counts from the stage-A fit, with one
+#            re-estimation of the hyperparameters (R/two_stage_pql.R).
+# The result's latent posterior is N(mode, H^-1); predictions draw from it.
 #
-# Hyperparameters are estimated by penalised maximum marginal
-# likelihood (TMB, template in tmb/two_stage_correction.cpp); given them, the
-# latent posterior is exactly Gaussian with precision equal to the random
-# effects Hessian, which is what prediction samples from.
+# API (source this file from the repo root; it sources R/two_stage_pql.R):
 #
-# Fitted separately per insecticide. Functions only: source from the repo root.
+#   meshes <- build_correction_meshes(coords_km, prediction_mask_coords())
+#                                                  list(omega, xi): the final
+#                                                  model's meshes, covering the
+#                                                  sites and the mask
+#   fit <- fit_correction(train, t0, T, meshes)    stage A then stage B.
+#     train: lon, lat (or x_km, y_km), year, cell, m (= m_ref), died,
+#     mosquito_number, rho. T: last year xi is represented (forecast beyond).
+#     Stops if stage A does not converge; check fit$opt$convergence for the
+#     stage-B re-estimation. fit$hyper: sigma_omega, range_omega, sigma_eta,
+#     range_eta, phi, persistence, tau (SD of u), sigma_p (and the kappas).
+#     fit$stage_b: PQL diagnostics, incl. hyper_a and objective_a (stage A).
+#   fit_summary(fit)                               one-row tibble for tables
+#   fields <- correction_node_draws(fit, years, n_draws, m_draws_train = NULL,
+#                                   mean = FALSE)
+#     (a) joint latent draws (theta), with the cut-posterior shift per
+#     dynamical draw when m_draws_train (n_draws x n_obs) is given, and the
+#     node fields: omega (nodes x draws) and xi[[year]] (xi nodes x draws) for
+#     every requested year, AR(1)-forecast beyond T. mean = TRUE gives the
+#     posterior mean instead (the mode, mean forecast; one column).
+#   project_correction(fit, fields, new, noise = FALSE)
+#     (b) points x draws correction omega + xi at the rows of `new`
+#     (lon/lat or x_km/y_km, year, and cell if noise = TRUE). noise = TRUE
+#     adds fresh u per distinct pixel-year and fresh p per distinct pixel of
+#     `new` (shared by its rows within a draw; caller's RNG), as for new
+#     assays; maps use noise = FALSE. Warns for points outside the mesh
+#     (their fields are 0).
+#   predict_correction(fit, new, m_draws_train, m_draws_new, n_draws)
+#     draws x points m_draw + omega + xi + fresh u + fresh p: the predictive
+#     distribution of new assays' logit mortality, in batches (CV scoring).
+#   Saving without refitting: fit$obj <- NULL; saveRDS(fit, file). Everything
+#     above works on the reloaded fit (it keeps H, H_chol, meshes and levels);
+#     only correction_adfun() needs tmb_data and par_list, which it keeps too.
+#
+# Speed depends heavily on the BLAS used by CHOLMOD's supernodal
+# factorisation: run with OpenBLAS (reference BLAS is ~10x slower), and the
+# template must be compiled with TMBad (CppAD is ~100x slower).
 
 suppressMessages({
   library(TMB)
@@ -36,6 +74,7 @@ suppressMessages({
   library(sf)
   library(dplyr)
 })
+source("R/two_stage_pql.R")
 
 correction_template <- "tmb/two_stage_correction.cpp"
 
@@ -52,44 +91,41 @@ load_correction_template <- function(path = correction_template) {
   dll_name
 }
 
-
-# stage A response ---------------------------------------------------------
-
 # empirical logit of bioassay mortality, and its approximate sampling variance
-# inflated by the beta-binomial design effect 1 + (n - 1) rho. rho is the
-# replicate-based estimate (R/estimate_bioassay_rho.R), fixed rather than
-# estimated, so v carries all of the within-pixel-year assay noise and u can be
-# indexed by pixel-year
+# inflated by the beta-binomial design effect 1 + (n - 1) rho
 empirical_logit <- function(died, n, rho) {
   z <- log((died + 0.5) / (n - died + 0.5))
   v <- (1 / (died + 0.5) + 1 / (n - died + 0.5)) * (1 + (n - 1) * rho)
   list(z = z, v = v)
 }
 
+# The iid noise terms, each as the key grouping assays into its levels, and
+# the name of its SD in fit$hyper. Adding or removing a term here is all the
+# model and the predictions need
+correction_iid_terms <- list(
+  u = list(key = function(d) paste(d$cell, d$year), sd = "tau"),
+  p = list(key = function(d) as.character(d$cell), sd = "sigma_p")
+)
 
-# coordinates and mesh ---------------------------------------------------------
 
-# Albers equal-area conic for Africa, in km. Equal-area so that the Matern
-# range means the same distance everywhere on the continent, and in km so that
-# the range priors can be stated in km
+# coordinates and meshes ----------------------------------------------------
+
+# Albers equal-area conic for Africa, in km, so that the Matern range means
+# the same distance everywhere and the range priors can be stated in km
 africa_equal_area_crs <- paste(
   "+proj=aea +lat_1=20 +lat_2=-23 +lat_0=0 +lon_0=25",
   "+x_0=0 +y_0=0 +ellps=WGS84 +units=km +no_defs"
 )
 
 project_km <- function(lon, lat, crs = africa_equal_area_crs) {
-  xy <- sf::sf_project(
-    from = "+proj=longlat +datum=WGS84 +no_defs",
-    to = crs,
-    pts = cbind(lon, lat)
-  )
+  xy <- sf::sf_project(from = "+proj=longlat +datum=WGS84 +no_defs", to = crs,
+                       pts = cbind(lon, lat))
   colnames(xy) <- c("x_km", "y_km")
   xy
 }
 
-# projected coordinates of a data frame of observations or prediction points.
-# Uses x_km and y_km if present (e.g. simulated data), otherwise projects lon
-# and lat
+# projected coordinates of a data frame: x_km and y_km if present (simulated
+# data), otherwise lon and lat projected
 coords_km <- function(df) {
   if (all(c("x_km", "y_km") %in% names(df))) {
     cbind(x_km = df$x_km, y_km = df$y_km)
@@ -98,112 +134,82 @@ coords_km <- function(df) {
   }
 }
 
-# fmesher mesh, fine near the data and coarse elsewhere.
-#
-# The issue asks for edges of at most about range / 4 near the data. A uniform
-# fine mesh over the data's extent cannot meet the node budget: the bioassay
-# sites span most of sub-Saharan Africa, so ~2500 nodes spread evenly over a
-# non-convex hull of the sites gives ~150 km edges everywhere (checked on the
-# Deltamethrin and Fenitrothion data). Instead the mesh has a node at every
-# site, with sites closer than `cutoff` merged, and triangles of at most
-# max_edge_inner km between them. Resolution then follows data density: where
-# sites are dense the edges are the (>= cutoff) site spacing, where they are
-# sparse they are up to max_edge_inner, which matters little because there is
-# no information there to resolve. The inner boundary is a non-convex hull with
-# a buffer, and an outer extension with coarse triangles keeps the SPDE's
-# boundary effects away from the data.
-#
-# If the mesh exceeds max_nodes, the cutoff is increased (coarsening the
-# densest clusters first) until it doesn't, and the final value is reported.
-# With the defaults, Deltamethrin (the most sampled insecticide, ~4000 distinct
-# sites) gives ~2400 nodes with 90% of sites within ~20 km of a node
-build_correction_mesh <- function(coords_km,
-                                  max_edge_inner = 250,
-                                  max_edge_outer = 800,
-                                  cutoff = 30,
-                                  inner_buffer = 200,
-                                  outer_buffer = 1500,
-                                  hull_resolution = c(60, 60),
-                                  max_nodes = 2500,
-                                  cutoff_growth = 1.2,
-                                  verbose = TRUE) {
+# Projected centres of the prediction mask's cells, on a coarse grid (every
+# `fact`-th cell), for the outer boundary of the meshes. Callers pass them to
+# build_correction_meshes()
+prediction_mask_coords <- function(file = "data/clean/raster_mask.tif",
+                                   fact = 10) {
+  mask <- terra::aggregate(terra::rast(file), fact = fact, fun = "min",
+                           na.rm = TRUE)
+  xy <- terra::xyFromCell(mask, terra::cells(mask))
+  project_km(xy[, 1], xy[, 2])
+}
 
+# One fmesher mesh with a node at every site, sites closer than `cutoff`
+# merged, and triangles of at most max_edge_inner km between them inside a
+# buffered non-convex hull of the sites. Resolution follows data density. If
+# that inner mesh exceeds max_nodes, the cutoff grows (coarsening the densest
+# clusters first) until it does not. Around it, a coarse outer region (edges of
+# at most max_edge_outer km) out to outer_buffer km beyond the sites and beyond
+# `outer_coords` (the prediction mask, prediction_mask_coords(), so that every
+# map cell is inside the mesh), which keeps the SPDE's boundary effects away
+# from the data and the maps
+build_correction_mesh <- function(coords_km, outer_coords, max_edge_inner = 250,
+                                  max_edge_outer = 800, cutoff = 30,
+                                  inner_buffer = 200, outer_buffer = 1500,
+                                  max_nodes = 2500, cutoff_growth = 1.2) {
   coords_km <- unique(as.matrix(coords_km))
-  # a smooth hull (coarse resolution) avoids many short boundary segments,
-  # each of which would add nodes
+  # a smooth (coarse resolution) hull avoids many short boundary segments
   inner <- suppressWarnings(
-    fmesher::fm_nonconvex_hull(coords_km,
-                               convex = inner_buffer,
-                               resolution = hull_resolution,
-                               format = "fm")
+    fmesher::fm_nonconvex_hull(coords_km, convex = inner_buffer,
+                               resolution = c(60, 60), format = "fm")
   )
-
+  # the cutoff is chosen on the mesh without the mask
   repeat {
-    mesh <- fmesher::fm_mesh_2d(
-      loc = coords_km,
-      boundary = list(inner),
-      max.edge = c(max_edge_inner, max_edge_outer),
-      cutoff = cutoff,
-      offset = c(-0.01, outer_buffer)
-    )
+    mesh <- fmesher::fm_mesh_2d(loc = coords_km, boundary = list(inner),
+                                max.edge = c(max_edge_inner, max_edge_outer),
+                                cutoff = cutoff,
+                                offset = c(-0.01, outer_buffer))
     if (mesh$n <= max_nodes) break
     cutoff <- cutoff * cutoff_growth
   }
-
-  if (verbose) {
-    message(sprintf("correction mesh: %i nodes, cutoff %.0f km",
-                    mesh$n, cutoff))
-  }
+  outer <- suppressWarnings(
+    fmesher::fm_nonconvex_hull(rbind(coords_km, as.matrix(outer_coords)),
+                               convex = outer_buffer,
+                               resolution = c(60, 60), format = "fm")
+  )
+  mesh <- fmesher::fm_mesh_2d(loc = coords_km, boundary = list(inner, outer),
+                              max.edge = c(max_edge_inner, max_edge_outer),
+                              cutoff = cutoff)
   attr(mesh, "cutoff") <- cutoff
   mesh
 }
 
-# FEM matrices in the form R_inla::spde_t expects: c0 is the lumped (diagonal)
-# mass matrix, as in INLA, so that Q is sparse
+# The meshes of the final model (omega5000_xi2500 in doc/two_stage_plan.md):
+# omega on a fine mesh (15 km cutoff, inner edges of at most 150 km, at most
+# 5000 nodes in the data region), xi on one of at most 2500. xi's latent
+# dimension is multiplied by the number of years, which is why its mesh is
+# coarser. Both cover `outer_coords`, the prediction mask
+# (prediction_mask_coords())
+build_correction_meshes <- function(coords_km, outer_coords) {
+  list(omega = build_correction_mesh(coords_km, outer_coords, cutoff = 15,
+                                     max_edge_inner = 150, max_nodes = 5000),
+       xi = build_correction_mesh(coords_km, outer_coords, max_nodes = 2500))
+}
+
+# FEM matrices in the form R_inla::spde_t expects (c0 lumped, as in INLA)
 correction_fem <- function(mesh) {
   fem <- fmesher::fm_fem(mesh, order = 2)
   as_dgc <- function(x) as(as(as(x, "dMatrix"), "generalMatrix"),
                            "CsparseMatrix")
-  list(M0 = as_dgc(fem$c0),
-       M1 = as_dgc(fem$g1),
-       M2 = as_dgc(fem$g2))
+  list(M0 = as_dgc(fem$c0), M1 = as_dgc(fem$g1), M2 = as_dgc(fem$g2))
 }
 
-# Matern precision at the nodes with marginal SD sigma (alpha = 2, d = 2),
-# matching matern_precision() in the template
+# Matern precision at the nodes with marginal SD sigma, as in the template
 matern_precision_r <- function(fem, kappa, sigma) {
   tau_spde <- 1 / (sigma * kappa * sqrt(4 * pi))
   tau_spde ^ 2 * (kappa ^ 4 * fem$M0 + 2 * kappa ^ 2 * fem$M1 + fem$M2)
 }
-
-
-# priors ------------------------------------------------------------------------
-
-# PC priors: P(range < 50 km) = 0.05 and P(sigma > 1) = 0.05 for both Matern
-# fields, P(tau > 1) = 0.05, and persistence 1 / (1 - phi) ~ lognormal(log 5,
-# 0.62), i.e. a median of five years with a 95% interval of roughly 1.5-17.
-# P(sigma_p > 1) = 0.05 for the optional pixel effect
-correction_priors <- function(range0 = 50,
-                              alpha_range = 0.05,
-                              sigma0 = 1,
-                              alpha_sigma = 0.05,
-                              tau0 = 1,
-                              alpha_tau = 0.05,
-                              persistence_median = 5,
-                              persistence_sdlog = 0.62,
-                              sigma_p0 = 1,
-                              alpha_sigma_p = 0.05) {
-  list(
-    pc_omega = c(range0, alpha_range, sigma0, alpha_sigma),
-    pc_eta = c(range0, alpha_range, sigma0, alpha_sigma),
-    pc_tau = c(tau0, alpha_tau),
-    persistence_prior = c(log(persistence_median), persistence_sdlog),
-    pc_sigma_p = c(sigma_p0, alpha_sigma_p)
-  )
-}
-
-
-# fitting -----------------------------------------------------------------------
 
 # sparse projection from points to mesh nodes
 mesh_basis <- function(mesh, coords) {
@@ -211,512 +217,345 @@ mesh_basis <- function(mesh, coords) {
   as(as(A, "generalMatrix"), "CsparseMatrix")
 }
 
-# observation -> latent design matrices. xi(., t0) = 0 and the columns of x are
-# years t0 + 1, ..., T, so an observation in year t touches column t - t0 and
-# observations in year t0 touch none
-correction_design <- function(mesh, mesh_xi, coords, year, t0, T) {
-  A_omega <- mesh_basis(mesh, coords)
-  A_xi_space <- mesh_basis(mesh_xi, coords)
-  n_nodes <- mesh_xi$n
-  n_years <- T - t0
-  year_col <- year - t0
-  trip <- summary(A_xi_space)
-  keep <- year_col[trip$i] > 0 & year_col[trip$i] <= n_years
-  A_xi <- Matrix::sparseMatrix(
-    i = trip$i[keep],
-    j = trip$j[keep] + (year_col[trip$i[keep]] - 1) * n_nodes,
-    x = trip$x[keep],
-    dims = c(length(year), n_nodes * n_years)
-  )
-  list(A_omega = A_omega, A_xi = A_xi)
+# observations -> vec(x), x the xi nodes in years t0 + 1, ..., T: an
+# observation in year t touches column t - t0, one in year t0 none
+xi_design <- function(mesh_xi, coords, year, t0, T) {
+  trip <- summary(mesh_basis(mesh_xi, coords))
+  year_col <- year[trip$i] - t0
+  keep <- year_col > 0 & year_col <= T - t0
+  Matrix::sparseMatrix(i = trip$i[keep],
+                       j = trip$j[keep] + (year_col[keep] - 1) * mesh_xi$n,
+                       x = trip$x[keep],
+                       dims = c(length(year), mesh_xi$n * (T - t0)))
 }
 
-# assemble the TMB object. Kept separate from fit_correction() so that the
-# checks can rebuild it with a perturbed m and fixed hyperparameters
-correction_adfun <- function(data, parameters, variant, fix_hyper = FALSE,
+# PC priors: P(range < 50 km) = 0.05 and P(sigma > 1) = 0.05 for both Matern
+# fields, P(sd > 1) = 0.05 for each iid term, and persistence 1 / (1 - phi) ~
+# lognormal(log 5, 0.62): a median of five years, 95% interval ~1.5-17
+correction_priors <- function(range0 = 50, alpha_range = 0.05, sigma0 = 1,
+                              alpha_sigma = 0.05, iid_sigma0 = 1,
+                              alpha_iid = 0.05, persistence_median = 5,
+                              persistence_sdlog = 0.62) {
+  list(pc_omega = c(range0, alpha_range, sigma0, alpha_sigma),
+       pc_eta = c(range0, alpha_range, sigma0, alpha_sigma),
+       pc_iid = c(iid_sigma0, alpha_iid),
+       persistence_prior = c(log(persistence_median), persistence_sdlog))
+}
+
+
+# fitting ----------------------------------------------------------------------
+
+# the TMB object; fix_hyper = TRUE holds the hyperparameters at their values
+# in `parameters` (used by the simulation check)
+correction_adfun <- function(data, parameters, fix_hyper = FALSE,
                              silent = TRUE) {
-  dll <- load_correction_template()
-  hyper_names <- c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
-                   "log_kappa_eta", "logit_phi", "log_tau")
   map <- list()
-  random <- c("w_omega", "u")
-  # the optional pixel effect: mapped to zero (and dropped from the parameter
-  # vector, so the model is exactly the one without it) when off
-  if (data$include_p == 1) {
-    random <- c(random, "p")
-    hyper_names <- c(hyper_names, "log_sigma_p")
-  } else {
-    map$p <- factor(rep(NA, length(parameters$p)))
-    map$log_sigma_p <- factor(NA)
-  }
-  if (variant == "omega_u") {
-    # xi and its hyperparameters drop out of the model entirely
-    map$x <- factor(rep(NA, length(parameters$x)))
-    map$log_sigma_eta <- factor(NA)
-    map$log_kappa_eta <- factor(NA)
-    map$logit_phi <- factor(NA)
-  } else {
-    random <- c(random, "x")
-  }
   if (fix_hyper) {
-    for (name in hyper_names) map[[name]] <- factor(NA)
+    hyper <- setdiff(names(parameters), c("w_omega", "x", "iid"))
+    map <- lapply(parameters[hyper], function(x) factor(rep(NA, length(x))))
   }
-  TMB::MakeADFun(data = data,
-                 parameters = parameters,
-                 map = map,
-                 random = random,
-                 DLL = dll,
-                 silent = silent)
+  TMB::MakeADFun(data = data, parameters = parameters, map = map,
+                 random = c("w_omega", "x", "iid"),
+                 DLL = load_correction_template(), silent = silent)
 }
 
-# Fit the correction model for one insecticide.
-#
-# train needs lon and lat (or x_km and y_km), year, cell, m (the dynamical
-# model's posterior mean logit prediction), and either z and v, or died,
-# mosquito_number and rho. t0 is the dynamical model's start year and T the
-# last year for which xi is represented (default: the last data year); xi is
-# forecast beyond T at prediction time.
-#
-# mesh is used for omega and mesh_xi for xi; either is built from the training
-# locations if not supplied. mesh_xi defaults to a coarser mesh (at most 600
-# nodes) because the cost of the fit is dominated by the Cholesky factor of the
-# space-time block, whose fill-in grows faster than linearly in
-# nodes x years. On the simulation check (20 years), xi on the 1441-node omega
-# mesh gave a factor with 29M non-zeros, a 6 minute fit and 3.3 GB peak memory,
-# against 2 minutes and 2.3 GB on a 587-node xi mesh; the real data (up to 2500
-# nodes, ~30 years) would be several times worse again. Pass mesh_xi = mesh to
-# use one mesh for both.
-#
-# Speed depends heavily on the BLAS used by CHOLMOD's supernodal factorisation:
-# with R's reference BLAS the same fits are ~10x slower than with OpenBLAS.
-fit_correction <- function(train,
-                           variant = c("omega_xi_u", "omega_u"),
-                           t0,
-                           T = max(train$year),
-                           mesh = NULL,
-                           mesh_args = list(),
-                           mesh_xi = NULL,
-                           mesh_xi_args = list(max_nodes = 600),
-                           priors = correction_priors(),
-                           start = list(),
-                           control = list(eval.max = 1000, iter.max = 500),
-                           sdreport = FALSE,
-                           silent = TRUE,
-                           pixel_effect = FALSE) {
+# Stage A, or a refit of the hyperparameters to given (z, v). train as for
+# fit_correction(); if it has z and v they are the response, otherwise the
+# empirical logit is. meshes from build_correction_meshes()
+fit_stage_a <- function(train, t0, T = max(train$year), meshes,
+                        priors = correction_priors(),
+                        start = list(),
+                        control = list(eval.max = 1000, iter.max = 500),
+                        silent = TRUE) {
 
-  variant <- match.arg(variant)
-  timing <- list(start = Sys.time())
-
-  if (any(train$year < t0) || any(train$year > T)) {
-    stop("training years must lie in [t0, T]")
-  }
+  start_time <- Sys.time()
+  stopifnot(T > t0, all(train$year >= t0 & train$year <= T))
   if (!all(c("z", "v") %in% names(train))) {
-    stage_a <- empirical_logit(train$died, train$mosquito_number, train$rho)
-    train$z <- stage_a$z
-    train$v <- stage_a$v
+    response <- empirical_logit(train$died, train$mosquito_number, train$rho)
+    train$z <- response$z
+    train$v <- response$v
   }
-
   coords <- coords_km(train)
-  if (is.null(mesh)) {
-    mesh <- do.call(build_correction_mesh, c(list(coords), mesh_args))
+  n_obs <- nrow(train)
+
+  # iid levels: each term's distinct keys, stacked into one vector
+  iid_levels <- lapply(correction_iid_terms, function(term) {
+    unique(term$key(train))
+  })
+  offset <- cumsum(c(0, lengths(iid_levels)))
+  iid_index <- matrix(0L, n_obs, length(iid_levels))
+  for (k in seq_along(iid_levels)) {
+    iid_index[, k] <- match(correction_iid_terms[[k]]$key(train),
+                            iid_levels[[k]]) + offset[k]
   }
-  if (is.null(mesh_xi)) {
-    mesh_xi <- if (variant == "omega_xi_u") {
-      do.call(build_correction_mesh, c(list(coords), mesh_xi_args))
-    } else {
-      mesh
-    }
-  }
-  fem <- correction_fem(mesh)
-  fem_xi <- correction_fem(mesh_xi)
-  n_nodes <- mesh$n
-  # keep at least one column so the parameter exists for the omega_u variant
-  n_years <- max(T - t0, 1)
 
-  design <- correction_design(mesh, mesh_xi, coords, train$year, t0, T)
-
-  # pixel-years with data, each with its own u
-  pixel_years <- train %>%
-    distinct(cell, year) %>%
-    mutate(u_index = row_number())
-  u_index <- pixel_years$u_index[match(paste(train$cell, train$year),
-                                       paste(pixel_years$cell,
-                                             pixel_years$year))]
-
-  # static pixels with data, each with its own p (a single unused level when
-  # the term is off)
-  pixels <- tibble(cell = unique(train$cell)) %>% mutate(p_index = row_number())
-  p_index <- match(train$cell, pixels$cell)
-
-  data <- list(
-    z = train$z,
-    v = train$v,
-    m = train$m,
-    A_omega = design$A_omega,
-    A_xi = design$A_xi,
-    u_index = as.integer(u_index - 1),
-    spde = fem,
-    spde_xi = fem_xi,
-    include_xi = as.integer(variant == "omega_xi_u"),
-    pc_omega = priors$pc_omega,
-    pc_eta = priors$pc_eta,
-    pc_tau = priors$pc_tau,
-    persistence_prior = priors$persistence_prior,
-    include_p = as.integer(pixel_effect),
-    p_index = as.integer(p_index - 1),
-    pc_sigma_p = if (is.null(priors$pc_sigma_p)) c(1, 0.05) else
-      priors$pc_sigma_p
+  A_omega <- mesh_basis(meshes$omega, coords)
+  A_xi <- xi_design(meshes$xi, coords, train$year, t0, T)
+  data <- c(
+    list(z = train$z, v = train$v, m = train$m, A_omega = A_omega,
+         A_xi = A_xi, iid_index = iid_index - 1L,
+         iid_term = rep(seq_along(iid_levels) - 1L, lengths(iid_levels)),
+         spde = correction_fem(meshes$omega),
+         spde_xi = correction_fem(meshes$xi)),
+    priors
   )
 
-  # start the ranges at a few hundred km, well inside the prior, and the
-  # SDs small: the correction should be modest if the dynamical model is good
-  defaults <- list(
-    log_sigma_omega = log(0.5),
-    log_kappa_omega = log(sqrt(8) / 300),
-    log_sigma_eta = log(0.2),
-    log_kappa_eta = log(sqrt(8) / 300),
-    logit_phi = qlogis(0.8),
-    log_tau = log(0.3),
-    log_sigma_p = log(0.3)
-  )
-  start <- modifyList(defaults, start)
-  parameters <- c(
-    list(w_omega = rep(0, n_nodes),
-         x = matrix(0, mesh_xi$n, n_years),
-         u = rep(0, nrow(pixel_years))),
-    start[c("log_sigma_omega", "log_kappa_omega", "log_sigma_eta",
-            "log_kappa_eta", "logit_phi", "log_tau")],
-    list(p = rep(0, if (pixel_effect) nrow(pixels) else 1)),
-    start["log_sigma_p"]
-  )
+  # ranges of a few hundred km, well inside the prior, and small SDs: the
+  # correction should be modest if the dynamical model is good
+  start <- modifyList(list(log_sigma_omega = log(0.5),
+                           log_kappa_omega = log(sqrt(8) / 300),
+                           log_sigma_eta = log(0.2),
+                           log_kappa_eta = log(sqrt(8) / 300),
+                           logit_phi = qlogis(0.8),
+                           log_sigma_iid = rep(log(0.3), length(iid_levels))),
+                      start)
+  parameters <- c(list(w_omega = rep(0, meshes$omega$n),
+                       x = matrix(0, meshes$xi$n, T - t0),
+                       iid = rep(0, sum(lengths(iid_levels)))),
+                  start[c("log_sigma_omega", "log_kappa_omega",
+                          "log_sigma_eta", "log_kappa_eta", "logit_phi",
+                          "log_sigma_iid")])
 
-  obj <- correction_adfun(data, parameters, variant, silent = silent)
-  timing$setup <- Sys.time()
-
+  obj <- correction_adfun(data, parameters, silent = silent)
   opt <- nlminb(obj$par, obj$fn, obj$gr, control = control)
-  if (opt$convergence != 0) {
-    warning("nlminb did not converge: ", opt$message)
-  }
-  timing$optimise <- Sys.time()
+  optimise_time <- Sys.time()
 
-  # latent mode and its Hessian at the optimum. Evaluating fn at opt$par
+  # latent mode and its Hessian at the optimum; evaluating fn at opt$par
   # leaves the inner problem solved at exactly these hyperparameters
   obj$fn(opt$par)
   par_full <- obj$env$last.par
   random <- obj$env$random
-  mode <- par_full[random]
   block <- names(par_full)[random]
   blocks <- split(seq_along(random), factor(block, levels = unique(block)))
-
+  blocks <- c(blocks[c("w_omega", "x")],
+              lapply(seq_along(iid_levels), function(k) {
+                blocks$iid[(offset[k] + 1):offset[k + 1]]
+              }) |> setNames(names(iid_levels)))
   H <- obj$env$spHess(par_full, random = TRUE)
   H <- Matrix::forceSymmetric(as(H, "CsparseMatrix"), uplo = "L")
-  H_chol <- Matrix::Cholesky(H, perm = TRUE, LDL = FALSE, super = TRUE)
-  timing$hessian <- Sys.time()
 
-  # full observation -> latent design in the latent (Hessian) order, used for
-  # the cut-posterior shift of the mode
-  A_u <- Matrix::sparseMatrix(i = seq_len(nrow(train)), j = u_index, x = 1,
-                              dims = c(nrow(train), nrow(pixel_years)))
-  A_blocks <- list(w_omega = design$A_omega, x = design$A_xi, u = A_u)
-  if (pixel_effect) {
-    A_blocks$p <- Matrix::sparseMatrix(i = seq_len(nrow(train)), j = p_index,
-                                       x = 1, dims = c(nrow(train),
-                                                       nrow(pixels)))
+  # observations -> latent vector, in the latent order, for the
+  # cut-posterior shift and PQL
+  A_iid <- Matrix::sparseMatrix(i = rep(seq_len(n_obs), ncol(iid_index)),
+                                j = as.vector(iid_index), x = 1,
+                                dims = c(n_obs, sum(lengths(iid_levels))))
+
+  par_list <- obj$env$parList(par = par_full)
+  phi <- plogis(par_list$logit_phi)
+  hyper <- list(sigma_omega = exp(par_list$log_sigma_omega),
+                range_omega = sqrt(8) / exp(par_list$log_kappa_omega),
+                kappa_omega = exp(par_list$log_kappa_omega),
+                sigma_eta = exp(par_list$log_sigma_eta),
+                range_eta = sqrt(8) / exp(par_list$log_kappa_eta),
+                kappa_eta = exp(par_list$log_kappa_eta),
+                phi = phi,
+                persistence = 1 / (1 - phi))
+  for (k in seq_along(iid_levels)) {
+    hyper[[correction_iid_terms[[k]]$sd]] <- exp(par_list$log_sigma_iid[k])
   }
-  A_latent <- do.call(cbind, A_blocks[names(blocks)])
-
-  report <- obj$report(par_full)
-  hyper <- list(
-    sigma_omega = report$sigma_omega,
-    range_omega = report$range_omega,
-    kappa_omega = sqrt(8) / report$range_omega,
-    tau = report$tau
-  )
-  if (pixel_effect) hyper$sigma_p <- report$sigma_p
-  if (variant == "omega_xi_u") {
-    hyper <- c(hyper, list(
-      sigma_eta = report$sigma_eta,
-      range_eta = report$range_eta,
-      kappa_eta = sqrt(8) / report$range_eta,
-      phi = report$phi,
-      persistence = report$persistence
-    ))
-  }
-
-  sd_report <- if (sdreport) TMB::sdreport(obj) else NULL
-
-  timing$end <- Sys.time()
-  timings <- c(
-    setup = difftime(timing$setup, timing$start, units = "secs"),
-    optimise = difftime(timing$optimise, timing$setup, units = "secs"),
-    hessian = difftime(timing$hessian, timing$optimise, units = "secs"),
-    total = difftime(timing$end, timing$start, units = "secs")
-  )
 
   structure(
-    list(
-      variant = variant,
-      t0 = t0,
-      T = T,
-      n_years = n_years,
-      mesh = mesh,
-      fem = fem,
-      mesh_xi = mesh_xi,
-      fem_xi = fem_xi,
-      obj = obj,
-      opt = opt,
-      par_full = par_full,
-      par_list = obj$env$parList(par = par_full),
-      tmb_data = data,
-      hyper = hyper,
-      sd_report = sd_report,
-      mode = mode,
-      blocks = blocks,
-      H = H,
-      H_chol = H_chol,
-      A_latent = A_latent,
-      precision_obs = 1 / data$v,
-      m_ref = train$m,
-      pixel_years = pixel_years,
-      pixel_effect = pixel_effect,
-      pixels = pixels,
-      n_obs = nrow(train),
-      timings = as.numeric(timings, units = "secs") |> setNames(names(timings))
-    ),
+    list(t0 = t0, T = T, n_years = T - t0,
+         mesh = meshes$omega, mesh_xi = meshes$xi,
+         fem_xi = data$spde_xi,
+         obj = obj, opt = opt,
+         max_gradient = max(abs(obj$gr(opt$par))),
+         par_list = par_list, tmb_data = data, priors = priors,
+         control = control, hyper = hyper,
+         mode = par_full[random], blocks = blocks, H = H,
+         H_chol = Matrix::Cholesky(H, perm = TRUE, LDL = FALSE, super = TRUE),
+         A_latent = cbind(A_omega, A_xi, A_iid),
+         precision_obs = 1 / data$v, m_ref = train$m,
+         iid_levels = iid_levels, n_obs = n_obs,
+         timings = c(optimise = as.numeric(optimise_time - start_time,
+                                           units = "secs"),
+                     total = as.numeric(Sys.time() - start_time,
+                                        units = "secs"))),
     class = "correction_fit"
   )
 }
 
+# The final model: stage A, then stage B (PQL) from it. Arguments as for
+# fit_stage_a(); pql_args go to fit_correction_pql()
+fit_correction <- function(train, t0, T = max(train$year), meshes,
+                           priors = correction_priors(),
+                           control = list(eval.max = 1000, iter.max = 500),
+                           pql_args = list()) {
+  fit_a <- fit_stage_a(train[setdiff(names(train), c("z", "v"))], t0 = t0,
+                       T = T, meshes = meshes, priors = priors,
+                       control = control)
+  if (fit_a$opt$convergence != 0) {
+    stop("stage A did not converge: ", fit_a$opt$message)
+  }
+  do.call(fit_correction_pql, c(list(fit_a, train), pql_args))
+}
 
-# prediction --------------------------------------------------------------------
+# One row summarising a fit, from fit$hyper and fit$stage_b
+fit_summary <- function(fit) {
+  b <- fit$stage_b
+  get_b <- function(name) if (is.null(b[[name]])) NA else b[[name]]
+  hyper <- fit$hyper[c("sigma_omega", "range_omega", "sigma_eta", "range_eta",
+                       "phi", "persistence",
+                       vapply(correction_iid_terms, `[[`, "", "sd"))]
+  tibble::as_tibble(c(
+    list(n_train = fit$n_obs),
+    lapply(fit$iid_levels, length) |>
+      setNames(paste0("n_levels_", names(fit$iid_levels))),
+    list(t0 = fit$t0, T = fit$T, mesh_nodes = fit$mesh$n,
+         mesh_cutoff_km = attr(fit$mesh, "cutoff"),
+         mesh_xi_nodes = fit$mesh_xi$n),
+    hyper,
+    list(objective = fit$opt$objective,
+         convergence = fit$opt$convergence,
+         nlminb_message = fit$opt$message,
+         iterations = fit$opt$iterations,
+         max_gradient = fit$max_gradient,
+         stage_a_objective = get_b("objective_a"),
+         pql_passes = get_b("passes_first"),
+         pql_converged = get_b("converged_first"),
+         pql_damped = get_b("damped_first"),
+         pql_rms_move = get_b("rms_move"),
+         pql_max_move = get_b("max_move"),
+         pql_refit = get_b("refit"),
+         pql_passes_second = get_b("passes_second"),
+         pql_converged_second = get_b("converged_second"),
+         pql_rms_move_second = get_b("rms_move_second"),
+         pql_n_clamped = get_b("n_clamped"),
+         time_stage_a_s = get_b("time_stage_a"),
+         time_pql_s = get_b("time_pql"))
+  ))
+}
 
-# Cut-posterior shift of the latent mode when the offset changes from m_ref to
-# m_new at the training observations. Given the hyperparameters the mode solves
+
+# prediction ------------------------------------------------------------------------
+
+# Cut-posterior shift of the latent mode when the offset at the training
+# observations changes from m_ref to m_new: the mode solves
 # H theta = A' D (z - m), so it moves by H^-1 A' D (m_ref - m_new). m_new may
-# be a matrix with one column per dynamical draw; the single Cholesky factor of
-# H is reused for all of them
+# have one column per dynamical draw; the factor of H is reused for all
 correction_mode_shift <- function(fit, m_new) {
-  m_new <- as.matrix(m_new)
   rhs <- Matrix::crossprod(fit$A_latent,
-                           fit$precision_obs * (fit$m_ref - m_new))
+                           fit$precision_obs * (fit$m_ref - as.matrix(m_new)))
   as.matrix(Matrix::solve(fit$H_chol, rhs, system = "A"))
 }
 
-# n draws from N(0, H^-1) using the permuted Cholesky factor P H P' = L L':
-# P' L^-T e has covariance P' L^-T L^-1 P = H^-1
+# n draws from N(0, H^-1) from the permuted Cholesky factor P H P' = L L':
+# P' L^-T e has covariance H^-1
 sample_latent_deviation <- function(H_chol, n_latent, n) {
   e <- matrix(rnorm(n_latent * n), n_latent, n)
-  deviation <- Matrix::solve(H_chol, e, system = "Lt")
-  as.matrix(Matrix::solve(H_chol, deviation, system = "Pt"))
+  as.matrix(Matrix::solve(H_chol, Matrix::solve(H_chol, e, system = "Lt"),
+                          system = "Pt"))
 }
 
-# Joint predictive draws of lambda = m + omega + xi + u (logit scale, excluding
-# the assay noise e) at the rows of new.
-#
-# new needs lon and lat (or x_km and y_km), year, cell and m (the dynamical
-# model's posterior mean at those pixel-years). m_draws_train (K x n_obs) and
-# m_draws_new (K x n_new) are the matching dynamical posterior draws; with them,
-# draw d uses dynamical draw ((d - 1) mod K) + 1, shifts the latent mode by the
-# cut-posterior formula, and adds that draw's m at the new points. Without them
-# m is treated as known (no mechanistic uncertainty).
-#
-# Latent draws are joint samples with precision H, so omega, xi and u keep
-# their posterior correlations. xi beyond T is forecast by running the AR(1)
-# for eta forward from each draw's eta_T = x_T - x_{T-1} with fresh Matern
-# innovations, and accumulating. u is taken from the joint draw at pixel-years
-# with data, and drawn from N(0, tau^2) (once per distinct pixel-year) elsewhere.
-# The static pixel effect p (if fitted) is handled the same way per pixel: the
-# joint draw at pixels with data, N(0, sigma_p^2) once per distinct new pixel
-# elsewhere.
-#
-# Returns an n_draws x nrow(new) matrix. Draws are generated in batches of
-# batch_size to bound memory
-predict_correction <- function(fit,
-                               new,
-                               m_draws_train = NULL,
-                               m_draws_new = NULL,
-                               n_draws = 1000,
-                               batch_size = 100) {
-
-  include_p <- isTRUE(fit$pixel_effect)
-
-  if (xor(is.null(m_draws_train), is.null(m_draws_new))) {
-    stop("supply both m_draws_train and m_draws_new, or neither")
+# (a) Joint latent draws and the node fields per year; see the API above.
+# Years at or before t0 have xi = 0, years in (t0, T] read the fitted x, and
+# later years run eta forward from eta_T = x_T - x_{T-1} by the AR(1) with
+# fresh Matern innovations (or their mean, 0), accumulating into xi.
+correction_node_draws <- function(fit, years, n_draws, m_draws_train = NULL,
+                                  mean = FALSE) {
+  if (mean) {
+    theta <- matrix(fit$mode, ncol = 1)
+  } else {
+    theta <- sample_latent_deviation(fit$H_chol, length(fit$mode), n_draws) +
+      fit$mode
+    if (!is.null(m_draws_train)) {
+      stopifnot(nrow(m_draws_train) == n_draws,
+                ncol(m_draws_train) == fit$n_obs)
+      theta <- theta + correction_mode_shift(fit, t(m_draws_train))
+    }
   }
-  use_m_draws <- !is.null(m_draws_train)
-  if (use_m_draws) {
-    stopifnot(ncol(m_draws_train) == fit$n_obs,
-              ncol(m_draws_new) == nrow(new),
-              nrow(m_draws_train) == nrow(m_draws_new))
-    n_m_draws <- nrow(m_draws_train)
+  n <- ncol(theta)
+  n_xi <- fit$mesh_xi$n
+  x <- theta[fit$blocks$x, , drop = FALSE]
+  x_year <- function(year) {
+    if (year <= fit$t0) return(matrix(0, n_xi, n))
+    x[(year - fit$t0 - 1) * n_xi + seq_len(n_xi), , drop = FALSE]
   }
 
-  n_new <- nrow(new)
-  n_nodes_xi <- fit$mesh_xi$n
-  n_latent <- length(fit$mode)
-  hyper <- fit$hyper
-  include_xi <- fit$variant == "omega_xi_u"
+  xi <- list()
+  for (year in unique(years[years <= fit$T])) {
+    xi[[as.character(year)]] <- x_year(year)
+  }
+  max_horizon <- max(c(0, years - fit$T))
+  if (max_horizon > 0) {
+    phi <- fit$hyper$phi
+    if (!mean) {
+      Q_eta <- matern_precision_r(fit$fem_xi, fit$hyper$kappa_eta,
+                                  fit$hyper$sigma_eta)
+      Q_eta_chol <- Matrix::Cholesky(Matrix::forceSymmetric(Q_eta),
+                                     perm = TRUE, LDL = FALSE, super = TRUE)
+    }
+    xi_t <- x_year(fit$T)
+    eta <- xi_t - x_year(fit$T - 1)
+    for (h in seq_len(max_horizon)) {
+      eta <- phi * eta
+      if (!mean) {
+        eta <- eta + sqrt(1 - phi ^ 2) *
+          sample_latent_deviation(Q_eta_chol, n_xi, n)
+      }
+      xi_t <- xi_t + eta
+      if ((fit$T + h) %in% years) xi[[as.character(fit$T + h)]] <- xi_t
+    }
+  }
+  list(theta = theta, omega = theta[fit$blocks$w_omega, , drop = FALSE],
+       xi = xi)
+}
 
+# (b) The correction omega + xi at the rows of `new`, points x draws, plus
+# fresh noise draws if noise = TRUE; see the API above
+project_correction <- function(fit, fields, new, noise = FALSE) {
   coords <- coords_km(new)
-  A_new <- mesh_basis(fit$mesh, coords)
-  outside <- Matrix::rowSums(A_new) < 0.5
+  A_omega <- mesh_basis(fit$mesh, coords)
+  outside <- Matrix::rowSums(A_omega) < 0.5
   if (any(outside)) {
     warning(sum(outside), " prediction points lie outside the mesh; ",
             "their spatial fields are set to zero")
   }
-
-  # xi design: years within (t0, T] are read off x, later years are forecast,
-  # years at or before t0 have xi = 0
-  in_range <- new$year > fit$t0 & new$year <= fit$T
-  forecast <- new$year > fit$T
-  if (include_xi) {
-    A_xi_new <- correction_design(fit$mesh, fit$mesh_xi, coords,
-                                  ifelse(in_range, new$year, fit$t0),
-                                  fit$t0, fit$T)$A_xi
-    A_xi_space_new <- mesh_basis(fit$mesh_xi, coords)
-    horizon <- new$year[forecast] - fit$T
-    max_horizon <- max(c(0, horizon))
-    if (max_horizon > 0) {
-      Q_eta <- matern_precision_r(fit$fem_xi, hyper$kappa_eta,
-                                  hyper$sigma_eta)
-      Q_eta_chol <- Matrix::Cholesky(Matrix::forceSymmetric(Q_eta),
-                                     perm = TRUE, LDL = FALSE,
-                                     super = TRUE)
+  out <- as.matrix(A_omega %*% fields$omega)
+  A_xi <- mesh_basis(fit$mesh_xi, coords)
+  for (year in unique(new$year[new$year > fit$t0])) {
+    rows <- which(new$year == year)
+    out[rows, ] <- out[rows, ] + as.matrix(
+      A_xi[rows, , drop = FALSE] %*% fields$xi[[as.character(year)]])
+  }
+  if (noise) {
+    for (term in correction_iid_terms) {
+      key <- term$key(new)
+      levels <- unique(key)
+      fresh <- matrix(rnorm(length(levels) * ncol(out), 0,
+                            fit$hyper[[term$sd]]), length(levels))
+      out <- out + fresh[match(key, levels), , drop = FALSE]
     }
   }
+  out
+}
 
-  # u: pixel-years with data take the latent draw, others a fresh iid draw
-  new_key <- paste(new$cell, new$year)
-  u_train <- fit$pixel_years$u_index[match(new_key,
-                                           paste(fit$pixel_years$cell,
-                                                 fit$pixel_years$year))]
-  has_u <- !is.na(u_train)
-  unseen_keys <- unique(new_key[!has_u])
-  unseen_index <- match(new_key[!has_u], unseen_keys)
-
-  idx_w <- fit$blocks$w_omega
-  idx_x <- fit$blocks$x
-  idx_u <- fit$blocks$u
-
-  # p: pixels with data take the latent draw, others a fresh iid draw
-  if (include_p) {
-    p_train <- fit$pixels$p_index[match(new$cell, fit$pixels$cell)]
-    has_p <- !is.na(p_train)
-    unseen_cells <- unique(new$cell[!has_p])
-    unseen_cell_index <- match(new$cell[!has_p], unseen_cells)
-    idx_p <- fit$blocks$p
-  }
-
-  draws <- matrix(NA_real_, n_draws, n_new)
-  batches <- split(seq_len(n_draws), ceiling(seq_len(n_draws) / batch_size))
-
-  for (batch in batches) {
-    nb <- length(batch)
-
-    # latent draws: mode (shifted per dynamical draw) plus a joint deviation
-    theta <- sample_latent_deviation(fit$H_chol, n_latent, nb) + fit$mode
-    if (use_m_draws) {
-      k <- ((batch - 1) %% n_m_draws) + 1
-      theta <- theta + correction_mode_shift(fit, t(m_draws_train[k, ,
-                                                                   drop = FALSE]))
-      m_new <- t(m_draws_new[k, , drop = FALSE])
+# Draws x points predictive draws of m + omega + xi + fresh u + fresh p at the
+# rows of `new` (lon/lat or x_km/y_km, year, cell, and m, used when there are
+# no dynamical draws): the logit mortality of new assays, before the
+# beta-binomial assay noise. With m_draws_train (K x n_obs) and m_draws_new
+# (K x nrow(new)), the paired dynamical draws, draw d uses dynamical draw
+# ((d - 1) mod K) + 1: its cut-posterior shift and its m at the new points.
+# Generated in batches to bound memory
+predict_correction <- function(fit, new, m_draws_train = NULL,
+                               m_draws_new = NULL, n_draws = 1000,
+                               batch_size = 100) {
+  stopifnot(is.null(m_draws_train) == is.null(m_draws_new),
+            is.null(m_draws_new) || ncol(m_draws_new) == nrow(new))
+  draws <- matrix(NA_real_, n_draws, nrow(new))
+  for (batch in split(seq_len(n_draws), ceiling(seq_len(n_draws) /
+                                                 batch_size))) {
+    if (is.null(m_draws_train)) {
+      fields <- correction_node_draws(fit, new$year, length(batch))
+      m_new <- new$m
     } else {
-      m_new <- matrix(new$m, n_new, nb)
+      k <- ((batch - 1) %% nrow(m_draws_train)) + 1
+      fields <- correction_node_draws(fit, new$year, length(batch),
+                                      m_draws_train[k, , drop = FALSE])
+      m_new <- t(m_draws_new[k, , drop = FALSE])
     }
-
-    lambda <- m_new + as.matrix(A_new %*% theta[idx_w, , drop = FALSE])
-
-    if (include_xi) {
-      x_draw <- theta[idx_x, , drop = FALSE]
-      lambda[in_range, ] <- lambda[in_range, ] +
-        as.matrix(A_xi_new[in_range, , drop = FALSE] %*% x_draw)
-
-      if (max_horizon > 0) {
-        # node values of x_T and x_{T-1} (x_t0 = 0) in each draw
-        last <- (fit$n_years - 1) * n_nodes_xi + seq_len(n_nodes_xi)
-        xi_nodes <- x_draw[last, , drop = FALSE]
-        eta_nodes <- if (fit$n_years > 1) {
-          xi_nodes - x_draw[last - n_nodes_xi, , drop = FALSE]
-        } else {
-          xi_nodes
-        }
-        for (h in seq_len(max_horizon)) {
-          innovation <- sample_latent_deviation(Q_eta_chol, n_nodes_xi, nb)
-          eta_nodes <- hyper$phi * eta_nodes +
-            sqrt(1 - hyper$phi ^ 2) * innovation
-          xi_nodes <- xi_nodes + eta_nodes
-          rows <- which(forecast)[horizon == h]
-          if (length(rows) > 0) {
-            lambda[rows, ] <- lambda[rows, ] +
-              as.matrix(A_xi_space_new[rows, , drop = FALSE] %*% xi_nodes)
-          }
-        }
-      }
-    }
-
-    if (any(has_u)) {
-      lambda[has_u, ] <- lambda[has_u, ] +
-        theta[idx_u[u_train[has_u]], , drop = FALSE]
-    }
-    if (any(!has_u)) {
-      u_fresh <- matrix(rnorm(length(unseen_keys) * nb, 0, hyper$tau),
-                        length(unseen_keys), nb)
-      lambda[!has_u, ] <- lambda[!has_u, ] +
-        u_fresh[unseen_index, , drop = FALSE]
-    }
-
-    if (include_p) {
-      if (any(has_p)) {
-        lambda[has_p, ] <- lambda[has_p, ] +
-          theta[idx_p[p_train[has_p]], , drop = FALSE]
-      }
-      if (any(!has_p)) {
-        p_fresh <- matrix(rnorm(length(unseen_cells) * nb, 0, hyper$sigma_p),
-                          length(unseen_cells), nb)
-        lambda[!has_p, ] <- lambda[!has_p, ] +
-          p_fresh[unseen_cell_index, , drop = FALSE]
-      }
-    }
-
-    draws[batch, ] <- t(lambda)
+    draws[batch, ] <- t(m_new + project_correction(fit, fields, new,
+                                                   noise = TRUE))
   }
-
   draws
-}
-
-# The named mesh configurations of the mesh-resolution experiment
-# (doc/two_stage_plan.md, "Mesh resolution results"), as arguments to
-# build_correction_mesh() for omega and xi; xi = "omega" puts xi on the omega
-# mesh. Mirrors mesh_configs in R/run_two_stage_folds.R. Cross-validation chose
-# omega5000_xi2500: omega on a finer mesh (15 km cutoff, inner edges of at most
-# 150 km, at most 5000 nodes) and xi on the base omega mesh
-correction_mesh_configs <- function() {
-  list(
-    base = list(omega = list(), xi = list(max_nodes = 600)),
-    xi1200 = list(omega = list(), xi = list(max_nodes = 1200)),
-    xifull = list(omega = list(), xi = "omega"),
-    omega5000 = list(omega = list(cutoff = 15, max_edge_inner = 150,
-                                  max_nodes = 5000),
-                     xi = list(max_nodes = 1200)),
-    omega5000_xi2500 = list(omega = list(cutoff = 15, max_edge_inner = 150,
-                                         max_nodes = 5000),
-                            xi = list(max_nodes = 2500))
-  )
-}
-
-# the omega and xi meshes of a named configuration, for coordinates in km
-build_correction_meshes <- function(coords_km, config = "omega5000_xi2500",
-                                    verbose = FALSE) {
-  configs <- correction_mesh_configs()
-  if (!config %in% names(configs)) {
-    stop("unknown mesh configuration: ", config, "; one of ",
-         paste(names(configs), collapse = ", "))
-  }
-  spec <- configs[[config]]
-  mesh <- do.call(build_correction_mesh,
-                  c(list(coords_km), spec$omega, verbose = verbose))
-  mesh_xi <- if (identical(spec$xi, "omega")) mesh else
-    do.call(build_correction_mesh, c(list(coords_km), spec$xi,
-                                     verbose = verbose))
-  list(omega = mesh, xi = mesh_xi)
 }

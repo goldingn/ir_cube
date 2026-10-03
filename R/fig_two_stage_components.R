@@ -4,184 +4,56 @@
 #   figures/two_stage/supp_components_realisations.png (and .pdf)
 #     joint random realisations of every component through time, stacked on a
 #     shared time axis: net use, the dynamical model's logit m, the annual
-#     anomalies eta, their accumulation xi, the static omega and p, the
-#     combined logit m + omega + xi + p, and mortality with the data
+#     anomalies eta, their accumulation xi, the static omega, the target
+#     m + omega + xi, and mortality with the data
 #   figures/two_stage/supp_components_intervals.png (and .pdf)
 #     posterior mean and 95% intervals of mortality: the dynamical model alone
-#     against the two-stage final model, with the data
+#     against the two-stage model, with the data
 #
 #   Rscript R/fig_two_stage_components.R
 #
-# Run with OpenBLAS (see R/two_stage_maps.R), e.g.
-#   LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=4 nice -n 10 Rscript ...
+# Run after R/two_stage_maps.R (prepare, and the type's fit), whose saved fit
+# and paired dynamical draws this reads; nothing is refitted. Run with
+# OpenBLAS, e.g.
+#   LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=3 nice -n 10 Rscript ...
 #
-# The final model (doc/two_stage_plan.md, "Final model"): on the logit scale
-#   lambda(s, t) = m(s, t) + omega(s) + xi(s, t) + p(s) [+ u(s, t)],
-# with m the dynamical model's prediction, xi(s, t) the sum of the annual
-# anomalies eta up to t, eta AR(1) in time with Matern innovations, and p iid
-# per pixel. Beyond the last data
-# year T, eta is simulated forward. u, iid per pixel-year, is observation-level
-# noise (with the assay noise), not part of the inferred process, so neither
-# figure shows it: both target m + omega + xi + p.
-#
-# The fit saved by R/two_stage_maps.R (outputs/two_stage/maps/<type>/fit.rds)
-# is a light copy without the Hessian factor, so this script refits the final
-# model for the one type exactly as two_stage_maps.R does (same data, meshes,
-# seed and code), checks the mode against the saved one, and caches the fit
-# with the dynamical draws in outputs/two_stage/components/. Delete the cache
-# to refit (about 20 minutes).
-#
-# `two_stage_code_dir` and `correction_template_path` (environment variables
-# TWO_STAGE_CODE_DIR, TWO_STAGE_TEMPLATE) let the two-stage code and template
-# be taken from a pinned copy rather than R/ and tmb/.
+# The target, on the logit scale, is m(s, t) + omega(s) + xi(s, t): m the
+# dynamical model's prediction, xi(s, t) the sum of the annual anomalies eta up
+# to t, eta AR(1) in time with Matern innovations; beyond the last data year T
+# eta is simulated forward. u and p are observation-level noise and appear in
+# neither figure.
 
 type <- "Deltamethrin"
-
-# the model of R/two_stage_maps.R (model_config there)
-model_config <- "omega_xi_u_p_pql"
-
-code_dir <- Sys.getenv("TWO_STAGE_CODE_DIR", "R")
-template_path <- Sys.getenv("TWO_STAGE_TEMPLATE",
-                            "tmb/two_stage_correction.cpp")
-
-cache_dir <- "outputs/two_stage/components"
-cache_file <- file.path(cache_dir, sprintf("%s_fit_cache.rds", type))
-draws_file <- file.path(cache_dir, sprintf("%s_pixel_draws.rds", type))
 figure_dir <- "figures/two_stage"
-dir.create(cache_dir, showWarnings = FALSE, recursive = TRUE)
+maps_dir <- file.path("outputs/two_stage/maps", type)
 dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
 
-report <- function(...) {
-  cat(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), "|", sprintf(...), "\n")
-  flush(stdout())
-}
-
+source("R/two_stage_helpers.R")
 suppressMessages({
   sink("/dev/null")
   source("R/validation_folds.R")
   source("R/validation_covariates.R")
   sink()
 })
-source(file.path(code_dir, "dynamical_predictions.R"))
-source(file.path(code_dir, "two_stage_correction.R"))
-source(file.path(code_dir, "two_stage_pql.R"))
-source(file.path(code_dir, "two_stage_map_functions.R"))
-correction_template <- template_path
+source("R/dynamical_predictions.R")
+source("R/two_stage_correction.R")
+source("R/two_stage_map_functions.R")
 
-# settings of R/two_stage_maps.R
-mesh_config <- "omega5000_xi2500"
-t0 <- baseline_year
 end_year <- 2030
 years_all <- baseline_year:end_year
-clamp <- 1e-12
-safe_logit <- function(p) qlogis(pmin(pmax(p, clamp), 1 - clamp))
-logit_max <- qlogis(1 - clamp)
-
 k <- match(type, types)
 rows_k <- which(df$type_id == k)
 
-
-# 1. the fit and the dynamical draws (cached) -----------------------------------
-
-# caches made before the model options were stored are rebuilt
-if (!file.exists(cache_file) || is.null(readRDS(cache_file)$options)) {
-
-  fit_env <- new.env()
-  load("temporary/fitted_model.RData", envir = fit_env)
-  stopifnot(isTRUE(all.equal(fit_env$df, df)),
-            identical(fit_env$types, types),
-            identical(fit_env$unique_cells, unique_cells))
-  fold <- list(draws = fit_env$draws, options = fit_env$model_options,
-                x_cells_init = fit_env$x_cells_init)
-  rm(fit_env)
-  invisible(gc())
-
-  draw_index <- paired_draw_index(fold)
-  draws_matrix <- as.matrix(fold$draws)[draw_index, , drop = FALSE]
-  logit_init_mean <- logit_init_mean_draws(fold, draw_index)
-  options <- fold_options(fold)
-  parameters <- dynamical_parameter_draws(fold, df = df,
-                                          classes_index = classes_index,
-                                          types = types,
-                                          draw_index = draw_index,
-                                          logit_init_mean = logit_init_mean,
-                                          options = options)
-
-  # m_ref over all assays, then this type's columns (as two_stage_maps.R)
-  p_train <- dynamical_predictions(fold, select(df, -country_id), df,
-                                   x_cell_years, cell_years_index,
-                                   classes_index, types,
-                                   draw_index = draw_index)
-  logit_train_k <- safe_logit(p_train[, rows_k, drop = FALSE])
-  rm(p_train)
-  m_ref <- colMeans(logit_train_k)
-
-  lookup <- country_region_lookup()
-  logit_init_all <- map_logit_init(draws_matrix, logit_init_mean, types,
-                                   classes_index, countries, regions, lookup,
-                                   options = options)
-  dynamical <- list(effect = parameters$effect_type,
-                    logit_init = logit_init_all,
-                    floor = parameters$mortality_floor,
-                    kappa_type = parameters$kappa_type)
-  rm(fold, draws_matrix, parameters, logit_init_all)
-  invisible(gc())
-
-  rho_table <- read.csv("outputs/bioassay_rho_hierarchical.csv")
-  rho <- rho_table$rho[rho_table$insecticide_type == type]
-  train_k <- tibble(
-    lon = df$longitude[rows_k],
-    lat = df$latitude[rows_k],
-    year = df$year_start[rows_k],
-    cell = df$cell[rows_k],
-    died = df$died[rows_k],
-    mosquito_number = df$mosquito_number[rows_k],
-    m = m_ref,
-    rho = rho
-  )
-  stage_a <- empirical_logit(train_k$died, train_k$mosquito_number, rho)
-  train_k$z <- stage_a$z
-  train_k$v <- stage_a$v
-  T_k <- max(train_k$year)
-
-  coords <- coords_km(train_k)
-  meshes <- suppressMessages(build_correction_meshes(coords, mesh_config))
-
-  set.seed(2026 + k)
-  time_fit <- system.time({
-    fit_a <- fit_correction(train_k, variant = "omega_xi_u", t0 = t0,
-                            T = T_k, mesh = meshes$omega,
-                            mesh_xi = meshes$xi, pixel_effect = TRUE)
-    stopifnot(fit_a$opt$convergence == 0)
-    fit <- fit_correction_pql(fit_a, train_k)
-  })
-  rm(fit_a)
-  report("%s refitted in %.0f s", type, time_fit[["elapsed"]])
-
-  # the refit must be the fit behind the maps
-  saved <- readRDS(file.path("outputs/two_stage/maps", type, "fit.rds"))
-  stopifnot(identical(read.csv(file.path("outputs/two_stage/maps", type,
-                                         "hyperparameters.csv"))$model_config,
-                      model_config))
-  mode_diff <- max(abs(fit$mode - saved$mode))
-  report("max |mode - saved mode| = %.2e; phi %.4f vs %.4f", mode_diff,
-         fit$hyper$phi, saved$hyper$phi)
-  stopifnot(mode_diff < 1e-3)
-
-  # drop the TMB object (external pointers) before caching
-  fit$obj <- NULL
-  saveRDS(c(list(fit = fit, train = train_k, logit_train = logit_train_k,
-                 rho = rho, options = options),
-            dynamical),
-          cache_file)
-  rm(fit, train_k, logit_train_k, dynamical)
-  invisible(gc())
-}
-
-cache <- readRDS(cache_file)
-fit <- cache$fit
-train_k <- cache$train
-hyper <- fit$hyper
+# the fit and the 2000 paired dynamical draws saved by R/two_stage_maps.R
+fit <- readRDS(file.path(maps_dir, "fit.rds"))
+dynamical <- readRDS(file.path(maps_dir, "dynamical.rds"))
+train_k <- tibble(lon = df$longitude[rows_k], lat = df$latitude[rows_k],
+                  year = df$year_start[rows_k], cell = df$cell[rows_k],
+                  died = df$died[rows_k],
+                  mosquito_number = df$mosquito_number[rows_k])
+stopifnot(fit$n_obs == nrow(train_k),
+          ncol(dynamical$logit_train) == nrow(train_k),
+          max(abs(fit$m_ref - colMeans(dynamical$logit_train))) < 1e-12)
 T_k <- fit$T
 
 
@@ -199,11 +71,10 @@ pixel_summary <- train_k %>%
             first = min(year), last = max(year),
             n_before = sum(year <= 2008), n_after = sum(year >= 2014),
             .groups = "drop")
-nodes_T <- correction_node_fields(fit, fit$mode, T_k)
 pixel_coords <- as.matrix(pixel_summary[, c("x_km", "y_km")])
-pixel_summary$smooth_T <- as.vector(
-  mesh_basis(fit$mesh, pixel_coords) %*% nodes_T$omega +
-    mesh_basis(fit$mesh_xi, pixel_coords) %*% nodes_T$xi[[1]])
+pixel_summary$smooth_T <- as.vector(project_correction(
+  fit, correction_node_draws(fit, T_k, mean = TRUE),
+  mutate(pixel_summary, year = T_k)))
 
 # (i) well sampled: data both before the net scale-up (to 2008) and after it
 # (from 2014), and the most distinct years of data among such pixels
@@ -266,110 +137,66 @@ report("pixels: %s", paste(sprintf("%s cell %i (%s, %.2f, %.2f; %i assays, %i ye
 
 # 3. draws at the pixels ------------------------------------------------------------
 
-# Every component at each pixel and year 1995-2030, for n_draws joint draws:
+# Every component at each pixel and year 1995-2030, for the 2000 paired draws:
 # draw d pairs dynamical draw d with a latent draw from N(mode, H^-1) shifted by
-# the cut-posterior formula for that dynamical draw (as predict_correction()
-# does), the AR(1) forecast of eta beyond T with fresh Matern innovations, and
-# p from the latent draw where the pixel has data and fresh from its prior
-# elsewhere. (u, observation noise, is not drawn)
-if (!file.exists(draws_file) ||
-    !identical(readRDS(draws_file)$cells, pixels$cell)) {
+# the cut-posterior formula for it, and the AR(1) forecast of eta beyond T
+# (correction_node_draws(), project_correction())
+n_draws <- nrow(dynamical$logit_train)
+n_pix <- nrow(pixels)
+n_years_all <- length(years_all)
 
-  n_draws <- nrow(cache$logit_train)
-  n_pix <- nrow(pixels)
-  n_years_all <- length(years_all)
+# dynamical logit at the pixels, as a years x pixels x draws array
+covariates <- map_covariates(pixels$cell, baseline_year, end_year,
+                             dynamical$parameters$options$selection_columns)
+pixel_country <- match(pixels$country, dimnames(dynamical$logit_init)[[2]])
+stopifnot(!anyNA(pixel_country))
+m <- dynamical_logit_cells(dynamical$parameters, k,
+                           matrix(dynamical$logit_init[, pixel_country, k],
+                                  n_draws),
+                           map_x(covariates, seq_len(n_pix), n_years_all),
+                           seq_len(n_years_all), x_init = covariates$init)
+m <- aperm(simplify2array(m), c(3, 2, 1))
 
-  # dynamical logit at the pixels, all years (years x pixels x draws)
-  covariates <- map_covariates(pixels$cell, baseline_year, end_year,
-                               cache$options$selection_columns)
-  pixel_country <- match(pixels$country, dimnames(cache$logit_init)[[2]])
-  stopifnot(!anyNA(pixel_country))
-  dyn <- map_type_logit(k, seq_len(n_pix), pixel_country, cache$effect,
-                        cache$logit_init, covariates, years_all, years_all,
-                        cache$floor, cache$kappa_type)
-  m <- aperm(simplify2array(dyn), c(3, 1, 2))
-  m <- pmin(pmax(m, -logit_max), logit_max)
-
-  # check: at the sampled pixels' data years, the same draws as at the assays
-  for (i in which(pixels$n_assays > 0)) {
-    rows_i <- which(train_k$cell == pixels$cell[i])
-    j <- match(train_k$year[rows_i], years_all)
-    m_i <- t(matrix(m[j, i, ], length(j), n_draws))
-    difference <- max(abs(m_i - cache$logit_train[, rows_i]))
-    report("pixel %i: max |m - m at the assays| = %.1e", pixels$cell[i],
-           difference)
-    stopifnot(difference < 1e-6)
-  }
-
-  pixel_xy <- terra::xyFromCell(mask, pixels$cell)
-  coords_pix <- project_km(pixel_xy[, 1], pixel_xy[, 2])
-  A_omega <- mesh_basis(fit$mesh, coords_pix)
-  A_xi <- mesh_basis(fit$mesh_xi, coords_pix)
-  n_nodes_xi <- fit$mesh_xi$n
-  n_latent <- length(fit$mode)
-
-  Q_eta <- matern_precision_r(fit$fem_xi, hyper$kappa_eta, hyper$sigma_eta)
-  Q_eta_chol <- Matrix::Cholesky(Matrix::forceSymmetric(Q_eta),
-                                 perm = TRUE, LDL = FALSE, super = TRUE)
-
-  p_index <- fit$pixels$p_index[match(pixels$cell, fit$pixels$cell)]
-
-  empty <- function() array(NA_real_, c(n_years_all, n_pix, n_draws))
-  xi <- empty()
-  eta <- empty()
-  omega <- matrix(NA_real_, n_pix, n_draws)
-  p <- matrix(NA_real_, n_pix, n_draws)
-
-  set.seed(4026 + k)
-  batches <- split(seq_len(n_draws), ceiling(seq_len(n_draws) / 250))
-  for (batch in batches) {
-    nb <- length(batch)
-    theta <- sample_latent_deviation(fit$H_chol, n_latent, nb) + fit$mode +
-      correction_mode_shift(fit, t(cache$logit_train[batch, , drop = FALSE]))
-    omega[, batch] <- as.matrix(A_omega %*% theta[fit$blocks$w_omega, ])
-    x <- theta[fit$blocks$x, , drop = FALSE]
-    xi_nodes <- matrix(0, n_nodes_xi, nb)
-    eta_nodes <- matrix(0, n_nodes_xi, nb)
-    for (j in seq_along(years_all)) {
-      y <- years_all[j]
-      if (y > t0 && y <= T_k) {
-        xi_new <- x[(y - t0 - 1) * n_nodes_xi + seq_len(n_nodes_xi), ,
-                    drop = FALSE]
-        eta_nodes <- xi_new - xi_nodes
-        xi_nodes <- xi_new
-      } else if (y > T_k) {
-        eta_nodes <- hyper$phi * eta_nodes + sqrt(1 - hyper$phi ^ 2) *
-          sample_latent_deviation(Q_eta_chol, n_nodes_xi, nb)
-        xi_nodes <- xi_nodes + eta_nodes
-      }
-      xi[j, , batch] <- as.matrix(A_xi %*% xi_nodes)
-      eta[j, , batch] <- as.matrix(A_xi %*% eta_nodes)
-    }
-    p[, batch] <- matrix(rnorm(n_pix * nb, 0, hyper$sigma_p), n_pix, nb)
-    seen_p <- !is.na(p_index)
-    if (any(seen_p)) {
-      p[seen_p, batch] <- theta[fit$blocks$p[p_index[seen_p]], ,
-                                drop = FALSE]
-    }
-  }
-
-  nets <- covariates$time_varying[, , "nets"]
-  saveRDS(list(cells = pixels$cell, pixels = pixels, years = years_all,
-               m = m, omega = omega, xi = xi, eta = eta, p = p,
-               nets = nets, hyper = hyper, T = T_k),
-          draws_file)
-  report("draws at %i pixels x %i years x %i draws saved", n_pix,
-         n_years_all, n_draws)
+# check: at the sampled pixels' data years, the same draws as at the assays
+for (i in which(pixels$n_assays > 0)) {
+  rows_i <- which(train_k$cell == pixels$cell[i])
+  j <- match(train_k$year[rows_i], years_all)
+  difference <- max(abs(t(matrix(m[j, i, ], length(j))) -
+                          dynamical$logit_train[, rows_i]))
+  report("pixel %i: max |m - m at the assays| = %.1e", pixels$cell[i],
+         difference)
+  stopifnot(difference < 1e-6)
 }
+
+# omega + xi at every pixel-year, and omega alone (xi is 0 in year t0)
+pixel_xy <- terra::xyFromCell(mask, pixels$cell)
+coords_pix <- project_km(pixel_xy[, 1], pixel_xy[, 2])
+new <- tibble(x_km = rep(coords_pix[, 1], each = n_years_all),
+              y_km = rep(coords_pix[, 2], each = n_years_all),
+              year = rep(years_all, n_pix))
+new_omega <- tibble(x_km = coords_pix[, 1], y_km = coords_pix[, 2],
+                    year = fit$t0)
+correction <- array(NA_real_, c(n_years_all, n_pix, n_draws))
+omega <- matrix(NA_real_, n_pix, n_draws)
+set.seed(4026 + k)
+for (batch in split(seq_len(n_draws), ceiling(seq_len(n_draws) / 250))) {
+  fields <- correction_node_draws(
+    fit, years_all, length(batch),
+    m_draws_train = dynamical$logit_train[batch, , drop = FALSE])
+  correction[, , batch] <- project_correction(fit, fields, new)
+  omega[, batch] <- project_correction(fit, fields, new_omega)
+}
+omega_array <- array(rep(omega, each = n_years_all), dim(correction))
+xi <- correction - omega_array
+eta <- xi - xi[c(1, seq_len(n_years_all - 1)), , , drop = FALSE]
+lambda <- m + correction
+nets <- covariates$time_varying[, , "nets"]
+rm(dynamical, covariates, correction, omega_array)
 
 
 # 4. figures ------------------------------------------------------------------------
 
-draws <- readRDS(draws_file)
-pixels <- draws$pixels
-years <- draws$years
-n_draws <- dim(draws$m)[3]
-T_k <- draws$T
+years <- years_all
 
 # panel titles, in the order of `pixels`
 role_title <- c(well = "A) Well sampled",
@@ -442,10 +269,6 @@ bioassays <- train_k %>%
 set.seed(5)
 which_draws <- sort(sample(n_draws, 3))
 
-# the inferred process m + omega + xi + p; u is observation noise and left out
-lambda <- draws$m + draws$xi +
-  array(rep(draws$omega + draws$p, each = length(years)), dim(draws$m))
-
 row_plot <- function(data, ylab, geoms, y_scale = NULL, strip = FALSE,
                      bottom = FALSE) {
   plot <- ggplot(data, aes(x = year)) +
@@ -464,44 +287,39 @@ row_plot <- function(data, ylab, geoms, y_scale = NULL, strip = FALSE,
 realisation_colour <- scale_colour_manual(values = realisation_cols)
 zero_line <- geom_hline(yintercept = 0, colour = grey(0.6), linewidth = 0.3)
 
-m_mean <- pixel_year(apply(draws$m, 1:2, mean), "value")
+m_mean <- pixel_year(apply(m, 1:2, mean), "value")
 
 p_nets <- row_plot(
-  pixel_year(t(draws$nets), "value"), "LLIN use",
+  pixel_year(t(nets), "value"), "LLIN use",
   geom_line(aes(y = value), colour = net_grey, linewidth = 1),
   scale_y_continuous(labels = scales::percent, limits = c(0, 1),
                      breaks = c(0, 0.5, 1)),
   strip = TRUE)
 p_m <- row_plot(
-  realisations(draws$m, which_draws), "dynamical\nlogit m",
+  realisations(m, which_draws), "dynamical\nlogit m",
   list(geom_line(aes(y = value), data = m_mean, colour = "black",
                  linewidth = 0.6),
        geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
        realisation_colour))
 p_eta <- row_plot(
-  realisations(draws$eta, which_draws), "annual\nanomaly η",
+  realisations(eta, which_draws), "annual\nanomaly η",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.3,
                  alpha = 0.6),
        geom_point(aes(y = value, colour = realisation), size = 0.6),
        realisation_colour))
 p_xi <- row_plot(
-  realisations(draws$xi, which_draws), "cumulative\nξ = Ση",
+  realisations(xi, which_draws), "cumulative\nξ = Ση",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))
 p_omega <- row_plot(
-  realisations(draws$omega, which_draws), "static\nfield ω",
-  list(zero_line,
-       geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
-       realisation_colour))
-p_p <- row_plot(
-  realisations(draws$p, which_draws), "pixel\neffect p",
+  realisations(omega, which_draws), "static\nfield ω",
   list(zero_line,
        geom_line(aes(y = value, colour = realisation), linewidth = 0.5),
        realisation_colour))
 p_lambda <- row_plot(
-  realisations(lambda, which_draws), "logit\nm+ω+ξ+p",
+  realisations(lambda, which_draws), "logit\nm+ω+ξ",
   list(geom_line(aes(y = value, colour = realisation), linewidth = 0.4),
        realisation_colour))
 p_mort <- row_plot(
@@ -516,14 +334,15 @@ p_mort <- row_plot(
                      breaks = c(0, 0.5, 1)),
   bottom = TRUE)
 
-fig_realisations <- patchwork::wrap_plots(p_nets, p_m, p_eta, p_xi, p_omega, p_p, p_lambda,
-                      p_mort, ncol = 1,
-                      heights = c(1, 1.1, 1, 1.1, 0.8, 0.8, 1.1, 1.2)) &
+fig_realisations <- patchwork::wrap_plots(p_nets, p_m, p_eta, p_xi, p_omega,
+                                          p_lambda, p_mort, ncol = 1,
+                                          heights = c(1, 1.1, 1, 1.1, 0.8, 1.1,
+                                                      1.2)) &
   theme(plot.margin = margin(1, 4, 1, 4))
 for (ext in c("png", "pdf")) {
   ggsave(file.path(figure_dir, sprintf("supp_components_realisations.%s", ext)),
          plot = fig_realisations,
-         bg = "white", width = 7.5, height = 9.2, dpi = 300,
+         bg = "white", width = 7.5, height = 8.4, dpi = 300,
          device = if (ext == "pdf") cairo_pdf else NULL)
 }
 
@@ -532,8 +351,9 @@ for (ext in c("png", "pdf")) {
 
 # mortality intervals for the population fraction at each pixel-year: the
 # dynamical model alone (plogis(m)) and the two-stage model
-# (plogis(m + omega + xi + p), with the cut-posterior shift). u is observation
-# noise, like the assay-level (beta-binomial) noise, so neither is included
+# (plogis(m + omega + xi), with the cut-posterior shift). u and p are
+# observation noise, like the assay-level (beta-binomial) noise, so none is
+# included
 summarise_draws <- function(values, model) {
   pixel_year(apply(values, 1:2, mean), "mean") %>%
     mutate(lower = as.vector(apply(values, 1:2, quantile, 0.025)),
@@ -541,7 +361,7 @@ summarise_draws <- function(values, model) {
            model = model)
 }
 intervals <- bind_rows(
-  summarise_draws(plogis(draws$m), "dynamical model"),
+  summarise_draws(plogis(m), "dynamical model"),
   summarise_draws(plogis(lambda), "two-stage model")
 ) %>%
   mutate(model = factor(model, c("dynamical model", "two-stage model")))
@@ -570,7 +390,7 @@ p_int <- ggplot(intervals, aes(x = year)) +
         legend.box.spacing = unit(2, "pt"),
         axis.text.x = element_blank())
 p_int_nets <- row_plot(
-  pixel_year(t(draws$nets), "value"), "LLIN use",
+  pixel_year(t(nets), "value"), "LLIN use",
   geom_line(aes(y = value), colour = net_grey, linewidth = 1),
   scale_y_continuous(labels = scales::percent, limits = c(0, 1),
                      breaks = c(0, 0.5, 1)),

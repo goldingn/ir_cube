@@ -6,12 +6,15 @@
 # null model. The lower half of this file adds predictive distributions for the
 # nulls, because a proper scoring rule needs a distribution rather than a point
 # from every candidate. Every model is scored at the same external,
-# replicate-based overdispersion (see validation_metrics.R); what each model's
-# own residuals imply is reported separately as a diagnostic.
-
-prop <- function(died, tested) {
-  died / tested
-}
+# replicate-based overdispersion (see validation_metrics.R).
+#
+# The nulls do not fit an overdispersion of their own. They earn their place on
+# point prediction - mean squared error and variance explained - and that needs
+# only the predicted fraction, while the dynamical model's calibration is judged
+# against held-out data directly. Fitting one rho per null made coverage a
+# comparison of vagueness rather than of prediction: the intercept null reached
+# nominal coverage by inflating its rho to 0.45 against an external estimate of
+# 0.12-0.22 (#12 review).
 
 # approximate non-zero and non-one proportions by applying the empirical logit
 # transform to the data and then the inverse logit to provide a proportion
@@ -19,65 +22,32 @@ emplog_prop <- function(died, mosquito_number) {
   emplog <- log((died + 0.5) / (mosquito_number - died + 0.5))
   plogis(emplog)
 }
-# Define the nearest neighbour null model: For each point in the training data,
-# average over the X nearest datapoints from the current and previous year
 
-# given vectors of latitude, longitude, year, and insecticide type for test
-# data, and a tibble of training data, return a vector of predictions of the
-# susceptibility fraction from a weighted average of the `n_nearest_neighbours`
-# nearest points in the training data of that insecticide type, and in the same
-# year or up to `n_years_prior` earlier years
-predict_null_fixed_nn <- function(latitude,
-                                  longitude,
-                                  year,
-                                  insecticide_type,
-                                  training_data,
-                                  n_nearest_neighbours,
-                                  n_years_prior = 1) {
+# the nearest neighbour null, and predictive distributions for the nulls -----
 
-  counts <- predict_null_fixed_nn_counts(
-    latitude = latitude,
-    longitude = longitude,
-    year = year,
-    insecticide_type = insecticide_type,
-    training_data = training_data,
-    n_nearest_neighbours = n_nearest_neighbours,
-    n_years_prior = n_years_prior
-  )
+# For each held-out record, average over the k nearest training records of the
+# same insecticide from the most recent two years available.
 
-  emplog_prop(counts$total_died, counts$total_tested)
-
-}
-
-# predictive distributions for the null models ------------------------------
-
-# maximum likelihood estimate of the observation overdispersion implied by a
-# set of predictions. This is reported as a diagnostic - a model whose implied
-# overdispersion greatly exceeds the replicate-based estimate is absorbing
-# process misfit into the observation process - but it is no longer the
-# dispersion the model is scored under. Letting each model choose its own rho
-# made coverage a comparison of dispersion rather than of prediction: the
-# intercept null reached nominal coverage by inflating rho to 0.45 against an
-# external estimate of 0.12-0.22 (#12 review)
-fit_rho_given_predictions <- function(died, mosquito_number, predicted,
-                                      interval = c(1e-4, 0.9)) {
-  negative_log_likelihood <- function(rho) {
-    -sum(dbetabinom(died, mosquito_number, predicted, rho, log = TRUE))
-  }
-  optimise(negative_log_likelihood, interval = interval)$minimum
-}
-
-# As predict_null_fixed_nn(), but returning the pooled counts over the
-# neighbours rather than a single proportion, so that uncertainty in the
-# predicted fraction can be represented by a beta posterior on those counts.
-# Neighbour selection matches predict_null_fixed_nn() exactly
-predict_null_fixed_nn_counts <- function(latitude,
-                                         longitude,
-                                         year,
-                                         insecticide_type,
-                                         training_data,
-                                         n_nearest_neighbours,
-                                         n_years_prior = 1) {
+# Pooled counts over the nearest neighbours of each held-out record - died and
+# tested summed over them, rather than a single proportion, so that uncertainty
+# in the predicted fraction can be represented by a beta posterior on those
+# counts.
+#
+# Several neighbour counts at once. Neither the distance matrix nor the
+# per-record ordering of those distances depends on k, so both are computed once
+# and every k is read off the same cumulative sums. nn_oracle_draws() used to
+# call this once per candidate k and pay for the full distance matrix and a sort
+# per record fifteen times over (#12 review).
+#
+# `k_values` is a vector; the returned matrices have one row per held-out record
+# and one column per element of it, in that order.
+nn_counts_grid <- function(latitude,
+                           longitude,
+                           year,
+                           insecticide_type,
+                           training_data,
+                           k_values,
+                           n_years_prior = 1) {
 
   # A missing row in outputs/optimal_nn.csv returns numeric(0) from the lookup
   # in run_validation_folds.R, and every step below then degrades silently:
@@ -90,10 +60,10 @@ predict_null_fixed_nn_counts <- function(latitude,
   # experiment name had no row in that file: their reported score of -0.86 was
   # the score of the prior, not of a nearest neighbour model.
   stopifnot(
-    is.numeric(n_nearest_neighbours),
-    length(n_nearest_neighbours) == 1,
-    is.finite(n_nearest_neighbours),
-    n_nearest_neighbours >= 1
+    is.numeric(k_values),
+    length(k_values) >= 1,
+    all(is.finite(k_values)),
+    all(k_values >= 1)
   )
 
   training_coords <- as.matrix(training_data[, c("longitude", "latitude")])
@@ -119,15 +89,27 @@ predict_null_fixed_nn_counts <- function(latitude,
   year_diff <- -1 * seq(0, n_years_prior)
 
   n_test <- nrow(test_coords)
-  total_died <- rep(NA_real_, n_test)
-  total_tested <- rep(NA_real_, n_test)
+  total_died <- matrix(NA_real_, nrow = n_test, ncol = length(k_values))
+  total_tested <- matrix(NA_real_, nrow = n_test, ncol = length(k_values))
+
+  # which training records a record may draw on depends only on its anchor year
+  # and its insecticide, so the masks are built once per distinct pair rather
+  # than once per record
+  mask_key <- paste(anchor, insecticide_type)
+  unique_key <- unique(mask_key)
+  key_index <- match(mask_key, unique_key)
+  valid_masks <- lapply(match(unique_key, mask_key), function(j) {
+    training_data$year_start %in% (anchor[j] + year_diff) &
+      training_data$insecticide_type == insecticide_type[j]
+  })
+
+  training_died <- training_data$died
+  training_tested <- training_data$mosquito_number
 
   for (i in seq_len(n_test)) {
 
     distance_vec <- dists[i, ]
-    valid_years <- anchor[i] + year_diff
-    valid <- training_data$year_start %in% valid_years &
-      training_data$insecticide_type == insecticide_type[i]
+    valid <- valid_masks[[key_index[i]]]
     masked_distance_vec <- ifelse(valid, distance_vec, Inf)
 
     # If no training record matches this record's insecticide and year window,
@@ -140,22 +122,59 @@ predict_null_fixed_nn_counts <- function(latitude,
     # training year at all. Fail here instead, so the caller has to set
     # `n_years_prior` to at least the window length.
     if (!any(valid)) {
+      valid_years <- anchor[i] + year_diff
       stop("no training records in ", paste(range(valid_years), collapse = "-"),
            " for ", insecticide_type[i], ": the nearest neighbour null has ",
            "nothing to predict from")
     }
 
-    threshold_distance <- sort(masked_distance_vec,
-                               decreasing = FALSE)[n_nearest_neighbours]
-    nearest <- which(masked_distance_vec <= threshold_distance)
+    # the k-th smallest masked distance is the threshold, and every record at or
+    # inside it is pooled - so ties at the threshold all count, and a k larger
+    # than the number of valid records gives an infinite threshold and pools the
+    # whole training set, exactly as the per-k version did. Sorting once and
+    # taking cumulative sums along that order makes each k an index lookup
+    order_index <- order(masked_distance_vec)
+    sorted_distance <- masked_distance_vec[order_index]
+    cumulative_died <- cumsum(training_died[order_index])
+    cumulative_tested <- cumsum(training_tested[order_index])
 
-    total_died[i] <- sum(training_data$died[nearest])
-    total_tested[i] <- sum(training_data$mosquito_number[nearest])
+    # findInterval() on an ascending vector returns the number of elements at or
+    # below the threshold, which is the size of the pooled set
+    n_pooled <- findInterval(sorted_distance[k_values], sorted_distance)
+
+    total_died[i, ] <- cumulative_died[n_pooled]
+    total_tested[i, ] <- cumulative_tested[n_pooled]
 
   }
 
-  data.frame(total_died = total_died,
-             total_tested = total_tested)
+  list(total_died = total_died,
+       total_tested = total_tested)
+
+}
+
+# the same for a single neighbour count, as a data frame of one column each
+predict_null_fixed_nn_counts <- function(latitude,
+                                         longitude,
+                                         year,
+                                         insecticide_type,
+                                         training_data,
+                                         n_nearest_neighbours,
+                                         n_years_prior = 1) {
+
+  stopifnot(length(n_nearest_neighbours) == 1)
+
+  counts <- nn_counts_grid(
+    latitude = latitude,
+    longitude = longitude,
+    year = year,
+    insecticide_type = insecticide_type,
+    training_data = training_data,
+    k_values = n_nearest_neighbours,
+    n_years_prior = n_years_prior
+  )
+
+  data.frame(total_died = counts$total_died[, 1],
+             total_tested = counts$total_tested[, 1])
 
 }
 
@@ -171,9 +190,7 @@ pooled_count_draws <- function(total_died, total_tested, n_draws) {
 
 # Predictive distribution of the insecticide-type intercept null: the fraction
 # for each type has a beta posterior from the pooled training counts for that
-# type. `rho_implied` is the overdispersion that best explains this model's own
-# training residuals, returned for the diagnostic table only; scoring uses the
-# external estimate
+# type
 intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
 
   pooled <- aggregate(
@@ -187,24 +204,11 @@ intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
                                 pooled$mosquito_number[index],
                                 n_draws)
 
-  training_index <- match(training_data$insecticide_type,
-                          pooled$insecticide_type)
-  training_predicted <- pooled$died[training_index] /
-    pooled$mosquito_number[training_index]
-  rho_implied <- fit_rho_given_predictions(training_data$died,
-                                           training_data$mosquito_number,
-                                           training_predicted)
-
   list(p_draws = p_draws,
-       rho_implied = rho_implied,
        test_df = test_data)
 
 }
 
-# Predictive distribution of the nearest neighbour null. `n_neighbours` is the
-# value already selected by grid search on an internal holdout, and
-# `rho_implied` - a diagnostic only, as for the intercept null - is fitted on a
-# further internal holdout, so neither quantity is tuned on the test fold
 # Predictive distribution of the nearest neighbour null.
 #
 # This is not a competitor model to be optimised, it is a stand-in for what a
@@ -233,8 +237,7 @@ intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
 # handicapped the baseline. The lookup also had no row for the block folds,
 # which silently reduced the null there to its prior (#12).
 nn_null_draws <- function(training_data, test_data, n_neighbours = 1,
-                          n_years_prior = 1, n_draws = 1000,
-                          holdout_size = 100, seed = 111) {
+                          n_years_prior = 1, n_draws = 1000) {
 
   counts <- predict_null_fixed_nn_counts(
     latitude = test_data$latitude,
@@ -250,36 +253,7 @@ nn_null_draws <- function(training_data, test_data, n_neighbours = 1,
                                 counts$total_tested,
                                 n_draws)
 
-  # Fit the implied overdispersion on an internal holdout from the training
-  # data. The seed is fixed so the holdout is reproducible, and the caller's
-  # random stream is restored afterwards rather than left reset (#12 review)
-  if (exists(".Random.seed", envir = globalenv())) {
-    caller_seed <- get(".Random.seed", envir = globalenv())
-    on.exit(assign(".Random.seed", caller_seed, envir = globalenv()))
-  }
-  set.seed(seed)
-  holdout <- sample(nrow(training_data), min(holdout_size, nrow(training_data)))
-  holdout_data <- training_data[holdout, ]
-  remainder <- training_data[-holdout, ]
-
-  holdout_counts <- predict_null_fixed_nn_counts(
-    latitude = holdout_data$latitude,
-    longitude = holdout_data$longitude,
-    year = holdout_data$year_start,
-    insecticide_type = holdout_data$insecticide_type,
-    training_data = remainder,
-    n_nearest_neighbours = n_neighbours,
-    n_years_prior = n_years_prior
-  )
-
-  holdout_predicted <- emplog_prop(holdout_counts$total_died,
-                                   holdout_counts$total_tested)
-  rho_implied <- fit_rho_given_predictions(holdout_data$died,
-                                           holdout_data$mosquito_number,
-                                           holdout_predicted)
-
   list(p_draws = p_draws,
-       rho_implied = rho_implied,
        test_df = test_data)
 
 }
@@ -301,41 +275,44 @@ nn_null_draws <- function(training_data, test_data, n_neighbours = 1,
 nn_oracle_draws <- function(training_data, test_data,
                             n_years_prior = 1, n_draws = 1000,
                             k_grid = c(1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120,
-                                       200, 300, 500, 800),
-                            holdout_size = 100, seed = 111) {
+                                       200, 300, 500, 800)) {
 
   observed <- test_data$died / test_data$mosquito_number
 
-  mse <- vapply(k_grid, function(k) {
-    counts <- predict_null_fixed_nn_counts(
-      latitude = test_data$latitude,
-      longitude = test_data$longitude,
-      year = test_data$year_start,
-      insecticide_type = test_data$insecticide_type,
-      training_data = training_data,
-      n_nearest_neighbours = k,
-      n_years_prior = n_years_prior
-    )
-    mean((observed - emplog_prop(counts$total_died,
-                                 counts$total_tested)) ^ 2)
-  }, numeric(1))
+  # one pass over the grid: the distances and their ordering are shared by every
+  # candidate k, and the winning k's counts are already in hand, so no further
+  # neighbour search is needed to draw from it
+  counts <- nn_counts_grid(
+    latitude = test_data$latitude,
+    longitude = test_data$longitude,
+    year = test_data$year_start,
+    insecticide_type = test_data$insecticide_type,
+    training_data = training_data,
+    k_values = k_grid,
+    n_years_prior = n_years_prior
+  )
 
-  best <- k_grid[which.min(mse)]
+  predicted <- emplog_prop(counts$total_died, counts$total_tested)
+  # mean() per column rather than colMeans(): the two accumulate in different
+  # orders and so can differ in the last bits, and these numbers are compared
+  # against the per-k version this replaced
+  mse <- apply((observed - predicted) ^ 2, 2, mean)
+
+  best_index <- which.min(mse)
+  best <- k_grid[best_index]
   if (best == max(k_grid)) {
     warning("the oracle neighbour count is at the top of the grid (", best,
             "); widen k_grid so the minimum is interior")
   }
 
-  fit <- nn_null_draws(training_data, test_data,
-                       n_neighbours = best,
-                       n_years_prior = n_years_prior,
-                       n_draws = n_draws,
-                       holdout_size = holdout_size,
-                       seed = seed)
+  p_draws <- pooled_count_draws(counts$total_died[, best_index],
+                                counts$total_tested[, best_index],
+                                n_draws)
 
-  fit$n_neighbours <- best
-  fit$k_grid <- k_grid
-  fit$k_mse <- mse
-  fit
+  list(p_draws = p_draws,
+       test_df = test_data,
+       n_neighbours = best,
+       k_grid = k_grid,
+       k_mse = mse)
 
 }

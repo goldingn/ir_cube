@@ -8,22 +8,11 @@
 # inside the dynamical model, and it sets the noise floor against which
 # out-of-sample predictive performance is judged (see idem-lab/ir_cube#10).
 #
-# rho was previously estimated this way in fig_illustrate_bioassay_variability.R,
-# but from the six most heavily sampled pixel-year-insecticide combinations
-# only, which is enough to illustrate a figure but thin for anchoring a
-# validation metric. This uses every replicated combination, and estimates rho
-# separately for each insecticide class.
-#
-# The model is
-#
-#   died_gj ~ BetaBinomial(mosquito_number_gj, p_g, rho)
-#   p_g     ~ Beta(a0, b0)
-#
-# with the group fractions p_g integrated out numerically rather than
-# maximised over. Maximising jointly over one p_g per group would be subject to
-# the incidental parameters problem: with most groups holding only two assays,
-# the number of nuisance parameters grows with the sample size and the
-# resulting rho is biased downwards.
+# rho itself is estimated in fig_illustrate_bioassay_variability.R and read back
+# by rho_lookup(). This script asks only whether the groups it rests on look
+# like the rest of the data. A quadrature-based marginal likelihood for rho once
+# sat here as a second estimator; nothing ever called it, and it is gone (#12
+# review).
 
 source("R/validation_functions.R")
 
@@ -90,76 +79,6 @@ cat(sprintf("%i assays in %i replicated pixel-year-insecticide groups\n",
             n_distinct(replicated$group_id)))
 
 
-# marginal likelihood ------------------------------------------------------
-
-# Gauss-Legendre nodes and weights on (0, 1), for integrating over the group
-# fraction. A fixed grid keeps the likelihood smooth in the parameters, which
-# matters for grouping
-gauss_legendre_01 <- function(n_nodes = 128) {
-  # nodes of the Legendre polynomial by Newton iteration on the interval (-1, 1)
-  i <- seq_len(n_nodes)
-  x <- cos(pi * (i - 0.25) / (n_nodes + 0.5))
-  for (iteration in 1:100) {
-    p0 <- rep(1, n_nodes)
-    p1 <- x
-    for (j in 2:n_nodes) {
-      p2 <- ((2 * j - 1) * x * p1 - (j - 1) * p0) / j
-      p0 <- p1
-      p1 <- p2
-    }
-    derivative <- n_nodes * (x * p1 - p0) / (x ^ 2 - 1)
-    step <- p1 / derivative
-    x <- x - step
-    if (max(abs(step)) < 1e-14) break
-  }
-  weights <- 2 / ((1 - x ^ 2) * derivative ^ 2)
-  # map from (-1, 1) to (0, 1)
-  list(node = (x + 1) / 2,
-       weight = weights / 2)
-}
-
-quadrature <- gauss_legendre_01(128)
-
-# negative log marginal likelihood, with parameters on unconstrained scales:
-#   par[1] = logit(rho), par[2] = log(a0), par[3] = log(b0)
-negative_log_likelihood <- function(par, died, mosquito_number, group_id,
-                                    quadrature) {
-
-  rho <- plogis(par[1])
-  a0 <- exp(par[2])
-  b0 <- exp(par[3])
-
-  node <- quadrature$node
-  n_nodes <- length(node)
-  n_obs <- length(died)
-
-  # log density of each observation at each quadrature node
-  shape <- bb_shape(rep(node, each = n_obs),
-                    rho)
-  log_density <- lchoose(rep(mosquito_number, times = n_nodes),
-                         rep(died, times = n_nodes)) +
-    lbeta(rep(died, times = n_nodes) + shape$a,
-          rep(mosquito_number - died, times = n_nodes) + shape$b) -
-    lbeta(shape$a, shape$b)
-  log_density <- matrix(log_density, nrow = n_obs, ncol = n_nodes)
-
-  # sum the log densities within each group, at each node
-  group_log_density <- rowsum(log_density, group_id)
-
-  # prior density of the group fraction at each node, and the quadrature weight
-  log_prior <- dbeta(node, a0, b0, log = TRUE) + log(quadrature$weight)
-
-  # integrate over the group fraction, working on the log scale for stability
-  integrand <- sweep(group_log_density, 2, log_prior, FUN = "+")
-  maximum <- apply(integrand, 1, max)
-  group_log_likelihood <- maximum +
-    log(rowSums(exp(sweep(integrand, 1, maximum, FUN = "-"))))
-
-  total <- sum(group_log_likelihood)
-  if (!is.finite(total)) return(1e10)
-  -total
-
-}
 
 # are replicated pixel-years representative? -------------------------------
 
