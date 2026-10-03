@@ -42,8 +42,10 @@ df <- subset_modelled_bioassays(ir_africa,
 list2env(index_bioassays(df), environment())
 years <- baseline_year - 1 + sort(unique(df$year_id))
 
-# the model terms (R/dynamical_model.R)
-model_options <- dynamical_model_options()
+# the model terms (R/dynamical_model.R), or an R expression for them in
+# IR_CUBE_MODEL_OPTIONS (docker/run_pod_job.sh)
+model_options <- eval(str2lang(Sys.getenv("IR_CUBE_MODEL_OPTIONS",
+                                          "dynamical_model_options()")))
 
 # create design matrix at all unique cells and for all years, as the model
 # options' selection design asks (R/model_covariates.R)
@@ -96,7 +98,8 @@ cell_country_lookup <- built$lookups$cell_country_lookup
 # the sampler settings (R/dynamical_model.R), as for the folds: more chains
 # cost about proportionally more per iteration or worse, and did not give more
 # effective samples per core-second (doc/cv_run_plan.md, section 3)
-settings <- dynamical_mcmc_settings()
+settings <- eval(str2lang(Sys.getenv("IR_CUBE_MCMC_SETTINGS",
+                                     "dynamical_mcmc_settings()")))
 
 # used cached posterior means as inits
 inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built$variables,
