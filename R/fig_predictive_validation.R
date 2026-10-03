@@ -32,10 +32,12 @@ by_fold <- read.csv("outputs/cv_by_fold.csv", encoding = "UTF-8")
 # years), and as an oracle bound at whichever neighbour count minimises its own
 # error on the held-out records - hindsight the dynamical model is not given.
 model_labels <- c(dynamical = "dynamical model",
+                  two_stage = "two-stage model",
                   nearest_neighbour = "nearest neighbour",
                   nearest_neighbour_oracle = "nearest neighbour (best k)",
                   intercept = "insecticide mean")
 model_colours <- c("dynamical model" = "#2166AC",
+                   "two-stage model" = "#C51B7D",
                    "nearest neighbour" = "#B2182B",
                    "nearest neighbour (best k)" = "#E08214",
                    "insecticide mean" = grey(0.55))
@@ -175,7 +177,7 @@ print(as.data.frame(table_out))
 # their own: they earn their place on point prediction - mean squared error and
 # variance explained - and fitting one per null made the comparison a contest in
 # vagueness rather than in prediction (#12 review). So this is a diagnostic of
-# the one model, not a comparison across four.
+# the one model, not a comparison across models.
 rho_plot <- rho_comparison %>%
   filter(model == "dynamical") %>%
   tidy_labels() %>%
@@ -255,5 +257,5 @@ fold_plot <- by_fold %>%
   theme(legend.position = "bottom")
 
 ggsave("figures/CV_by_fold.png", fold_plot, bg = "white",
-       width = 8, height = 5)
+       width = 9.5, height = 5)
 

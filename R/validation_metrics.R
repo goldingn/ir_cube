@@ -37,153 +37,33 @@
 # rung is reported; pooling within pixel, year and insecticide averaged 1.3
 # assays per group, so it was indistinguishable from the unpooled scores.
 
-source("R/validation_functions.R")
-
-suppressMessages({
-  library(dplyr)
-  library(tidyr)
-})
-
-draws_dir <- "outputs/cv_draws"
-n_pit_reps <- 100
-coverage_levels <- seq(0.1, 0.95, by = 0.05)
-
-# Folds fitted by MCMC hold up to 20,000 draws (4 chains x 5,000). The scoring
-# functions build an n_draws x (died + 1) matrix per observation, so that is
-# twenty times the work of the 1,000 draws the null models carry, for no gain:
-# at roughly 50 draws per effective sample, every tenth draw retains almost all
-# the information. Thinning is applied to the model folds only; the null models
-# are analytic and already independent.
-max_draws <- 2000
-
-thin_draws <- function(x, maximum = max_draws) {
-  if (nrow(x) <= maximum) return(x)
-  keep <- round(seq(1, nrow(x), length.out = maximum))
-  x[keep, , drop = FALSE]
-}
+source("R/validation_scoring.R")
 
 set.seed(2026 - 8 - 31)
+coverage_levels <- seq(0.1, 0.95, by = 0.05)
 
 # externally estimated overdispersion, from replicate bioassays in the same
 # pixel, year and insecticide. This sets the noise floor, and is independent of
 # any of the models being scored. See rho_lookup() in validation_functions.R.
-# only the three experiments that survive; the leave-one-country-out folds
-# confound spatial prediction with the country initial condition, and the
-# three-year 2020 forecast fold leaked its cut year into the holdout. Draws for
-# both are parked in outputs/cv_draws_defunct.
-scored_experiments <- c("spatial_interpolation", "spatial_blocks",
-                        "temporal_forecasting")
-
 rho_source <- rho_lookup()
 cat("overdispersion:", rho_source$source, "\n")
 
-files <- list.files(draws_dir, pattern = "\\.rds$", full.names = TRUE)
-if (length(files) == 0) {
-  stop("no draws found in ", draws_dir, "; run R/run_validation_folds.R first")
-}
-# refuse anything outside the three experiments rather than silently scoring it
-experiment_of <- function(file) {
-  sub("^[a-z_]+__([a-z_]+)__.*$", "\\1", basename(file))
-}
-stopifnot(all(experiment_of(files) %in% scored_experiments))
-
+# every fold on disk, the two-stage model's among them (two_stage__*.rds)
+files <- draws_files()
 cat(sprintf("scoring %i saved folds\n", length(files)))
 
 
 # per record ---------------------------------------------------------------
 
-score_fold <- function(file) {
-
-  fold <- readRDS(file)
-  test <- fold$test_df
-
-  # predictions come from the saved object. For model folds these were produced
-  # by greta's calculate(values = draws) in MCMC order; for the null models they
-  # are analytic. Either way they are not recomputed here
-  p_draws <- thin_draws(fold$p_draws)
-
-  # the overdispersion the fit implies, kept for the diagnostic table: a
-  # posterior for the dynamical model, and a single fitted value for null folds
-  # saved while the nulls still fitted their own. They no longer do - a null
-  # earns its place on point prediction, and letting it choose its own
-  # dispersion made coverage a comparison of vagueness (#12 review) - so folds
-  # written from now on carry none and read as missing here
-  rho_fitted <- if (!is.null(fold$rho_class_draws)) {
-    # saved compactly as draws by insecticide class, expanded here
-    thin_draws(fold$rho_class_draws)[, fold$class_id, drop = FALSE]
-  } else if (!is.null(fold$rho_draws)) {
-    thin_draws(fold$rho_draws)
-  } else if (!is.null(fold$rho_implied)) {
-    matrix(fold$rho_implied, nrow = nrow(p_draws), ncol = nrow(test))
-  } else {
-    matrix(NA_real_, nrow = nrow(p_draws), ncol = nrow(test))
-  }
-
-  # every model is scored at the external, replicate-based estimate
-  rho_scoring <- rho_for_record(test, rho_source)
-  rho_draws <- matrix(rho_scoring, nrow = nrow(p_draws), ncol = nrow(test),
-                      byrow = TRUE)
-
-  summary <- ppd_summary(test$died,
-                         test$mosquito_number,
-                         p_draws,
-                         rho_draws)
-
-  pit <- ppd_pit(summary, n_rep = n_pit_reps)
-  sims <- ppd_simulate(test$mosquito_number, p_draws, rho_draws)
-
-  scores <- summary %>%
-    mutate(
-      model = fold$model,
-      experiment = fold$experiment,
-      fold = fold$fold,
-      insecticide_type = test$insecticide_type,
-      insecticide_class = test$insecticide_class,
-      country_name = test$country_name,
-      year_start = test$year_start,
-      cell = test$cell,
-      # One randomisation replicate, not the mean of them. Averaging over
-      # replicates converges to the mid-P value `cdf_below + 0.5 * pmf_at`,
-      # which is not uniform under calibration for discrete data: with ~30% of
-      # held-out assays at 100% mortality a perfectly calibrated model reads
-      # 0.969 at nominal 0.95. The uniformity statistics use the full matrix
-      # and were never affected; this column feeds the figures (#12 review)
-      pit = pit[, 1],
-      crps = ppd_crps(test$died, test$mosquito_number, sims),
-      rho_external = rho_scoring,
-      rho_fitted = colMeans(rho_fitted),
-      .before = everything()
-    )
-
-  # Keep only what the summaries need. The saved folds carry the greta draws
-  # object and the greta arrays the predictions came from, which are together
-  # most of a 1.8 GB file; retaining the whole fold for all 23 of them held
-  # 26 GB of memory and had the machine in swap
-  list(scores = scores,
-       pit = pit,
-       sims = sims,
-       p_draws = p_draws,
-       rho_scoring = rho_scoring,
-       fold = list(model = fold$model,
-                   experiment = fold$experiment,
-                   fold = fold$fold,
-                   test_df = test,
-                   convergence = fold$convergence,
-                   ess_p = fold$ess_p,
-                   ess_rho = fold$ess_rho,
-                   n_sampled = fold$n_sampled,
-                   n_chains = fold$n_chains))
-
-}
-
 # scored one at a time, with an explicit collection between folds: reading a
 # model fold means holding its 1.8 GB saved object briefly
-scored <- lapply(files, function(file) {
+scored <- lapply(seq_along(files), function(i) {
   cat(sprintf("%s | scoring %s\n", format(Sys.time(), "%H:%M:%S"),
-              basename(file)))
+              basename(files[i])))
   flush(stdout())
   on.exit(gc(verbose = FALSE))
-  score_fold(file)
+  with_fold_stream(files[i], "score",
+                   score_fold(files[i], rho_source))
 })
 names(scored) <- basename(files)
 
@@ -193,32 +73,6 @@ write.csv(all_scores, "outputs/cv_scores.csv", row.names = FALSE)
 
 
 # per experiment -----------------------------------------------------------
-
-# summarise one model in one experiment, pooling its folds
-summarise_experiment <- function(scores, pit_list) {
-
-  pit <- do.call(rbind, pit_list)
-  n_obs <- nrow(scores)
-
-  coverage <- coverage_curve(pit, levels = c(0.5, 0.95))
-  floor_mse <- noise_floor_mse(scores$died,
-                               scores$mosquito_number,
-                               scores$rho_external)
-
-  data.frame(
-    n = n_obs,
-    mean_pit = mean(pit),
-    coverage_50 = coverage$empirical[1],
-    coverage_95 = coverage$empirical[2],
-    cvm = pit_statistic(pit, cvm_stat),
-    crps = mean(scores$crps),
-    elpd = mean(scores$log_score),
-    bias = mean(scores$predicted - scores$observed),
-    mse = mean((scores$observed - scores$predicted) ^ 2),
-    mse_floor = floor_mse
-  )
-
-}
 
 keys <- bind_rows(lapply(scored, function(x) {
   data.frame(model = x$fold$model, experiment = x$fold$experiment)
@@ -272,8 +126,13 @@ print(summaries %>%
 coverage_curves <- lapply(
   split(seq_along(scored), paste(keys$model, keys$experiment)),
   function(index) {
-    pit <- do.call(rbind, lapply(scored[index], `[[`, "pit"))
-    coverage_curve(pit, levels = coverage_levels) %>%
+    # the exact expectation over the PIT randomisation, as in the summaries
+    scores <- bind_rows(lapply(scored[index], `[[`, "scores"))
+    data.frame(nominal = coverage_levels,
+               empirical = vapply(coverage_levels, function(level) {
+                 mean(expected_coverage(scores$cdf_below, scores$pmf_at,
+                                        level))
+               }, numeric(1))) %>%
       mutate(model = keys$model[index[1]],
              experiment = keys$experiment[index[1]],
              .before = everything())
@@ -303,7 +162,7 @@ reliability_checks <- bind_rows(lapply(scored, function(entry) {
   bins <- reliability_bins(colMeans(entry$p_draws),
                            entry$scores$observed,
                            n_bins = 10)
-  bind_cols(
+  with_fold_stream(entry$fold$file, "reliability", bind_cols(
     data.frame(model = entry$fold$model,
                experiment = entry$fold$experiment,
                fold = entry$fold$fold),
@@ -314,7 +173,7 @@ reliability_checks <- bind_rows(lapply(scored, function(entry) {
                     rho = entry$rho_scoring,
                     n_bins = 10,
                     n_rep = 200)
-  )
+  ))
 })) %>%
   mutate(gap = observed - predicted,
          beyond_ppc = gap < ppc_lower | gap > ppc_upper)
@@ -350,31 +209,12 @@ print(reliability_checks %>%
 
 # aggregated scores --------------------------------------------------------
 
-# Assays are pooled by country, year and insecticide: 17-18 assays per group,
-# so assay noise falls roughly seventeen-fold and the comparison is nearly
-# purely about the population fraction, at the cost of testing an aggregate
-# rather than any single pixel. Pooling within pixel, year and insecticide was
-# also reported, and dropped: it averaged 1.3 assays per group, so it was the
-# unpooled comparison under another name (#12 review).
-aggregate_fold <- function(entry, grouping) {
-
-  test <- entry$fold$test_df
-  group <- switch(
-    grouping,
-    country_year = paste(test$country_name, test$year_start,
-                         test$insecticide_type)
-  )
-
-  ppd_aggregate(test$died, test$mosquito_number, group, entry$sims) %>%
-    mutate(model = entry$fold$model,
-           experiment = entry$fold$experiment,
-           grouping = grouping,
-           .before = everything())
-
-}
-
+# pooled by country, year and insecticide (aggregate_fold())
 aggregated <- bind_rows(
-  unname(lapply(scored, aggregate_fold, grouping = "country_year"))
+  unname(lapply(scored, function(entry) {
+    with_fold_stream(entry$fold$file, "aggregate",
+                     aggregate_fold(entry, grouping = "country_year"))
+  }))
 )
 
 write.csv(aggregated, "outputs/cv_aggregate.csv", row.names = FALSE)
@@ -462,24 +302,7 @@ print(rho_comparison %>%
 # A per-group share of the intercept null's excess used to sit here too; it was
 # the intercept-referenced, floor-corrected variance explained under another
 # name, and variance_explained.R carries the one definition of that (#12
-# review).
-by_group <- function(scores, ...) {
-  scores %>%
-    group_by(experiment, ..., model) %>%
-    summarise(
-      n = n(),
-      mean_observed = mean(observed),
-      mean_predicted = mean(predicted),
-      bias = mean(predicted - observed),
-      mean_pit = mean(pit),
-      coverage_95 = mean(pit > 0.025 & pit < 0.975),
-      crps = mean(crps),
-      mse = mean((observed - predicted) ^ 2),
-      mse_floor = noise_floor_mse(died, mosquito_number, rho_external),
-      .groups = "drop"
-    ) %>%
-    mutate(excess = mse - mse_floor)
-}
+# review). by_group() is in validation_scoring.R.
 
 by_fold <- by_group(all_scores, fold)
 write.csv(by_fold, "outputs/cv_by_fold.csv", row.names = FALSE)

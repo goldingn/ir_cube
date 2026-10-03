@@ -34,20 +34,16 @@
 # excluded from the per-insecticide figure by the rule below rather than papered
 # over.
 #
-# Writes outputs/cv_variance_explained.csv (pooled per experiment) and
-# outputs/cv_variance_explained_by_insecticide.csv.
+# Writes outputs/cv_variance_explained.csv (pooled per experiment),
+# outputs/cv_variance_explained_by_fold.csv,
+# outputs/cv_variance_explained_by_horizon.csv (forecasting, origins pooled)
+# and outputs/cv_variance_explained_by_insecticide.csv.
 
-source("R/validation_functions.R")
-suppressMessages({
-  library(dplyr)
-  library(tidyr)
-})
+source("R/validation_scoring.R")
 
 set.seed(2026 - 9 - 24)
 n_bootstrap <- 2000
 n_posterior <- 4000
-
-draws_dir <- "outputs/cv_draws"
 
 # the three out-of-sample experiments worth reporting. Leave-one-country-out is
 # excluded: it measures the difficulty of an entirely unsampled country, which
@@ -69,12 +65,14 @@ experiments <- list(
 # each contrast is the first model less the second, in percentage points of the
 # observed variance
 contrasts <- list(
+  c("two_stage", "dynamical"),
   c("dynamical", "nearest_neighbour"),
   c("dynamical", "nearest_neighbour_oracle"),
   c("dynamical", "intercept"),
   c("nearest_neighbour", "intercept"))
 
 models <- c(dynamical = "dynamical model",
+            two_stage = "two-stage model",
             nearest_neighbour = "nearest recent survey",
             nearest_neighbour_oracle = "nearest surveys, best k",
             intercept = "insecticide mean")
@@ -98,55 +96,42 @@ cat("overdispersion used for the noise share:", rho_spec$source, "\n")
 
 # assemble the held-out records, with one prediction column per model ---------
 
-# the key identifying a held-out assay, so that predictions from different
-# models are matched on the record rather than on row order
-record_key <- function(x) {
-  columns <- c("cell", "year_start", "insecticide_type", "died",
-               "mosquito_number")
-  # paste() drops a NULL argument silently, so a missing column would make two
-  # keys agree on fewer fields, or on none at all
-  stopifnot(all(columns %in% names(x)))
-  do.call(paste, x[columns])
-}
-
-read_fold <- function(model, experiment, fold) {
+# predictions are matched on the record (record_key(), in validation_scoring.R).
+# Each fold file is read once, keeping its held-out records and the posterior
+# mean predictions. Every model must describe the reference's records (the
+# dynamical model's), in the same order. They do, being built from one fold
+# definition, but nothing else enforces it and a silent misalignment would swap
+# predictions between assays (#12 review)
+read_fold <- function(model, experiment, fold, reference = NULL) {
   file <- file.path(draws_dir, sprintf("%s__%s__%s.rds", model, experiment, fold))
-  if (!file.exists(file)) return(NULL)
+  stopifnot(file.exists(file))
   x <- readRDS(file)
-  stopifnot(ncol(x$p_draws) == nrow(x$test_df))
-  data.frame(row = seq_len(nrow(x$test_df)), model = model,
-             predicted = colMeans(x$p_draws))
+  stopifnot(ncol(x$p_draws) == nrow(x$test_df),
+            is.null(reference) ||
+              identical(record_key(x$test_df), record_key(reference)))
+  out <- list(test_df = x$test_df, predicted = colMeans(x$p_draws))
+  rm(x)
+  invisible(gc())
+  out
 }
 
 records <- bind_rows(lapply(experiments, function(spec) {
   bind_rows(lapply(spec$folds, function(fold) {
 
-    reference <- readRDS(file.path(
-      draws_dir, sprintf("dynamical__%s__%s.rds", spec$experiment, fold)))$test_df
-
-    predictions <- bind_rows(lapply(names(models), read_fold,
-                                    experiment = spec$experiment, fold = fold))
-    wide <- predictions %>%
-      pivot_wider(names_from = model, values_from = predicted,
-                  names_prefix = "p_")
-    # every model must describe the same records, in the same order. They do,
-    # being built from one fold definition, but nothing else enforces it and a
-    # silent misalignment would swap predictions between assays (#12 review).
-    stopifnot(nrow(wide) == nrow(reference))
-    for (model in names(models)) {
-      other <- readRDS(file.path(draws_dir, sprintf("%s__%s__%s.rds", model,
-                                                    spec$experiment, fold)))
-      stopifnot(identical(record_key(other$test_df), record_key(reference)))
-      rm(other)
-      invisible(gc())
-    }
+    dynamical <- read_fold("dynamical", spec$experiment, fold)
+    reference <- dynamical$test_df
+    predictions <- lapply(setNames(names(models), names(models)), function(m) {
+      if (m == "dynamical") return(dynamical$predicted)
+      read_fold(m, spec$experiment, fold, reference)$predicted
+    })
 
     reference %>%
       transmute(experiment = spec$label, fold = fold,
-                cell, insecticide_type, insecticide_class,
+                cell, insecticide_type, insecticide_class, year_start,
                 died, mosquito_number,
                 observed = died / mosquito_number) %>%
-      bind_cols(wide %>% select(starts_with("p_")))
+      bind_cols(as_tibble(setNames(predictions,
+                                   paste0("p_", names(predictions)))))
   }))
 }))
 
@@ -189,19 +174,6 @@ explained_for <- function(data) {
   }, numeric(1))
 }
 
-# bootstrap the explained fraction by resampling pixels
-bootstrap_explained <- function(data) {
-  cells <- unique(data$cell)
-  rows_by_cell <- split(seq_len(nrow(data)), data$cell)
-  replicates <- t(replicate(n_bootstrap, {
-    picked <- sample(cells, length(cells), replace = TRUE)
-    explained_for(data[unlist(rows_by_cell[as.character(picked)],
-                              use.names = FALSE), ])
-  }))
-  colnames(replicates) <- prediction_columns
-  replicates
-}
-
 # Posterior draws of the noise share, propagating rho only: this carries the
 # uncertainty in the overdispersion but treats Var(y) as known, which is where
 # essentially all of the floor's uncertainty sits.
@@ -225,7 +197,8 @@ summarise_subset <- function(data, label, stratum = NA_character_) {
 
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
   point <- explained_for(data)
-  replicates <- bootstrap_explained(data)
+  # resampling pixels (pixel_bootstrap(), in validation_scoring.R)
+  replicates <- pixel_bootstrap(data, explained_for, n_bootstrap)
   noise <- noise_posterior(data)
   noise_point <- 100 * noise_floor_mse(data$died, data$mosquito_number,
                                        data$rho_type) / variance
@@ -379,3 +352,22 @@ print(as.data.frame(cells %>%
             ci_width = round(ci_width, 1),
             shown = ifelse(shown, "yes", drop_reason)) %>%
   arrange(desc(shown == "yes"), experiment, insecticide)), row.names = FALSE)
+
+
+# and by forecast horizon --------------------------------------------------
+
+# The two forecasting origins pooled, by years ahead of the last training year
+# (training is year_start < the fold's cut year, so the cut year is one year
+# ahead). A pixel's records from both origins move together in the bootstrap.
+# Last in the script, so the bootstraps above draw the random numbers they did
+# before it was added
+forecasts <- records %>%
+  filter(experiment == "temporal change") %>%
+  mutate(horizon = year_start - as.integer(fold) + 1)
+by_horizon <- bind_rows(lapply(split(forecasts, forecasts$horizon),
+                               function(data) {
+  summarise_subset(data, data$experiment[1], as.character(data$horizon[1]))
+}))
+row.names(by_horizon) <- NULL
+write.csv(by_horizon, "outputs/cv_variance_explained_by_horizon.csv",
+          row.names = FALSE)
