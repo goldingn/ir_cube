@@ -31,8 +31,11 @@ suppressMessages({
 # Blue for the mechanistic model and green for the baseline a person would
 # actually apply, which are the two the reader is asked to compare; the other
 # two models are greys so they read as reference rather than as competitors.
+# Magenta for the two-stage model (the dynamical model with a fitted spatial and
+# spatio-temporal correction), a hue no other model takes in any CV figure.
 model_colours <- c(
   "dynamical model"         = "#2166AC",
+  "two-stage model"         = "#C51B7D",
   "nearest recent survey"   = "#1B7837",
   "nearest surveys, best k" = "#8073AC",
   "insecticide mean"        = grey(0.45))
