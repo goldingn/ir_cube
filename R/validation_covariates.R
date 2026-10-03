@@ -6,9 +6,12 @@
 
 source("R/dynamical_model.R")
 
-# the default model terms, unless the calling script has set model_options
+# the default model terms, or an R expression for them in
+# IR_CUBE_MODEL_OPTIONS (docker/run_pod_job.sh), unless the calling script has
+# set model_options
 if (!exists("model_options")) {
-  model_options <- dynamical_model_options()
+  model_options <- eval(str2lang(Sys.getenv("IR_CUBE_MODEL_OPTIONS",
+                                            "dynamical_model_options()")))
 }
 
 # the design matrix at all unique cells and years (R/model_covariates.R)
