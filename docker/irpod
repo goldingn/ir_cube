@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Move data to and from the RunPod network volume through its S3-compatible
+# API, so that routine runs need no ssh or rsync. Install a copy outside the
+# repository (see docker/README.md), so that the command a permission rule
+# allows is not one an edit to the repository can change.
+#
+#   irpod sync           upload the run's inputs, from the repository root
+#   irpod status <job>   the job's spec, markers and the end of its log
+#   irpod fetch <job>    download the job's results (not its code or inputs)
+#                        to outputs/pod_jobs/<job>/
+#
+# Credentials: an S3 API key from the RunPod console, as the profile "runpod"
+# in ~/.aws/credentials. The aws command is the one in the virtual environment
+# this script was installed with.
+set -euo pipefail
+aws=$HOME/.local/share/irpod/venv/bin/aws
+volume=0f6xjzaxch
+remote=s3://$volume/ir_cube
+s3() {
+  "$aws" --profile runpod --region eu-ro-1 \
+    --endpoint-url https://s3api-eu-ro-1.runpod.io s3 "$@"
+}
+job_name() {
+  [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+    echo "irpod: invalid job name '${1:-}'" >&2; exit 1; }
+}
+
+case ${1:-} in
+  sync)
+    [ -f R/fit_model.R ] || { echo "irpod: run from the repository root" >&2; exit 1; }
+    s3 sync data/clean "$remote/data/clean"
+    s3 cp "data/raw/UNSD — Methodology.csv" "$remote/data/raw/"
+    s3 sync temporary "$remote/temporary" --exclude '*' --include '*.RDS'
+    for f in outputs/bioassay_rho*.csv; do s3 cp "$f" "$remote/outputs/"; done
+    ;;
+  status)
+    job_name "${2:-}"
+    s3 ls "$remote/jobs/$2/"
+    s3 cp "$remote/jobs/$2/job.spec" - 2>/dev/null || true
+    s3 cp "$remote/jobs/$2/job.log" - 2>/dev/null | tail -n 20 || true
+    ;;
+  fetch)
+    job_name "${2:-}"
+    s3 sync "$remote/jobs/$2" "outputs/pod_jobs/$2" \
+      --exclude 'R/*' --exclude 'tmb/*' --exclude 'data/*'
+    ;;
+  *)
+    sed -n '2,15p' "$0" >&2
+    exit 1
+    ;;
+esac
