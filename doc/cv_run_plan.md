@@ -82,7 +82,9 @@ to `outputs/cv_scores.csv` as `map`, and `variance_explained.R` reads it from
 there, so it runs after. The two-stage map needs the folds' `map_draws`, which
 `run_two_stage_folds.R` saves from #32 on; a fold assembled before that scores
 its predictive mean instead, flagged `map_exact = FALSE`, and has no coverage
-without u and p. Rerun its per-type steps and `assemble`, not `stage_one`.
+without u and p. Rerun its per-type steps and `assemble`; for the forecasting
+folds also `stage_one`, which adds the before window the change score's
+two-stage map needs (`map_before`, #36).
 
 `run_validation_folds.R` fits the nulls in process (minutes) and then dispatches
 each model fold as a separate `Rscript R/run_one_fold.R <experiment> <fold>`,
