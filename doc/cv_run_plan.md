@@ -64,9 +64,11 @@ confusing ways if they are disturbed:
 Rscript R/fig_illustrate_bioassay_variability.R  # overdispersion per type; everything downstream needs it
 Rscript R/run_validation_folds.R                 # nulls, then dispatch the model folds
 Rscript R/validation_metrics.R                   # score everything on disk
-Rscript R/validation_change.R                    # score predicted change, per forecast origin
 Rscript R/validation_geometry.R                  # fold separation, and the leak check
 Rscript R/variance_explained.R                   # variance explained and the noise ceiling
+Rscript R/full_fit_maps_at_assays.R              # full-data fit's maps at every assay (after R/two_stage_maps.R)
+Rscript R/validation_level.R                     # main figure, level panels A-C
+Rscript R/validation_change.R                    # main figure, change panels D-E (pairs of bioassays)
 Rscript R/fig_variance_explained.R               # the bar figures
 Rscript R/fig_predictive_validation.R            # figures and the table
 ```
@@ -642,8 +644,9 @@ national folds.
 
 ## 6. Change-based scoring, and two analyses that are not here
 
-`validation_change.R` scores predicted change between the before-window and the
-holdout, per forecast origin, which is the quantity the forecasting experiment is
+`validation_change.R` scores predicted change between pairs of single
+bioassays at a pixel, one in the before-window and one in the holdout, at least
+3 years apart (#36), which is the quantity the forecasting experiment is
 actually about. The before-window predictions it needs are saved with each fold
 by `fit_validation_fold.R`; because sampling cannot be resumed across sessions
 (§8), that has to be in place before a fit starts and cannot be added afterwards.
