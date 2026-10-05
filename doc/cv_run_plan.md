@@ -63,10 +63,12 @@ confusing ways if they are disturbed:
 ```bash
 Rscript R/fig_illustrate_bioassay_variability.R  # overdispersion per type; everything downstream needs it
 Rscript R/run_validation_folds.R                 # nulls, then dispatch the model folds
+# the two-stage folds: doc/two_stage_plan.md, "How to run", step 2
 Rscript R/validation_metrics.R                   # score everything on disk
 Rscript R/validation_change.R                    # score predicted change, per forecast origin
 Rscript R/validation_geometry.R                  # fold separation, and the leak check
 Rscript R/variance_explained.R                   # variance explained and the noise ceiling
+Rscript R/two_stage_metrics.R                    # the two-stage model against the dynamical
 Rscript R/fig_variance_explained.R               # the bar figures
 Rscript R/fig_predictive_validation.R            # figures and the table
 ```
@@ -74,6 +76,13 @@ Rscript R/fig_predictive_validation.R            # figures and the table
 The overdispersion fit comes first: `rho_lookup()` stops rather than falling
 back, so nothing scores until `outputs/bioassay_rho_hierarchical.csv` and
 `outputs/bioassay_rho_type_draws.rds` exist.
+
+Point metrics score each model's map (#32): `validation_metrics.R` writes it
+to `outputs/cv_scores.csv` as `map`, and `variance_explained.R` reads it from
+there, so it runs after. The two-stage map needs the folds' `map_draws`, which
+`run_two_stage_folds.R` saves from #32 on; a fold assembled before that scores
+its predictive mean instead, flagged `map_exact = FALSE`, and has no coverage
+without u and p. Rerun its per-type steps and `assemble`, not `stage_one`.
 
 `run_validation_folds.R` fits the nulls in process (minutes) and then dispatches
 each model fold as a separate `Rscript R/run_one_fold.R <experiment> <fold>`,
