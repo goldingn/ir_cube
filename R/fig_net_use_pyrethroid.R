@@ -2,16 +2,18 @@
 # R/prep_net_use_pyrethroid.R): the net-crop-weighted share by year for the
 # continent and each region, the change in the net covariate at the bioassay
 # pixel-years, and figures/net_use_pyrethroid_share.png (the share by year per
-# region, and a 2024 map of the share at each cell).
+# region, and a 2025 map of the share at each cell).
 
 source("R/packages.R")
 source("R/functions.R")
 
 net_type_w <- c(0.25, 0.47)
-years <- 2000:2024
-summary_years <- c(2000, 2005, 2010, 2015, 2020, 2024)
+years <- 2000:2025
+summary_years <- c(2000, 2005, 2010, 2015, 2020, 2024, 2025)
+# the last year of bioassay data and of net_use_cube.tif
+final_data_year <- 2024
 
-netcrop <- read_csv("data/raw/itn/net_use_20260929/netcrop_multitype_timeseries.csv",
+netcrop <- read_csv("data/raw/itn/net_use_20261002/netcrop_multitype_timeseries.csv",
                     show_col_types = FALSE) %>%
   filter(year %in% years) %>%
   mutate(country_name = printable_country_name(
@@ -48,7 +50,7 @@ shares %>%
 mask <- rast("data/clean/raster_mask.tif")
 bioassays <- readRDS("data/clean/all_gambiae_complex_data.RDS") %>%
   mutate(cell = terra::cellFromXY(mask, cbind(longitude, latitude)),
-         year = pmin(pmax(year_start, min(years)), max(years))) %>%
+         year = pmin(pmax(year_start, min(years)), final_data_year)) %>%
   filter(!is.na(cell), year_start >= 1995) %>%
   distinct(cell, year)
 cube_at <- function(cube) {
@@ -105,13 +107,13 @@ p_share <- shares_main %>%
   theme_minimal() +
   theme(legend.position = "bottom", panel.grid.minor = element_blank())
 
-share_2024 <- rast(sprintf("data/clean/net_pyrethroid_share_cube_w%.2f.tif",
-                           net_type_w[1]))[["share_2024"]]
+share_2025 <- rast(sprintf("data/clean/net_pyrethroid_share_cube_w%.2f.tif",
+                           net_type_w[1]))[["share_2025"]]
 p_map <- ggplot() +
-  geom_spatraster(data = share_2024) +
+  geom_spatraster(data = share_2025) +
   scale_fill_distiller(palette = "Blues", direction = 1, limits = c(0, 1),
                        na.value = "transparent", name = "Share") +
-  labs(title = "2024") +
+  labs(title = "2025") +
   theme_void()
 
 dir.create("figures", showWarnings = FALSE)
