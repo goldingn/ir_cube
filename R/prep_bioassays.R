@@ -7,7 +7,7 @@ source("R/functions.R")
 # load data from malaria threat map discrimintating concentraation bioassays and
 # subset to Africa
 ir_dis_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20261005.xlsx",
   sheet = "Data") %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
@@ -73,7 +73,7 @@ ir_dis_mtm_africa <- read_xlsx(
 # load data from malaria threat map intensity concentration bioassays and
 # subset to Africa
 ir_int_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20261005.xlsx",
   sheet = "Data") %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
