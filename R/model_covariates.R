@@ -100,6 +100,15 @@ init_covariate_matrix <- function(cells, design = selection_design(),
 #                (R/net_type_weight.R)
 #   net_use_source  the net use layers: "run06", MITN run 06, the run of the
 #                net crop by type; "legacy", those of net_use_cube.tif
+#   net_transform  how net use n enters the nets column (#37;
+#                net_use_transform()): "linear", n; "current", n / (n +
+#                net_scale), saturating in the year's use; "cumulative", the
+#                yearly increments of F(C) = net_scale (1 - exp(-C /
+#                net_scale)), C the running sum of n from trend_years[1], so
+#                that selection per unit of net use decays with cumulative
+#                use and cumulative selection from nets saturates. The column
+#                keeps the name "nets"; nets hinges need "linear"
+#   net_scale    h of "current" or c of "cumulative"; NULL for "linear"
 # Net use, IRS and their hinges have no trend. The settings of the fits before
 # the refit are selection_design_untrended().
 selection_design <- function(pop = c("encounter", "saturating", "raw",
@@ -112,10 +121,19 @@ selection_design <- function(pop = c("encounter", "saturating", "raw",
                              trend_years = c(1995, 2025),
                              nets = c("pyrethroid", "all"),
                              net_w = 0.25,
-                             net_use_source = c("run06", "legacy")) {
+                             net_use_source = c("run06", "legacy"),
+                             net_transform = c("linear", "current",
+                                               "cumulative"),
+                             net_scale = NULL) {
   pop <- match.arg(pop)
   nets <- match.arg(nets)
   net_use_source <- match.arg(net_use_source)
+  net_transform <- match.arg(net_transform)
+  stopifnot(identical(net_transform == "linear", is.null(net_scale)),
+            is.null(net_scale) ||
+              (is.numeric(net_scale) && length(net_scale) == 1 &&
+                 net_scale > 0),
+            net_transform == "linear" || !"nets" %in% names(hinges))
   init_pop <- match.arg(init_pop, c("encounter", "saturating", "raw", "log"))
   stopifnot(is.list(hinges),
             all(names(hinges) %in% c("nets", "irs", "pop")),
@@ -139,7 +157,8 @@ selection_design <- function(pop = c("encounter", "saturating", "raw",
        hinges = hinges, trend_pop = trend_pop,
        trend_crops = trend_crops, trend_years = trend_years,
        nets = nets, net_w = net_w,
-       net_use_source = net_use_source)
+       net_use_source = net_use_source,
+       net_transform = net_transform, net_scale = net_scale)
 }
 
 # The design of the fits before the refit
@@ -321,8 +340,9 @@ selection_time_varying <- function(cells, baseline_year, end_year,
                c(length(cells), end_year - baseline_year + 1, n_time_varying),
                dimnames = list(NULL, baseline_year:end_year,
                                columns[seq_len(n_time_varying)]))
-  out[, , 1] <- read_padded_cube(net_use_file(design), cells, baseline_year,
-                                 end_year)
+  out[, , 1] <- net_use_transform(
+    read_padded_cube(net_use_file(design), cells, baseline_year, end_year),
+    baseline_year, design)
   out[, , 2] <- read_padded_cube("data/clean/irs_coverage_scaled_cube.tif",
                                  cells, baseline_year, end_year)
   out[, , 3] <- selection_pop_matrix(cells, baseline_year, end_year, design)
@@ -353,6 +373,35 @@ selection_time_varying <- function(cells, baseline_year, end_year,
   }
   stopifnot(j == n_time_varying)
   out
+}
+
+# The nets column from net use `nets` (cells x years, from baseline_year), as
+# design$net_transform says (selection_design())
+net_use_transform <- function(nets, baseline_year, design) {
+  if (design$net_transform == "linear") {
+    return(nets)
+  }
+  if (design$net_transform == "current") {
+    return(nets / (nets + design$net_scale))
+  }
+  # the running sum starts at the baseline year, so it is the same whatever
+  # years a caller builds the design for only if they start there
+  stopifnot(baseline_year == design$trend_years[1])
+  cum <- nets
+  for (t in seq_len(ncol(nets))[-1]) {
+    cum[, t] <- cum[, t - 1] + nets[, t]
+  }
+  saturating_cumulative(cum, design$net_scale) -
+    saturating_cumulative(cum - nets, design$net_scale)
+}
+
+# F(C) = c (1 - exp(-C / c)) of a cumulative exposure C, which is C for
+# C << c and saturates at c. Written with expm1() so that it stays accurate
+# when C / c is small, where 1 - exp(-C / c) would lose digits to
+# cancellation, and so do the increments F(C_t) - F(C_{t-1}) of the early
+# years
+saturating_cumulative <- function(cum, c) {
+  c * -expm1(-cum / c)
 }
 
 # The net use cube of the design (design$nets, design$net_w,
@@ -428,6 +477,8 @@ covariate_extract <- function(cells, baseline_year, end_year,
   design$trend_pop <- "none"
   design$trend_crops <- "none"
   design$hinges <- list()
+  design$net_transform <- "linear"
+  design$net_scale <- NULL
   selection <- selection_design_matrix(cells, baseline_year, end_year,
                                        design)
   bind_cols(selection$cell_years_index,
