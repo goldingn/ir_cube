@@ -12,31 +12,39 @@
 # R/net_type_weight.R.
 #
 # Net use from either of two sources (net_use_source in selection_design()):
-#   run06   the MITN run 06 use layers (data/raw/itn/net_use_20260929), of the
-#           same run as the net crop by type. The 2025 layer is omitted (it has
-#           an error), so the model carries 2024 forward. They are missing
-#           outside the 44 countries of the net crop (361,587 mask cells: North
-#           Africa, South Africa, Lesotho, small islands, and 5 cells of
-#           Equatorial Guinea, and up to 39 more cells in some years), and
-#           are set to 0 there. The legacy layers are 0 there too but for 166
-#           cell-years (150 in Egypt, 12 in Equatorial Guinea, 4 in
-#           Guinea-Bissau)
-#   legacy  the layers of net_use_cube.tif (prep_rasters.R), whose 2024 layer
-#           is a copy of 2023. They differ from run 06's by up to 0.96 at a
-#           cell (mean absolute difference 0.07-0.18 over the mask, by year)
+#   run06   the MITN run 06 use layers (data/raw/itn/net_use_20261002,
+#           downloaded 2 October 2026 with the corrected 2025 layer), of the
+#           same run as the net crop by type. They are missing outside the 44
+#           countries of the net crop (361,587 mask cells: North Africa, South
+#           Africa, Lesotho, small islands, and 5 cells of Equatorial Guinea,
+#           and up to 39 more cells in some years), and are set to 0 there.
+#           The legacy layers are 0 there too but for 166 cell-years (150 in
+#           Egypt, 12 in Equatorial Guinea, 4 in Guinea-Bissau). The download
+#           of 29 September 2026 (net_use_20260929, whose 2025 layer had an
+#           error) differs in every layer and in the net crop: by up to 0.73
+#           at a cell (mean absolute difference 0.02-0.04, 2000-2024)
+#   legacy  the layers of net_use_cube.tif (prep_rasters.R), 2000-2024, whose
+#           2024 layer is a copy of 2023; the model carries 2024 forward. They
+#           differ from run 06's by up to 0.98 at a cell (mean absolute
+#           difference 0.06-0.14 over the mask, by year)
 #
-# Writes, for each w, data/clean/net_use_pyrethroid_cube_w<w>.tif (run06) and
-# net_use_pyrethroid_legacy_cube_w<w>.tif (legacy), layers nets_<year>,
-# 2000-2024, processed as net_use_cube.tif is in prep_rasters.R;
+# Writes, for each w, data/clean/net_use_pyrethroid_cube_w<w>.tif (run06,
+# layers nets_<year>, 2000-2025) and net_use_pyrethroid_legacy_cube_w<w>.tif
+# (legacy, 2000-2024), processed as net_use_cube.tif is in prep_rasters.R;
 # data/clean/net_use_run06_cube.tif, all run 06 net use processed the same
-# way, and net_use_run06_filled.tif, 1 at the cells set to 0; and data/clean/net_pyrethroid_share_cube_w<w>.tif (layers
-# share_<year>, the share at each mask cell). Run after prep_rasters.R.
+# way, and net_use_run06_filled.tif, 1 at the cells set to 0; and
+# data/clean/net_pyrethroid_share_cube_w<w>.tif (layers share_<year>,
+# 2000-2025, the share at each mask cell). It prints the change in run 06 net
+# use from 2024 to 2025. Run after prep_rasters.R. It peaked at 10.5 GB of
+# memory.
 
 source("R/packages.R")
 source("R/functions.R")
 
 net_type_w <- c(0.25, 0.47)
-years <- 2000:2024
+years <- 2000:2025
+# the legacy layers end in 2024 (a copy of 2023)
+legacy_years <- 2000:2024
 
 mask <- rast("data/clean/raster_mask.tif")
 
@@ -45,7 +53,7 @@ mask <- rast("data/clean/raster_mask.tif")
 
 # monthly net crop by admin 1 unit and type. admin1_id is the fdef_id of the
 # admin 1 raster (all 582 units are in it); area_id matches none of its values
-netcrop <- read_csv("data/raw/itn/net_use_20260929/netcrop_multitype_timeseries.csv",
+netcrop <- read_csv("data/raw/itn/net_use_20261002/netcrop_multitype_timeseries.csv",
                     show_col_types = FALSE) %>%
   filter(year %in% years)
 
@@ -134,21 +142,25 @@ print(cell_admin %>% filter(source == "nearest admin 1") %>% count(admin0_id) %>
 
 # as prep_rasters.R does for net use: crop, impute the misaligned coast, and
 # mask
-process_use <- function(files) {
-  use <- terra::extend(terra::crop(rast(files), mask), mask)
-  use <- terra::focal(use,
-                      w = 9,
-                      fun = "mean",
-                      na.policy = "only",
-                      na.rm = TRUE)
-  use <- terra::mask(use, mask)
+process_use <- function(files, years) {
+  # a layer at a time: terra's focal() segfaults when it has to process a
+  # whole cube in chunks, as it does when memory is short
+  use <- rast(lapply(files, function(file) {
+    layer <- terra::extend(terra::crop(rast(file), mask), mask)
+    layer <- terra::focal(layer,
+                          w = 9,
+                          fun = "mean",
+                          na.policy = "only",
+                          na.rm = TRUE)
+    terra::mask(layer, mask)
+  }))
   names(use) <- paste0("nets_", years)
   use
 }
 
 # legacy: net_use_cube.tif, to float precision
 use_legacy <- process_use(sprintf("data/raw/itn/net_use/ITN_%d_use_mean.tif",
-                                  years))
+                                  legacy_years), legacy_years)
 net_use <- rast("data/clean/net_use_cube.tif")
 stopifnot(identical(names(net_use), names(use_legacy)),
           all(terra::global(abs(net_use - use_legacy), "max",
@@ -156,22 +168,61 @@ stopifnot(identical(names(net_use), names(use_legacy)),
 
 # run 06, 0 at the cells it lacks
 use_run06 <- process_use(
-  sprintf("data/raw/itn/net_use_20260929/use_%d_mean.tif", years))
-run06_missing <- is.na(use_run06) & !is.na(use_legacy)
-legacy_fill <- terra::values(use_legacy, mat = TRUE)[mask_cells, ]
+  sprintf("data/raw/itn/net_use_20261002/use_%d_mean.tif", years), years)
+run06_missing <- terra::mask(is.na(use_run06), mask)
 missing <- terra::values(run06_missing, mat = TRUE)[mask_cells, ] == 1
 cat("run 06 use missing at mask cells, by year:", colSums(missing), "\n")
-cat("of which with legacy use > 0.01, by country (cell-years):\n")
+cat("of which with legacy use > 0.01, by country (cell-years, 2000-2024):\n")
+legacy_fill <- terra::values(use_legacy, mat = TRUE)[mask_cells, ]
 country <- terra::values(rast("data/clean/country_raster.tif"),
                          dataframe = TRUE)[mask_cells, 1]
-print(table(rep(as.character(country), length(years))[
-  missing & legacy_fill > 0.01]))
-use_run06 <- terra::cover(use_run06, use_legacy * 0)
+print(table(rep(as.character(country), length(legacy_years))[
+  missing[, seq_along(legacy_years)] & legacy_fill > 0.01]))
+rm(legacy_fill)
+use_run06 <- terra::mask(terra::classify(use_run06, cbind(NA, 0)), mask)
 terra::writeRaster(run06_missing, "data/clean/net_use_run06_filled.tif",
                    overwrite = TRUE)
 stopifnot(!anyNA(terra::values(use_run06, mat = TRUE)[mask_cells, ]))
 terra::writeRaster(use_run06, "data/clean/net_use_run06_cube.tif",
                    overwrite = TRUE)
+
+# 2025 against 2024 at the mask cells: the change in run 06 net use, overall
+# and by country, and the cells missing in 2025 (so set to 0) but not in 2024.
+# 2025 is lower by 0.027 on average over the mask (0.036 where run 06 has use;
+# -0.22 in Zambia to +0.13 in Malawi, by country), by up to 0.56 at a cell,
+# and missing at no more cells. With the drop in the pyrethroid-only share
+# (mean over the mask 0.81 to 0.63 at w = 0.25), pyrethroid-only use falls
+# from 0.142 to 0.096 on average
+use_change <- terra::values(use_run06[[c("nets_2024", "nets_2025")]],
+                            mat = TRUE)[mask_cells, ]
+use_change <- use_change[, 2] - use_change[, 1]
+missing_2024 <- missing[, years == 2024]
+missing_2025 <- missing[, years == 2025]
+newly_missing <- missing_2025 & !missing_2024
+report_change <- function(change, label) {
+  cat("run 06 net use, 2025 minus 2024, over", label, "(", length(change),
+      "cells): mean", signif(mean(change), 3), "; mean absolute",
+      signif(mean(abs(change)), 3), "; max absolute",
+      signif(max(abs(change)), 3), "\n")
+}
+report_change(use_change, "the mask")
+report_change(use_change[!missing_2024 & !missing_2025],
+              "the mask cells run 06 has in both years")
+cat("mask cells missing in 2025 but not 2024:", sum(newly_missing),
+    "; in 2024 but not 2025:", sum(missing_2024 & !missing_2025), "\n")
+cat("by country (cells with use in 2024 or 2025):\n")
+tibble(country = as.character(country), change = use_change,
+       newly_missing = newly_missing) %>%
+  filter(!is.na(country), !(missing_2024 & missing_2025)) %>%
+  group_by(country) %>%
+  summarise(cells = n(),
+            mean_change = mean(change),
+            max_abs_change = max(abs(change)),
+            newly_missing = sum(newly_missing)) %>%
+  arrange(mean_change) %>%
+  as.data.frame() %>%
+  print(digits = 2)
+rm(use_change)
 
 uses <- list(run06 = use_run06, legacy = use_legacy)
 cube_suffix <- c(run06 = "", legacy = "_legacy")
@@ -217,8 +268,9 @@ for (w in net_type_w) {
                      overwrite = TRUE)
 
   for (source in names(uses)) {
-    net_use_pyrethroid <- uses[[source]] * share_cube
-    names(net_use_pyrethroid) <- paste0("nets_", years)
+    use <- uses[[source]]
+    net_use_pyrethroid <- use * share_cube[[sub("nets", "share", names(use))]]
+    names(net_use_pyrethroid) <- names(use)
     terra::writeRaster(net_use_pyrethroid,
                        sprintf("data/clean/net_use_pyrethroid%s_cube_w%.2f.tif",
                                cube_suffix[[source]], w),
