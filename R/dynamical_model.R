@@ -497,11 +497,12 @@ inits_levels <- list(
 dynamical_inits_file <- "temporary/inits_refit.RDS"
 
 # The cached initial values the fits start from: the files in IR_CUBE_INITS,
-# comma-separated, or dynamical_inits_file. With several, the chains are split
-# between them (dynamical_chain_inits()), e.g. to start chains in both
-# mortality-floor modes (#37; R/floor_mode_inits.R)
+# comma-separated, or dynamical_inits_file if it is unset or empty. With
+# several, the chains are split between them (dynamical_chain_inits()), e.g.
+# to start chains in both mortality-floor modes (#37; R/floor_mode_inits.R)
 dynamical_inits_files <- function() {
-  strsplit(Sys.getenv("IR_CUBE_INITS", dynamical_inits_file), ",")[[1]]
+  files <- Sys.getenv("IR_CUBE_INITS")
+  if (files == "") dynamical_inits_file else strsplit(files, ",")[[1]]
 }
 
 # Initial values for each of `n_chains` chains, as a list for
