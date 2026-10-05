@@ -109,7 +109,10 @@ cat("overdispersion used for the noise share:", rho_spec$source, "\n")
 # validation_metrics.R writes to outputs/cv_scores.csv as `map`, which for the
 # two-stage model leaves out its site noise u and p and for every other model
 # is its predictive mean. Read from there rather than from the saved folds,
-# which take 4-8 GB each to load, so run validation_metrics.R first.
+# which take 4-8 GB each to load, so run validation_metrics.R first. It is the
+# mean of the thinned draws every other score uses (thin_draws()), where the
+# folds' means used all of them: on the September folds that moved the
+# dynamical model's pooled spatial scores by at most 0.002 points.
 #
 # Predictions are matched on the record (record_key(), in
 # validation_scoring.R). Every model must describe the reference's records (the
