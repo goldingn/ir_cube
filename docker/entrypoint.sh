@@ -1,7 +1,7 @@
 #!/bin/bash
 # Start sshd if PUBLIC_KEY is set (RunPod sets it from the account's SSH keys).
 # If JOB is set at pod creation, run it (the arguments of run_pod_job.sh), then
-# remove this pod; otherwise run the command (by default, sleep).
+# wait to be deleted; otherwise run the command (by default, sleep).
 set -e
 
 if [ -n "${PUBLIC_KEY}" ]; then
@@ -34,11 +34,9 @@ if [ -n "${JOB:-}" ]; then
   set -f
   RUN_POD_JOB_FOREGROUND=1 /usr/local/bin/run_pod_job.sh $JOB \
     || echo "job exited with status $?"
-  # the results are on the network volume; RUNPOD_API_KEY, which RunPod sets,
-  # is scoped to this pod
-  echo "removing pod ${RUNPOD_POD_ID:-}"
-  runpodctl pod delete "${RUNPOD_POD_ID:-}" \
-    || echo "could not remove the pod: delete it with the RunPod console or API"
+  # the results are on the network volume. The pod cannot delete or stop
+  # itself: RunPod refuses both to the pod-scoped RUNPOD_API_KEY (403)
+  echo "job finished: delete pod ${RUNPOD_POD_ID:-}"
   exec sleep infinity
 fi
 

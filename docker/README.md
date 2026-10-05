@@ -9,7 +9,7 @@ One greta fit (the full fit or one CV fold) per RunPod CPU pod. The run recipe
 snapshot, greta at `282944f`, python 3.12 with TensorFlow 2.21 and TensorFlow
 Probability 0.25 (`docker/requirements.txt`), OpenBLAS, and sshd taking the
 key RunPod passes in `PUBLIC_KEY` (`docker/entrypoint.sh`), with
-`run_pod_job.sh` and `runpodctl`. It holds software only; the code is
+`run_pod_job.sh`. It holds software only; the code is
 downloaded per job and the data live on the network volume. Checked against the local
 greta 0.6 setup: `R/check_dynamical_model.R` agreed to every digit.
 
@@ -43,9 +43,8 @@ More chains with fewer samples each did not pay off: warmup dominates.
 ## Jobs
 
 Routine runs need no ssh. Each job is given when its pod is created, its log
-is the pod's log, and the pod removes itself when the job ends, leaving the
-results on the volume. Data go to and from the volume through its
-S3-compatible API.
+is the pod's log, and its results are on the volume. Data go to and from the
+volume through its S3-compatible API.
 
 **Once per machine:** install `docker/irpod` outside the repository, so that
 the command a permission rule allows can't change with an edit to the
@@ -94,8 +93,10 @@ irpod status <name>    # spec, markers and the end of the log
 irpod fetch <name>     # results to outputs/pod_jobs/<name>/
 ```
 
-If a pod could not remove itself, its log ends with that message; delete it
-with the RunPod connector.
+A pod cannot delete itself (RunPod refuses its pod-scoped key), so it idles,
+billed, until it is deleted. When `irpod status` shows `job.DONE` or
+`job.FAILED`, delete the pod with the RunPod connector; its log ends "job
+finished". At the end of a session, check `list-pods` for pods left running.
 
 **Interactively**, with ssh (`~/.ssh/runpod_ed25519`, the pod's direct TCP
 port 22), `run_pod_job.sh` runs a job detached, so that it outlives the
@@ -110,5 +111,5 @@ session, with the same variables.
   for scripts that call `wait_for_memory()`.
 - zsh does not word-split a variable holding ssh options; wrap in `bash -c`
   or write them out.
-- Check that pods are gone when their jobs finish. The volume is billed
-  monthly whether or not a pod is running.
+- Pods bill until deleted, idle or not. The volume is billed monthly whether
+  or not a pod is running.

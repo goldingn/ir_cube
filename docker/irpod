@@ -42,7 +42,7 @@ case ${1:-} in
   fetch)
     job_name "${2:-}"
     s3 sync "$remote/jobs/$2" "outputs/pod_jobs/$2" \
-      --exclude 'R/*' --exclude 'tmb/*' --exclude 'data/*'
+      --exclude 'R/*' --exclude 'tmb/*' --exclude 'data' --exclude 'data/*'
     ;;
   *)
     sed -n '2,15p' "$0" >&2

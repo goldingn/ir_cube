@@ -86,14 +86,6 @@ RUN mkdir -p /run/sshd /root/.ssh \
        'PubkeyAuthentication yes' \
        > /etc/ssh/sshd_config.d/10-key-only.conf
 
-# runpodctl, for a pod to remove itself when its job is done
-ARG RUNPODCTL_VERSION=2.14.0
-ARG RUNPODCTL_SHA256=2e0fd370a52a0fc7e43a6434a209348a4f6836fcdf1ad2b093b609e938138be9
-RUN curl -fsSL -o /usr/local/bin/runpodctl \
-       https://github.com/runpod/runpodctl/releases/download/v${RUNPODCTL_VERSION}/runpodctl-linux-amd64 \
-  && echo "${RUNPODCTL_SHA256}  /usr/local/bin/runpodctl" | sha256sum -c - \
-  && chmod +x /usr/local/bin/runpodctl
-
 COPY docker/entrypoint.sh docker/run_pod_job.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/run_pod_job.sh
 
