@@ -8,24 +8,22 @@
 #     of the other assays
 # and print the log density itself, for regression checks between versions.
 #
-#   Rscript R/check_dynamical_model.R '<options>' [seed] [sd]
+#   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
 # (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
 # where p rounds to 1 at assays with survivors, and the log density is NaN)
 # e.g.
-#   Rscript R/check_dynamical_model.R 'dynamical_model_options(reversion = FALSE)'
+#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(reversion = FALSE)' \
+#     Rscript R/check_dynamical_model.R
 #
 # Run with the greta 0.6 environment (doc/cv_run_plan.md, section 1).
 
 arguments <- commandArgs(trailingOnly = TRUE)
-options_text <- if (length(arguments) >= 1) arguments[1] else
-  "dynamical_model_options()"
-seed <- if (length(arguments) >= 2) as.integer(arguments[2]) else 1L
-free_sd <- if (length(arguments) >= 3) as.numeric(arguments[3]) else 0.5
+seed <- if (length(arguments) >= 1) as.integer(arguments[1]) else 1L
+free_sd <- if (length(arguments) >= 2) as.numeric(arguments[2]) else 0.5
 
 source("R/greta_setup.R")
 start_greta(threads = 4)
 source("R/dynamical_model.R")
-model_options <- eval(parse(text = options_text))
 suppressMessages({
   sink("/dev/null")
   source("R/validation_folds.R")
@@ -36,7 +34,7 @@ source("R/validation_functions.R")
 source("R/dynamical_predictions.R")
 source("R/two_stage_map_functions.R")
 
-cat("options:", options_text, "\n")
+cat("options:", Sys.getenv("IR_CUBE_MODEL_OPTIONS", "defaults"), "\n")
 
 build <- function(train_df) {
   build_dynamical_model(train_df = train_df,

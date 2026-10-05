@@ -60,6 +60,13 @@ part_file <- function(k) file.path(parts_dir, sprintf("%s__%i.rds", fold_key, k)
 
 if (step == "stage_one") {
 
+  wait_for_memory()
+  fold <- readRDS(file.path("outputs/cv_draws",
+                            sprintf("dynamical__%s.rds", fold_key)))
+  # the design matrix is rebuilt with the fold's own model options
+  # (validation_covariates.R), so that it matches the draws
+  model_options <- fold$options
+
   suppressMessages({
     sink("/dev/null")
     source("R/validation_folds.R")
@@ -80,10 +87,6 @@ if (step == "stage_one") {
   stopifnot(!is.null(training), !is.null(test))
   report("%s: %i training, %i held-out assays", fold_key, nrow(training),
          nrow(test))
-
-  wait_for_memory()
-  fold <- readRDS(file.path("outputs/cv_draws",
-                            sprintf("dynamical__%s.rds", fold_key)))
 
   # the rebuilt held-out set must be the fold's, row for row, or the draws
   # cannot be paired
