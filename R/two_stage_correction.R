@@ -59,6 +59,7 @@
 #   predict_correction(fit, new, m_draws_train, m_draws_new, n_draws)
 #     draws x points m_draw + omega + xi + fresh u + fresh p: the predictive
 #     distribution of new assays' logit mortality, in batches (CV scoring).
+#     map = TRUE also returns the same draws without u and p (the map).
 #   Saving without refitting: fit$obj <- NULL; saveRDS(fit, file). Everything
 #     above works on the reloaded fit (it keeps H, H_chol, meshes and levels);
 #     only correction_adfun() needs tmb_data and par_list, which it keeps too.
@@ -519,15 +520,25 @@ project_correction <- function(fit, fields, new, noise = FALSE) {
       A_xi[rows, , drop = FALSE] %*% fields$xi[[as.character(year)]])
   }
   if (noise) {
-    for (term in correction_iid_terms) {
-      key <- term$key(new)
-      levels <- unique(key)
-      fresh <- matrix(rnorm(length(levels) * ncol(out), 0,
-                            fit$hyper[[term$sd]]), length(levels))
-      out <- out + fresh[match(key, levels), , drop = FALSE]
+    for (fresh in correction_noise_draws(fit, new, ncol(out))) {
+      out <- out + fresh
     }
   }
   out
+}
+
+# Fresh draws of the noise terms u (per distinct pixel-year of `new`) and p
+# (per distinct pixel), shared by its rows within a draw: a list of points x
+# n_draws matrices, one per term, drawn in the order project_correction() has
+# always drawn them, so that adding them in turn reproduces its draws exactly
+correction_noise_draws <- function(fit, new, n_draws) {
+  lapply(correction_iid_terms, function(term) {
+    key <- term$key(new)
+    levels <- unique(key)
+    fresh <- matrix(rnorm(length(levels) * n_draws, 0, fit$hyper[[term$sd]]),
+                    length(levels))
+    fresh[match(key, levels), , drop = FALSE]
+  })
 }
 
 # Draws x points predictive draws of m + omega + xi + fresh u + fresh p at the
@@ -536,13 +547,17 @@ project_correction <- function(fit, fields, new, noise = FALSE) {
 # beta-binomial assay noise. With m_draws_train (K x n_obs) and m_draws_new
 # (K x nrow(new)), the paired dynamical draws, draw d uses dynamical draw
 # ((d - 1) mod K) + 1: its cut-posterior shift and its m at the new points.
-# Generated in batches to bound memory
+# Generated in batches to bound memory. With map = TRUE, returns
+# list(draws, map): map holds the same draws without u and p, m + omega + xi,
+# whose inverse logit is what the maps show; draws are unchanged by asking
+# for it
 predict_correction <- function(fit, new, m_draws_train = NULL,
                                m_draws_new = NULL, n_draws = 1000,
-                               batch_size = 100) {
+                               batch_size = 100, map = FALSE) {
   stopifnot(is.null(m_draws_train) == is.null(m_draws_new),
             is.null(m_draws_new) || ncol(m_draws_new) == nrow(new))
   draws <- matrix(NA_real_, n_draws, nrow(new))
+  map_draws <- if (map) draws else NULL
   for (batch in split(seq_len(n_draws), ceiling(seq_len(n_draws) /
                                                  batch_size))) {
     if (is.null(m_draws_train)) {
@@ -554,8 +569,14 @@ predict_correction <- function(fit, new, m_draws_train = NULL,
                                       m_draws_train[k, , drop = FALSE])
       m_new <- t(m_draws_new[k, , drop = FALSE])
     }
-    draws[batch, ] <- t(m_new + project_correction(fit, fields, new,
-                                                   noise = TRUE))
+    # the noise is added to the correction before m, in the order
+    # project_correction(noise = TRUE) adds it, so draws match it exactly
+    correction <- project_correction(fit, fields, new)
+    if (map) map_draws[batch, ] <- t(m_new + correction)
+    for (fresh in correction_noise_draws(fit, new, length(batch))) {
+      correction <- correction + fresh
+    }
+    draws[batch, ] <- t(m_new + correction)
   }
-  draws
+  if (map) list(draws = draws, map = map_draws) else draws
 }
