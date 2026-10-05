@@ -3,22 +3,13 @@
 source("R/packages.R")
 source("R/functions.R")
 
-# load the fitted model objects here, to set up predictions
-load(file = "temporary/fitted_model.RData")
+source("R/bioassay_subset.R")
 
-# ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
-# 
-# types <- unique(ir_africa$insecticide_type)
-# classes <- unique(ir_africa$insecticide_class)
-# 
-# ir_africa$class_id <- match(ir_africa$insecticide_class, classes)
-# ir_africa$type_id <- match(ir_africa$insecticide_type, types)
-
-# index to the classes for each type
-classes_index <- df %>%
-  distinct(type_id, class_id) %>%
-  arrange(type_id) %>%
-  pull(class_id)
+# the modelled bioassays and their indices, as in R/fit_model.R
+mask <- rast("data/clean/raster_mask.tif")
+ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
+df <- subset_modelled_bioassays(ir_africa, mask)
+list2env(index_bioassays(df), environment())
 
 insecticides_plot <- tibble(
   insecticide = types,
