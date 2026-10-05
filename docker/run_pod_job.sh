@@ -8,7 +8,8 @@
 # flags: --threads N (default the pod's vCPUs), --chains N, --warmup N,
 # --samples N (defaults: dynamical_mcmc_settings()). Other model options are
 # an R expression in IR_CUBE_MODEL_OPTIONS, read by R/fit_model.R and
-# R/validation_covariates.R. A fit runs in /workspace/ir_cube/jobs/<name>/
+# R/validation_covariates.R; IR_CUBE_INITS names the cached initial values,
+# comma-separated, for a share of the chains each (dynamical_inits_files()). A fit runs in /workspace/ir_cube/jobs/<name>/
 # with its own R/, tmb/, temporary/ and outputs/, the code of the commit
 # CODE_REF (a full commit id) of CODE_REPO (default idem-lab/ir_cube),
 # downloaded from GitHub. --in runs any command (e.g. a second stage,
@@ -103,6 +104,7 @@ inputs (sha256): bioassays $(sha256sum < "$root/data/clean/all_gambiae_complex_d
 command: ${command[*]}
 IR_CUBE_MODEL_OPTIONS: ${IR_CUBE_MODEL_OPTIONS:-}
 IR_CUBE_MCMC_SETTINGS: ${IR_CUBE_MCMC_SETTINGS:-}
+IR_CUBE_INITS: ${IR_CUBE_INITS:-}
 host: $(hostname) ${RUNPOD_POD_ID:-}, ${RUNPOD_CPU_COUNT:-$(OMP_NUM_THREADS= nproc)} vCPU
 started: $(date -u '+%F %T UTC')
 EOF
