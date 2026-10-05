@@ -830,10 +830,14 @@ ir_everything <- ir_everything %>%
                                           "Anopheles stephensi sl"),
                            "Anopheles stephensi",
                            species),
-         species = if_else(species == "coluzzii (gambiae m)",
+         # S and M molecular forms are An. gambiae s.s. and An. coluzzii
+         # (Coetzee et al. 2013); mixed S/M samples go to complex level
+         species = if_else(species %in% c("coluzzii (gambiae m)",
+                                          "coluzzii_gambiae_m form"),
                            "Anopheles coluzzii",
                            species),
-         species = if_else(species == "gambiae (s)",
+         species = if_else(species %in% c("gambiae (s)",
+                                          "gambiae_s form"),
                            "Anopheles gambiae s.s.",
                            species),
          # standardise complex names
@@ -851,6 +855,7 @@ ir_everything <- ir_everything %>%
                                           "Anopheles gambiae s.l.",
                                           "Anopheles gambiae sl",
                                           "gambiae (S_M)",
+                                          "gambiae_s form_m form",
                                           "Anopheles coluzzii/gambiae"),
                            "gambiae complex",
                            species)
