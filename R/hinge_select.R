@@ -5,18 +5,20 @@
 #   Rscript R/hinge_select.R <pairs csv> [covariate ...]
 #
 # For each covariate x (default nets and pop) separately, OLS regressions of
-# the change residual z with 0 to 3 hinges:
+# the change residual z with 0 to 3 hinges, fitted to each group g (an
+# insecticide class, or type) separately:
 #
-#   z ~ type + type:x + sum_j type:min(x, k_j)
+#   z ~ 1 + x + sum_j min(x, k_j)
 #
-# hinge columns min(x, k) as in selection_design(hinges = ...), with an
-# intercept, a slope and a coefficient on each hinge column per insecticide
-# type, and the knots k_j shared across types. The knots of each model are
-# those minimising the residual sum of squares over a grid (steps of 0.025,
-# within the 2.5-97.5% range of x, at least 0.05 apart). Models are compared
-# by AIC = n log(RSS / n) + 2 (coefficients + knots); BIC is also given. x is
-# the covariate's mean over the years the change spans, so a hinge here is of
-# that mean, not the mean of yearly hinges as in the model.
+# hinge columns min(x, k) as in selection_design(hinges = ...), with the knots
+# k_j shared across all groups. The knots of each model are those minimising
+# the residual sum of squares, summed over groups, over a grid (steps of
+# 0.025, within the 2.5-97.5% range of x, at least 0.05 apart). The score is
+# the groups' AICs pooled, sum_g n_g log(RSS_g / n_g) + 2 (coefficients +
+# knots), each group with its own residual variance; BIC likewise. Run with
+# the groups as classes (DDT on its own) and as types. x is the covariate's
+# mean over the years the change spans, so a hinge here is of that mean, not
+# the mean of yearly hinges as in the model.
 #
 # Writes <pairs csv without .csv>_hinges.csv and prints the comparison.
 
@@ -30,29 +32,20 @@ min_spacing <- 0.05
 
 pairs <- read.csv(pairs_file)
 pairs <- pairs[is.finite(pairs$z), ]
-type <- factor(pairs$insecticide_type)
-n <- nrow(pairs)
+levels_of <- list(
+  class = ifelse(pairs$insecticide_type == "DDT", "DDT",
+                 pairs$insecticide_class),
+  type = pairs$insecticide_type)
 
-# coefficients per insecticide type (default), or with IR_CUBE_HINGE_COEFS =
-# "shared", one intercept, slope and hinge coefficient for all types
-shared <- identical(Sys.getenv("IR_CUBE_HINGE_COEFS"), "shared")
-type_indicators <- if (shared) matrix(1, n, 1) else model.matrix(~ type - 1)
-
-# the design of the model with knots `knots` (possibly none) on x: each of
-# the intercept, x and the hinge columns, per type
-hinge_design <- function(x, knots) {
-  columns <- cbind(1, x, vapply(knots, function(k) pmin(x, k),
-                                numeric(length(x))))
-  do.call(cbind, lapply(seq_len(ncol(columns)), function(j) {
-    type_indicators * columns[, j]
-  }))
-}
-
-# residual sum of squares of the model with knots `knots`, and its number of
-# estimable coefficients
-hinge_rss <- function(x, z, knots) {
-  fit <- lm.fit(hinge_design(x, knots), z)
-  c(rss = sum(fit$residuals ^ 2), coefficients = fit$rank)
+# the residual sum of squares and rank of the model with knots `knots`
+# (possibly none) in each group
+group_fits <- function(x, z, knots, rows) {
+  t(vapply(rows, function(i) {
+    design <- cbind(1, x[i], vapply(knots, function(k) pmin(x[i], k),
+                                    numeric(length(i))))
+    fit <- lm.fit(design, z[i])
+    c(rss = sum(fit$residuals ^ 2), rank = fit$rank, n = length(i))
+  }, numeric(3)))
 }
 
 # the knot sets on the grid with m knots, at least min_spacing apart
@@ -65,43 +58,55 @@ knot_sets <- function(grid, m) {
 }
 
 results <- list()
-for (covariate in covariates) {
-  x <- pairs[[covariate]]
-  range_x <- quantile(x, c(0.025, 0.975))
-  grid <- seq(ceiling(range_x[1] / knot_step) * knot_step,
-              floor(range_x[2] / knot_step) * knot_step, by = knot_step)
-  for (m in 0:max_hinges) {
-    sets <- knot_sets(grid, m)
-    rss <- vapply(sets, function(k) hinge_rss(x, pairs$z, k)["rss"],
-                  numeric(1))
-    best <- sets[[which.min(rss)]]
-    fit <- hinge_rss(x, pairs$z, best)
-    parameters <- fit[["coefficients"]] + m
-    results[[length(results) + 1]] <- data.frame(
-      covariate = covariate, hinges = m,
-      knots = if (m == 0) "" else paste(sprintf("%.3f", best), collapse = ","),
-      rss = fit[["rss"]], parameters = parameters, n = n,
-      aic = n * log(fit[["rss"]] / n) + 2 * parameters,
-      bic = n * log(fit[["rss"]] / n) + log(n) * parameters,
-      knot_sets_searched = length(sets))
+for (level in names(levels_of)) {
+  rows <- split(seq_len(nrow(pairs)), levels_of[[level]])
+  for (covariate in covariates) {
+    x <- pairs[[covariate]]
+    range_x <- quantile(x, c(0.025, 0.975))
+    grid <- seq(ceiling(range_x[1] / knot_step) * knot_step,
+                floor(range_x[2] / knot_step) * knot_step, by = knot_step)
+    for (m in 0:max_hinges) {
+      sets <- knot_sets(grid, m)
+      rss <- vapply(sets, function(k) {
+        sum(group_fits(x, pairs$z, k, rows)[, "rss"])
+      }, numeric(1))
+      best <- sets[[which.min(rss)]]
+      g <- group_fits(x, pairs$z, best, rows)
+      parameters <- sum(g[, "rank"]) + m
+      log_rss <- sum(g[, "n"] * log(g[, "rss"] / g[, "n"]))
+      results[[length(results) + 1]] <- data.frame(
+        level = level, covariate = covariate, hinges = m,
+        knots = if (m == 0) "" else paste(sprintf("%.3f", best),
+                                          collapse = ","),
+        rss = sum(g[, "rss"]), parameters = parameters, n = sum(g[, "n"]),
+        aic = log_rss + 2 * parameters,
+        bic = log_rss + log(sum(g[, "n"])) * parameters,
+        # each group's term of the pooled AIC, to read which groups drive it
+        group_aic = paste(sprintf("%s %.1f", rownames(g),
+                                  g[, "n"] * log(g[, "rss"] / g[, "n"]) +
+                                    2 * g[, "rank"]), collapse = "; "))
+    }
   }
 }
 results <- do.call(rbind, results)
-results <- do.call(rbind, lapply(split(results, results$covariate), function(r) {
-  r$delta_aic <- r$aic - min(r$aic)
-  r$delta_bic <- r$bic - min(r$bic)
-  r
-}))
+results <- do.call(rbind, lapply(
+  split(results, list(results$level, results$covariate), drop = TRUE),
+  function(r) {
+    r$delta_aic <- r$aic - min(r$aic)
+    r$delta_bic <- r$bic - min(r$bic)
+    r
+  }))
 rownames(results) <- NULL
-write.csv(results, sub("\\.csv$", if (shared) "_hinges_shared.csv" else
-                         "_hinges.csv", pairs_file), row.names = FALSE)
+write.csv(results, sub("\\.csv$", "_hinges.csv", pairs_file), row.names = FALSE)
 options(width = 200)
-print(results[, c("covariate", "hinges", "knots", "rss", "parameters",
+print(results[, c("level", "covariate", "hinges", "knots", "parameters",
                   "delta_aic", "delta_bic")], digits = 4)
-for (covariate in covariates) {
-  r <- results[results$covariate == covariate, ]
-  chosen <- r[which.min(r$aic), ]
-  cat(sprintf("%s: AIC selects %d hinge(s)%s\n", covariate, chosen$hinges,
-              if (chosen$hinges > 0) paste0(" at ", chosen$knots) else
-                ", i.e. linear"))
+for (level in names(levels_of)) {
+  for (covariate in covariates) {
+    r <- results[results$level == level & results$covariate == covariate, ]
+    chosen <- r[which.min(r$aic), ]
+    cat(sprintf("%s level, %s: AIC selects %s\n", level, covariate,
+                if (chosen$hinges == 0) "linear" else
+                  sprintf("%d hinge(s) at %s", chosen$hinges, chosen$knots)))
+  }
 }

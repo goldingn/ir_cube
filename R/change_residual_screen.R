@@ -153,9 +153,30 @@ pairs <- pairs |>
          group = case_when(insecticide_class == "Pyrethroids" ~ "Pyrethroids",
                            insecticide_type == "DDT" ~ "DDT",
                            TRUE ~ insecticide_class))
+# the counts of each pair and its type's rho (posterior mean), and the yearly
+# covariates over the span, for fits on the observed change itself
+# (R/concave_hinge_select.R)
+rho_type <- colMeans(par$rho_types)
+pairs <- pairs |>
+  mutate(pair = row_number(),
+         died_1 = pooled$died[index_1], n_1 = pooled$n[index_1],
+         died_2 = pooled$died[index_2], n_2 = pooled$n[index_2],
+         rho = rho_type[type_id])
+pair_years <- bind_rows(lapply(seq_len(nrow(pairs)), function(i) {
+  years <- (pairs$year_id_1[i] + 1):pairs$year_id_2[i]
+  rows <- x_row[pairs$cell_id[i], years]
+  tibble(pair = i, year = f$baseline_year + years - 1,
+         nets = f$x_cell_years[rows, "nets"],
+         # population on its 0-1 scale, and its time trend g_dom(t)
+         pop = f$x_cell_years[rows, pop_column] / g_dom(years),
+         g_dom = g_dom(years))
+}))
 rm(change_sim, died_sim, p)
 invisible(gc())
 write.csv(pairs, file.path(output_dir, sprintf("%s_change_pairs.csv", label)),
+          row.names = FALSE)
+write.csv(pair_years, file.path(output_dir,
+                                sprintf("%s_change_pair_years.csv", label)),
           row.names = FALSE)
 
 pyrethroid_types <- sort(unique(pairs$insecticide_type[
