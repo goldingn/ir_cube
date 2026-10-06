@@ -451,13 +451,20 @@ dynamical_mcmc_settings <- function(n_chains = 4,
 }
 
 # Sample the model `m` with `settings` (dynamical_mcmc_settings()), with all
-# chains starting from `inits_one` (dynamical_inits()). mcmc() matches the
-# initial values to the variables by name, so `variables` (the model's
-# variables, as from build_dynamical_model()) are put in the calling frame.
+# chains starting from `inits_one` (dynamical_inits()), or with chain i
+# starting from element i of a list of them (dynamical_chain_inits()). mcmc()
+# matches the initial values to the variables by name, so `variables` (the
+# model's variables, as from build_dynamical_model()) are put in the calling
+# frame.
 run_dynamical_mcmc <- function(m, variables, inits_one,
                                settings = dynamical_mcmc_settings()) {
   list2env(variables, environment())
-  inits <- replicate(settings$n_chains, inits_one, simplify = FALSE)
+  inits <- if (inherits(inits_one, "initials")) {
+    replicate(settings$n_chains, inits_one, simplify = FALSE)
+  } else {
+    stopifnot(length(inits_one) == settings$n_chains)
+    inits_one
+  }
   sampler <- windowed_hmc(Lmin = settings$Lmin, Lmax = settings$Lmax,
                           accept_target = settings$accept_target)
   mcmc(m,
@@ -488,6 +495,29 @@ inits_levels <- list(
 # the names of its types, classes, regions and countries as "levels". Not in
 # git: remake it from a fit's draws as in fit_model.R.
 dynamical_inits_file <- "temporary/inits_refit.RDS"
+
+# The cached initial values the fits start from: the files in IR_CUBE_INITS,
+# comma-separated, or dynamical_inits_file if it is unset or empty. With
+# several, the chains are split between them (dynamical_chain_inits()), e.g.
+# to start chains in both mortality-floor modes (#37; R/floor_mode_inits.R)
+dynamical_inits_files <- function() {
+  files <- Sys.getenv("IR_CUBE_INITS")
+  if (files == "") dynamical_inits_file else strsplit(files, ",")[[1]]
+}
+
+# Initial values for each of `n_chains` chains, as a list for
+# run_dynamical_mcmc(): dynamical_inits() of each cached file in `files`, the
+# chains split into equal consecutive groups, one per file, in order. With one
+# file every chain starts from the same values, as before
+dynamical_chain_inits <- function(files, variables, levels, columns,
+                                  n_chains) {
+  stopifnot(length(files) >= 1, n_chains %% length(files) == 0)
+  per_file <- lapply(files, function(file) {
+    dynamical_inits(readRDS(file), variables, levels = levels,
+                    columns = columns)
+  })
+  per_file[rep(seq_along(files), each = n_chains / length(files))]
+}
 
 
 # Bioassay mortality from the fraction susceptible q, with the floor f (a

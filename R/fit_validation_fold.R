@@ -13,6 +13,8 @@
 # Because the greta arrays are local to this function they go out of scope when
 # it returns, so the model does not need to be purged by hand between folds.
 
+source("R/chain_floor_modes.R")
+
 fit_fold <- function(train_df,
                      test_df,
                      before_df = NULL,
@@ -25,7 +27,7 @@ fit_fold <- function(train_df,
                      x_cells_init = NULL,
                      settings = dynamical_mcmc_settings(),
                      stored_draws = 2000,
-                     inits_file = dynamical_inits_file) {
+                     inits_file = dynamical_inits_files()) {
 
   # the model, with the likelihood over the training fold (R/dynamical_model.R)
   built <- build_dynamical_model(train_df = train_df,
@@ -37,11 +39,12 @@ fit_fold <- function(train_df,
                                  options = options,
                                  x_cells_init = x_cells_init)
 
-  # use cached posterior means as inits, and the sampler settings
-  # (R/dynamical_model.R)
-  inits_one <- dynamical_inits(readRDS(inits_file), built$variables,
-                               levels = built$lookups$levels,
-                               columns = colnames(x_cell_years))
+  # use cached posterior means as inits (with several files, each for a
+  # share of the chains), and the sampler settings (R/dynamical_model.R)
+  inits_one <- dynamical_chain_inits(inits_file, built$variables,
+                                     levels = built$lookups$levels,
+                                     columns = colnames(x_cell_years),
+                                     n_chains = settings$n_chains)
   draws <- run_dynamical_mcmc(built$model, built$variables, inits_one,
                               settings)
 
@@ -54,6 +57,8 @@ fit_fold <- function(train_df,
 
   sampled <- settings$n_samples
   ess <- coda::effectiveSize(draws)
+  # the mortality-floor mode and log posterior of each chain (#37)
+  chain_modes <- chain_floor_modes_safely(built$model, draws)
   report("sampled %d per chain | raw parameter ESS min %.0f median %.0f",
          sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE))
 
@@ -153,6 +158,7 @@ fit_fold <- function(train_df,
        p_draws_before = p_draws_before,
        before_df = before_df,
        convergence = convergence,
+       chain_modes = chain_modes,
        ess = ess,
        ess_p = ess_p,
        ess_rho = ess_rho,
