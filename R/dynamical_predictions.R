@@ -12,7 +12,13 @@
 #
 # the state for year index t having had the fitness of years 1..t applied.
 # The logit draws are of predicted mortality: q_t, or with a mortality floor
-# f, f + (1 - f) q_t.
+# f, f + (1 - f) q_t. With the species model (#47), the one cumulative log
+# fitness gives the states of the other members of the complex and of
+# arabiensis (species_mortality() in R/dynamical_model.R), and the
+# predictions are of their mixture at a share of arabiensis: each bioassay's
+# own (arabiensis_share(), R/species.R) in dynamical_logit(), and one given
+# per cell in dynamical_logit_cells() (r(x) for the whole complex, 0 or 1 for
+# one species).
 
 source("R/dynamical_model.R")
 # thin_draws() and max_draws
@@ -140,6 +146,10 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   mortality_floor      draws (NULL for none)
 #   kappa_type           draws x n_types, the reversion kappa (<= 0; NULL for
 #                        none, see reversion_kappa())
+#   gamma_selection, gamma_cost, arabiensis_floor
+#                        draws, with the species model (#47; NULL without it,
+#                        and gamma_cost and arabiensis_floor NULL when not in
+#                        the model; see dynamical_terms())
 #   init_min             n_types, init_frac_min
 #   x_cells_init         the fit's initial-state covariates, one row per
 #                        cell_id (NULL for none)
@@ -162,7 +172,8 @@ dynamical_parameter_draws <- function(fold,
   v <- lapply(setNames(nm = variable_names), extract_parameter,
               draws_matrix = draws_matrix)
   stopifnot(!is.null(options),
-            identical(dim(v$logit_init_mean), c(n_draws, n_types)))
+            identical(dim(v$logit_init_mean), c(n_draws, n_types)),
+            species_on(options) == !is.null(v$gamma_selection))
 
   reversion <- !isFALSE(options$reversion)
   terms <- dynamical_terms_draws(
@@ -183,6 +194,13 @@ dynamical_parameter_draws <- function(fold,
          c(v$mortality_floor)
        },
        kappa_type = if (reversion) matrix(terms$kappa_type, n_draws),
+       gamma_selection = if (!is.null(v$gamma_selection)) {
+         c(v$gamma_selection)
+       },
+       gamma_cost = if (!is.null(v$gamma_cost)) c(v$gamma_cost),
+       arabiensis_floor = if (!is.null(v$arabiensis_floor)) {
+         c(v$arabiensis_floor)
+       },
        init_min = init_frac_constants(types)$min,
        x_cells_init = select_init_covariates(fold$x_cells_init, options),
        variables = v,
@@ -201,7 +219,8 @@ subset_draws <- function(parameters, draws) {
                    drop = FALSE))
   }
   for (name in c("effect_type", "logit_init_relative", "init_coef",
-                 "rho_types", "mortality_floor", "kappa_type")) {
+                 "rho_types", "mortality_floor", "kappa_type",
+                 "gamma_selection", "gamma_cost", "arabiensis_floor")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
   parameters$variables <- lapply(parameters$variables, rows)
@@ -234,9 +253,44 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
 #   years_keep  year indices to return
 #   x_init      cells x initial-state covariates (named columns), for fits
 #               with them
+#   share       with the species model (#47) only, and needed there: the
+#               arabiensis share of the predictions at each cell (length 1
+#               or cells): r(x) for the whole complex (prediction_share()),
+#               0 for the other members or 1 for arabiensis
 # Returns a list named by years_keep of draws x cells logit mortality.
 dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
-                                  x_init = NULL) {
+                                  x_init = NULL, share = NULL) {
+  mix_trajectories(dynamical_trajectories(parameters, k, logit_init, x,
+                                          years_keep, x_init),
+                   share)
+}
+
+# The logit mortality, by year, of the output of dynamical_trajectories() at
+# the arabiensis share `share` (as dynamical_logit_cells() takes it): the
+# trajectories themselves without the species model
+mix_trajectories <- function(trajectories, share) {
+  if (!is.list(trajectories[[1]])) {
+    stopifnot(is.null(share))
+    return(trajectories)
+  }
+  if (is.null(share)) {
+    stop("the species model (#47) predicts at an arabiensis share: give ",
+         "dynamical_logit_cells() a share, e.g. prediction_share()")
+  }
+  lapply(trajectories, function(year) {
+    mixture_logit(year$arabiensis, year$other, share)
+  })
+}
+
+# The recursion of dynamical_logit_cells(), returning a list named by
+# years_keep of draws x cells logit mortality, or with the species model, of
+# lists of two of them, "other" (the other members of the complex) and
+# "arabiensis", whose log fitness from selection is the other members' times
+# exp(gamma_selection) and reversion kappa theirs times exp(gamma_cost), and
+# which has its own mortality floor (species_mortality(), R/dynamical_model.R).
+# One cumulative log fitness serves both.
+dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
+                                   x_init = NULL) {
   n_cells <- dim(x)[1]
   n_draws <- parameters$n_draws
   stopifnot(ncol(logit_init) == n_cells, nrow(logit_init) == n_draws,
@@ -246,12 +300,32 @@ dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
 
   effect <- matrix(parameters$effect_type[, , k], nrow = n_draws)
   kappa <- parameters$kappa_type[, k]
+  species <- species_on(parameters$options)
   cumulative <- 0
   out <- list()
   for (t in seq_len(max(years_keep))) {
     # log1p because the selection term can be tiny
-    cumulative <- cumulative +
-      log1p(effect %*% t(matrix(x[, t, ], nrow = n_cells)))
+    log_w <- log1p(effect %*% t(matrix(x[, t, ], nrow = n_cells)))
+    cumulative <- cumulative + log_w
+    if (species) {
+      # cumulative is the log fitness alone, and the multipliers are one per
+      # draw, so per row
+      if (t %in% years_keep) {
+        reversion <- reversion_arabiensis <- 0
+        if (!is.null(kappa)) {
+          reversion <- t * kappa
+          reversion_arabiensis <- exp(parameters$gamma_cost) * reversion
+        }
+        out[[as.character(t)]] <- list(
+          other = floored_logit(logit_init - cumulative - reversion,
+                                parameters$mortality_floor),
+          arabiensis = floored_logit(
+            logit_init - exp(parameters$gamma_selection) * cumulative -
+              reversion_arabiensis,
+            parameters$arabiensis_floor))
+      }
+      next
+    }
     # reversion: - t kappa in year t (reversion_kappa()), one per draw
     if (!is.null(kappa)) cumulative <- cumulative + kappa
     if (t %in% years_keep) {
@@ -269,8 +343,12 @@ dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
 # the full `df`, as in the model (dynamical_lookups()), whatever the rows'
 # country_id. Returns a draws x nrow(rows) matrix, paired with
 # thin_draws(fold$p_draws) when `parameters` are at paired_draw_index().
+# With the species model (#47), the prediction at each row is the mixture at
+# its arabiensis share, `share` (one per row, or one for all), by default the
+# bioassay's own (arabiensis_share(): the rows then need species and cell).
 dynamical_logit <- function(parameters, rows, df, x_cell_years,
-                            cell_years_index, max_block = 2.5e7) {
+                            cell_years_index, max_block = 2.5e7,
+                            share = NULL) {
 
   n_draws <- parameters$n_draws
   n_times <- max(cell_years_index$year_id)
@@ -285,9 +363,23 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
   x_row[cbind(cell_years_index$cell_id, cell_years_index$year_id)] <-
     seq_len(nrow(cell_years_index))
 
-  # assays sharing a (cell, type, year) share a prediction, computed once
+  # assays sharing a (cell, type, year), and with the species model a share,
+  # share a prediction, computed once
   keys <- paste(rows$cell_id, rows$type_id, rows$year_id)
-  unique_rows <- rows[!duplicated(keys), c("cell_id", "type_id", "year_id")]
+  species <- species_on(parameters$options)
+  if (species) {
+    rows$share <- if (is.null(share)) {
+      arabiensis_share(rows, parameters$options)
+    } else {
+      rep_len(share, nrow(rows))
+    }
+    keys <- paste(keys, rows$share)
+  } else {
+    stopifnot(is.null(share))
+  }
+  unique_rows <- rows[!duplicated(keys),
+                      c("cell_id", "type_id", "year_id",
+                        if (species) "share")]
   result <- matrix(NA_real_, n_draws, nrow(unique_rows))
   chunk_size <- max(1, floor(max_block / (n_times * n_draws)))
 
@@ -301,7 +393,7 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
       stopifnot(!anyNA(x_index))
       x <- array(x_cell_years[as.vector(x_index), , drop = FALSE],
                  c(length(cells), max(years_keep), ncol(x_cell_years)))
-      logit <- dynamical_logit_cells(
+      logit <- dynamical_trajectories(
         parameters, k,
         matrix(parameters$logit_init_relative[, cell_country[cells], k],
                nrow = n_draws),
@@ -309,8 +401,15 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
         x_init = parameters$x_cells_init[cells, , drop = FALSE])
       for (t in years_keep) {
         at_t <- target[unique_rows$year_id[target] == t]
-        result[, at_t] <- logit[[as.character(t)]][
-          , match(unique_rows$cell_id[at_t], cells), drop = FALSE]
+        columns <- match(unique_rows$cell_id[at_t], cells)
+        logit_t <- logit[[as.character(t)]]
+        result[, at_t] <- if (!species) {
+          logit_t[, columns, drop = FALSE]
+        } else {
+          mixture_logit(logit_t$arabiensis[, columns, drop = FALSE],
+                        logit_t$other[, columns, drop = FALSE],
+                        unique_rows$share[at_t])
+        }
       }
     }
   }

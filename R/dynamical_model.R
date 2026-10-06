@@ -12,6 +12,7 @@
 
 source("R/greta_setup.R")
 source("R/model_covariates.R")
+source("R/species.R")
 source("R/windowed_hmc.R")
 
 
@@ -33,6 +34,11 @@ source("R/windowed_hmc.R")
 #                     against it
 #   reversion         reversion to susceptibility (#24): "estimated" for one
 #                     rate per class, or FALSE for none
+#   species           FALSE (the default) for one trajectory for the whole
+#                     complex; species_options() (R/species.R) for two, one
+#                     for An. arabiensis and one for the other members, mixed
+#                     at each bioassay by its arabiensis share (#47). With it,
+#                     mortality_floor is the floor of the other members
 #   centred           which hierarchy levels are sampled centred
 #                     (centred_options()); by default the data-informed levels
 #                     (centred_options_data_informed(); #48). The same model
@@ -42,11 +48,13 @@ dynamical_model_options <- function(mortality_floor = FALSE,
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
                                     reversion = "estimated",
+                                    species = FALSE,
                                     centred = centred_options_data_informed()) {
   list(mortality_floor = mortality_floor,
        init_covariates = init_covariates,
        selection_columns = selection_columns,
        reversion = reversion,
+       species = species,
        centred = centred)
 }
 
@@ -127,6 +135,7 @@ check_dynamical_model_options <- function(options) {
   if (all(columns %in% centred$selection)) {
     stop("at least one selection column must stay non-centred")
   }
+  check_species_options(options$species)
   invisible(options)
 }
 
@@ -342,7 +351,24 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
                       variables$init_country_sd, FUN = "+")
   variables$init_country_level <- normal(country_mean, country_sd)
 
-  c(variables, rho, floor, init_covariates, reversion)
+  # The species model (#47): log multipliers on arabiensis's log fitness from
+  # selection and on its fitness cost (species_mortality()), N(0, 1) like the
+  # log selection effects (beta_overall), centred on no difference between
+  # the species and putting 95% of the prior mass of each multiplier between
+  # 0.14 and 7.1; and arabiensis's own mortality floor, with the prior of
+  # mortality_floor unless species_options() says otherwise.
+  species <- if (species_on(options)) {
+    c(list(gamma_selection = normal(0, 1)),
+      if (identical(options$reversion, "estimated")) {
+        list(gamma_cost = normal(0, 1))
+      },
+      if (isTRUE(options$species$arabiensis_floor)) {
+        list(arabiensis_floor = beta(options$species$floor_prior[1],
+                                     options$species$floor_prior[2]))
+      })
+  }
+
+  c(variables, rho, floor, init_covariates, reversion, species)
 }
 
 # Reversion to susceptibility (#24). A fitness cost c of resistance, paid
@@ -390,7 +416,12 @@ init_covariate_shift <- function(init_coef, options) {
 #   init_coef           n_init_covs x n_types, their coefficients, or NULL
 #   kappa_type          n_types, the per-year change in logit resistance from
 #                       reversion (<= 0), or NULL for none (reversion_kappa())
-# and beta_class, which the figure scripts read. logit_init_country is the
+# and beta_class, which the figure scripts read. With the species model
+# (#47), also gamma_selection and gamma_cost (NULL without reversion), the log
+# multipliers of arabiensis's log fitness from selection and of its fitness
+# cost (species_mortality()), and arabiensis_floor (NULL for none); the other
+# terms are those of the other members of the complex, and shared by
+# arabiensis. logit_init_country is the
 # initial state without covariates, i.e. at a cell whose covariates are all 0
 # (the mean).
 #
@@ -443,14 +474,20 @@ dynamical_terms <- function(v, classes_index, types,
   }
   rho_types <- inv_logit(logit_rho_type)
 
-  list(beta_type = beta_type,
-       logit_init_country = logit_init_country,
-       rho_types = rho_types,
-       mortality_floor = v$mortality_floor,
-       logit_init_relative = logit_init_relative,
-       init_coef = v$init_coef,
-       kappa_type = reversion_kappa(v, classes_index, options),
-       beta_class = beta_class)
+  terms <- list(beta_type = beta_type,
+                logit_init_country = logit_init_country,
+                rho_types = rho_types,
+                mortality_floor = v$mortality_floor,
+                logit_init_relative = logit_init_relative,
+                init_coef = v$init_coef,
+                kappa_type = reversion_kappa(v, classes_index, options),
+                beta_class = beta_class)
+  if (species_on(options)) {
+    terms <- c(terms, list(gamma_selection = v$gamma_selection,
+                           gamma_cost = v$gamma_cost,
+                           arabiensis_floor = v$arabiensis_floor))
+  }
+  terms
 }
 
 # One draw of the variables in plain R (`v`, a named list of arrays) with
@@ -604,8 +641,10 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
   }
   # the other new terms start near the model without them. Left to greta, the
   # reversion rate starts around 1 per year, which drives p to 1 at most
-  # assays and stalled a short run at its initial values
-  starts <- c(mortality_floor = 0.02, init_coef = -0.05, reversion_rate = 0.01)
+  # assays and stalled a short run at its initial values. The species
+  # multipliers start at no difference between the species (#47)
+  starts <- c(mortality_floor = 0.02, init_coef = -0.05, reversion_rate = 0.01,
+              gamma_selection = 0, gamma_cost = 0, arabiensis_floor = 0.02)
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
@@ -847,6 +886,14 @@ floored_mortality <- function(q, floor) {
 # (cell_id, type_id, year_id) of `rows`, and all_states() the predicted
 # mortality at every cell, type and year. Mortality is the state (the fraction
 # susceptible) with the mortality floor applied, if there is one.
+#
+# With the species model (options$species, #47), mortality is computed for
+# arabiensis and for the other members of the complex (species_mortality()),
+# and mortality(rows) is their mixture a pA + (1 - a) pG at each row's
+# arabiensis share a (arabiensis_share(), R/species.R; the rows need species
+# and cell), which is the mean of the beta-binomial. all_states(species_mix)
+# is the mixture at the arabiensis fraction r(x) of each cell ("complex", the
+# default), or the mortality of "arabiensis" or "other" alone.
 build_dynamical_model <- function(train_df,
                                   df,
                                   x_cell_years,
@@ -880,6 +927,7 @@ build_dynamical_model <- function(train_df,
   )
 
   lookups <- dynamical_lookups(df)
+  species <- species_on(options)
   x_init <- select_init_covariates(x_cells_init, options, n_unique_cells)
   # the centred country levels are at each country's mean initial-state
   # covariates over its modelled cells (all of them, whatever the fold; the
@@ -917,11 +965,19 @@ build_dynamical_model <- function(train_df,
   mortality <- function(rows) {
     pairs <- distinct(tibble(cell_id = as.integer(rows$cell_id),
                              type_id = as.integer(rows$type_id)))
+    pair_index <- match(paste(rows$cell_id, rows$type_id),
+                        paste(pairs$cell_id, pairs$type_id))
+    if (species) {
+      p <- species_mortality(terms, x_cell_years, pairs$cell_id,
+                             pairs$type_id, lookups$cell_country_lookup,
+                             n_times, types, x_init,
+                             row_pair = pair_index, row_year = rows$year_id)
+      share <- arabiensis_share(rows, options)
+      return(share * p$arabiensis + (1 - share) * p$other)
+    }
     states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
                                  pairs$type_id, lookups$cell_country_lookup,
                                  n_times, types, x_init)
-    pair_index <- match(paste(rows$cell_id, rows$type_id),
-                        paste(pairs$cell_id, pairs$type_id))
     floored_mortality(states[cbind(pair_index, rows$year_id)],
                       terms$mortality_floor)
   }
@@ -929,14 +985,35 @@ build_dynamical_model <- function(train_df,
   # the predicted mortality at every cell, type and year, as n_unique_cells x
   # n_types x n_times, for after sampling (created before model(), it would be
   # in the model's graph)
-  all_states <- function() {
+  all_states <- function(species_mix = c("complex", "arabiensis", "other")) {
     pairs <- expand.grid(cell_id = seq_len(n_unique_cells),
                          type_id = seq_len(n_types))
-    states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
-                                 pairs$type_id, lookups$cell_country_lookup,
-                                 n_times, types, x_init)
-    dim(states) <- c(n_unique_cells, n_types, n_times)
-    floored_mortality(states, terms$mortality_floor)
+    if (!species) {
+      states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
+                                   pairs$type_id, lookups$cell_country_lookup,
+                                   n_times, types, x_init)
+      dim(states) <- c(n_unique_cells, n_types, n_times)
+      return(floored_mortality(states, terms$mortality_floor))
+    }
+    # every pair (fastest) and year
+    species_mix <- match.arg(species_mix)
+    n_pairs <- nrow(pairs)
+    row_pair <- rep(seq_len(n_pairs), n_times)
+    p <- species_mortality(terms, x_cell_years, pairs$cell_id, pairs$type_id,
+                           lookups$cell_country_lookup, n_times, types,
+                           x_init, row_pair = row_pair,
+                           row_year = rep(seq_len(n_times), each = n_pairs))
+    p <- switch(species_mix,
+                arabiensis = p$arabiensis,
+                other = p$other,
+                complex = {
+                  # r(x) at each cell, from its mask cell number in df
+                  cells <- df$cell[match(seq_len(n_unique_cells), df$cell_id)]
+                  r <- prediction_share(options, cells)[pairs$cell_id[row_pair]]
+                  r * p$arabiensis + (1 - r) * p$other
+                })
+    dim(p) <- c(n_unique_cells, n_types, n_times)
+    p
   }
 
   # likelihood
@@ -1056,6 +1133,43 @@ tf_closed_form_states <- function(beta_type, logit_init, kappa_type = NULL,
   tf$sigmoid(logit_q)
 }
 
+# The species model (#47): the cumulative log fitness of each pair and year,
+# sum_{s <= t} log w_s, as (B, J, n_times), from the same selection term as
+# tf_closed_form_states(). Arguments as there.
+tf_cumulative_log_fitness <- function(beta_type, x_pairs, pair_type) {
+  tf <- tensorflow::tf
+  pair_type <- tf$reshape(tf$constant(pair_type, dtype = tf$int32), list(-1L))
+  x_pairs <- tf$constant(x_pairs, dtype = beta_type$dtype)
+  shifted <- tf_shifted_selection(beta_type, x_pairs, pair_type)
+  tf$cumsum(tf_log_fitness(shifted), axis = 2L)
+}
+
+# The selection term x' exp(beta) of each pair and year, shifted for the
+# log fitness (tf_log_fitness()): as list(m, selection), m the shift,
+# (B, J, 1), and selection = x' exp(beta - m), (B, J, n_times). m is
+# max(0, max_k beta_k) per type, with its gradient stopped: exp(beta - m) is
+# then at most 1 and cannot overflow, the covariates are all non-negative, and
+# the shift cancels in tf_log_fitness(), so it is exact for any m. Arguments
+# as tf_closed_form_states(), x_pairs and pair_type as tensors.
+tf_shifted_selection <- function(beta_type, x_pairs, pair_type) {
+  tf <- tensorflow::tf
+  dtype <- beta_type$dtype
+  m <- tf$stop_gradient(tf$maximum(tf$reduce_max(beta_type, axis = 1L,
+                                                  keepdims = TRUE),
+                                   tf$constant(0, dtype = dtype)))
+  effect <- tf$gather(tf$exp(beta_type - m), pair_type, axis = 2L)
+  m <- tf$transpose(tf$gather(m, pair_type, axis = 2L), c(0L, 2L, 1L))
+  list(m = m,
+       selection = tf$einsum("jtp,bpj->bjt", x_pairs, effect))
+}
+
+# The log fitness log(1 + x' exp(beta)) from a shifted selection term
+# (tf_shifted_selection()), as m + log(exp(-m) + selection), (B, J, n_times)
+tf_log_fitness <- function(shifted) {
+  tf <- tensorflow::tf
+  shifted$m + tf$math$log(tf$exp(-shifted$m) + shifted$selection)
+}
+
 # The greta side: the fraction susceptible for the cell-type pairs
 # (pair_cell, pair_type), as a J x n_times greta array. `terms` is the output of
 # dynamical_terms(); `x_cell_years` has one row per (cell, year), cell-major;
@@ -1065,24 +1179,10 @@ tf_closed_form_states <- function(beta_type, logit_init, kappa_type = NULL,
 closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
                                cell_country_lookup, n_times, types,
                                x_init = NULL) {
-  n_covs <- ncol(x_cell_years)
-  stopifnot(nrow(x_cell_years) %% n_times == 0,
-            length(pair_cell) == length(pair_type))
-
-  # (cells, years, covariates) and each pair's slice of it
-  x_cells <- aperm(array(x_cell_years,
-                         c(n_times, nrow(x_cell_years) / n_times, n_covs)),
-                   c(2, 1, 3))
-  x_pairs <- x_cells[pair_cell, , , drop = FALSE]
-  pair_country <- cell_country_lookup[pair_cell]
-  stopifnot(!anyNA(pair_country))
-
-  # the initial state of each pair
-  l <- logit_init_relative_rows(
-    terms, pair_country, pair_type,
-    if (!is.null(x_init)) x_init[pair_cell, , drop = FALSE])
-  logit_init <- floored_logit(
-    l, init_frac_constants(types)$min[pair_type])
+  inputs <- pair_inputs(terms, x_cell_years, pair_cell, pair_type,
+                        cell_country_lookup, n_times, types, x_init)
+  x_pairs <- inputs$x_pairs
+  logit_init <- inputs$logit_init
 
   # the TensorFlow function is found in this small environment, which is saved
   # with the node, so a reloaded draws object can still calculate() through it
@@ -1107,4 +1207,88 @@ closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
          tf_operation = "tf_closed_form_states",
          tf_function_env = op_env,
          dim = c(length(pair_cell), n_times))))
+}
+
+# The covariates and initial state of the cell-type pairs (pair_cell,
+# pair_type), for closed_form_states() and species_mortality(): x_pairs,
+# J x n_times x n_covs, and logit_init, logit q_0 of each pair (a J x 1 greta
+# array). Arguments as closed_form_states().
+pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
+                        cell_country_lookup, n_times, types, x_init = NULL) {
+  n_covs <- ncol(x_cell_years)
+  stopifnot(nrow(x_cell_years) %% n_times == 0,
+            length(pair_cell) == length(pair_type))
+
+  # (cells, years, covariates) and each pair's slice of it
+  x_cells <- aperm(array(x_cell_years,
+                         c(n_times, nrow(x_cell_years) / n_times, n_covs)),
+                   c(2, 1, 3))
+  x_pairs <- x_cells[pair_cell, , , drop = FALSE]
+  pair_country <- cell_country_lookup[pair_cell]
+  stopifnot(!anyNA(pair_country))
+
+  # the initial state of each pair
+  l <- logit_init_relative_rows(
+    terms, pair_country, pair_type,
+    if (!is.null(x_init)) x_init[pair_cell, , drop = FALSE])
+  logit_init <- floored_logit(
+    l, init_frac_constants(types)$min[pair_type])
+
+  list(x_pairs = x_pairs, logit_init = logit_init)
+}
+
+# The species model (#47): predicted bioassay mortality of the other members
+# of the complex and of arabiensis, at pair row_pair (of the cell-type pairs
+# pair_cell, pair_type) and year index row_year of each row, as a list of two
+# greta arrays, `other` and `arabiensis`, with one element per row. Other
+# arguments as closed_form_states().
+#
+# Arabiensis's log fitness from selection is the other members' times
+# c = exp(gamma_selection), i.e. its fitness is (1 + x' exp(beta))^c, and its
+# reversion kappa is theirs times exp(gamma_cost), so with C_t the other
+# members' cumulative log fitness,
+#   logit q_t (other)      = logit q_0 - C_t - t kappa
+#   logit q_t (arabiensis) = logit q_0 - c C_t - t exp(gamma_cost) kappa.
+# The multiplier is outside the log so that the one cumulative sum C serves
+# both species, and arabiensis costs only these few operations at each row;
+# where x' exp(beta) is small, c log(1 + x' exp(beta)) is close to
+# log(1 + c x' exp(beta)), a multiplier on the selection effects. Each species
+# then has its own mortality floor: mortality_floor for the other members and
+# arabiensis_floor for arabiensis.
+species_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
+                              cell_country_lookup, n_times, types,
+                              x_init = NULL, row_pair, row_year) {
+  inputs <- pair_inputs(terms, x_cell_years, pair_cell, pair_type,
+                        cell_country_lookup, n_times, types, x_init)
+
+  # the TensorFlow function and the helpers it calls, found in this small
+  # environment, which is saved with the node (see closed_form_states())
+  op_env <- new.env(parent = globalenv())
+  for (name in c("tf_cumulative_log_fitness", "tf_shifted_selection",
+                 "tf_log_fitness")) {
+    op_env[[name]] <- get(name)
+    environment(op_env[[name]]) <- op_env
+  }
+  cumulative <- greta:::op("cumulative_log_fitness",
+                           terms$beta_type,
+                           operation_args = list(
+                             x_pairs = inputs$x_pairs,
+                             pair_type = as.integer(pair_type - 1)),
+                           tf_operation = "tf_cumulative_log_fitness",
+                           tf_function_env = op_env,
+                           dim = c(length(pair_cell), n_times))
+
+  logit_init <- inputs$logit_init[row_pair]
+  selection <- cumulative[cbind(row_pair, row_year)]
+  logit_other <- logit_init - selection
+  logit_arabiensis <- logit_init - exp(terms$gamma_selection) * selection
+  if (!is.null(terms$kappa_type)) {
+    reversion <- terms$kappa_type[pair_type[row_pair]] * row_year
+    logit_other <- logit_other - reversion
+    logit_arabiensis <- logit_arabiensis - exp(terms$gamma_cost) * reversion
+  }
+
+  list(other = floored_mortality(ilogit(logit_other), terms$mortality_floor),
+       arabiensis = floored_mortality(ilogit(logit_arabiensis),
+                                      terms$arabiensis_floor))
 }
