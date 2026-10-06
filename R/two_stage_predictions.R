@@ -57,7 +57,8 @@ two_stage_setup <- function(type, years, data, n_draws = 1000,
        parameters = lapply(batches, subset_draws,
                            parameters = dynamical$parameters),
        logit_init = dynamical$logit_init,
-       design = dynamical$parameters$options$selection_columns)
+       design = dynamical$parameters$options$selection_columns,
+       options = dynamical$parameters$options)
 }
 
 # Stop unless the bioassays of `type` in `data` are those whose paired draws
@@ -76,7 +77,9 @@ check_two_stage_data <- function(dynamical, data, type) {
 # `country` their country names (those of dimnames(setup$logit_init)[[2]]; for
 # data cells, the fit's country of the cell, data_cell_country()). The
 # covariates are kept in the compact form of map_covariates();
-# two_stage_chunk() assembles them for a chunk of cells
+# two_stage_chunk() assembles them for a chunk of cells. With the species
+# model (#47), also the arabiensis fraction r(x) at each cell, the share of
+# the whole complex (prediction_share(); NULL without it)
 two_stage_cells <- function(setup, cells, country,
                             mask = terra::rast("data/clean/raster_mask.tif")) {
   country_index <- match(country, dimnames(setup$logit_init)[[2]])
@@ -86,7 +89,8 @@ two_stage_cells <- function(setup, cells, country,
        country = country_index,
        covariates = map_covariates(cells, setup$baseline_year,
                                    max(setup$years), setup$design),
-       coords = project_km(xy[, 1], xy[, 2]))
+       coords = project_km(xy[, 1], xy[, 2]),
+       share = prediction_share(setup$options, cells))
 }
 
 # The rows `rows` of `cells` (two_stage_cells()), with their covariates as the
@@ -97,7 +101,8 @@ two_stage_chunk <- function(setup, cells, rows = seq_along(cells$cells)) {
        x = map_x(cells$covariates, rows,
                  max(setup$years) - setup$baseline_year + 1),
        x_init = cells$covariates$init[rows, , drop = FALSE],
-       coords = cells$coords[rows, , drop = FALSE])
+       coords = cells$coords[rows, , drop = FALSE],
+       share = cells$share[rows])
 }
 
 # The correction omega + xi at the cells of `chunk` (two_stage_chunk()) for
@@ -137,7 +142,7 @@ two_stage_logit_batch <- function(setup, b, chunk, noise = FALSE) {
   m <- dynamical_logit_cells(
     setup$parameters[[b]], setup$k,
     matrix(setup$logit_init[draws, chunk$country, setup$k], length(draws)),
-    chunk$x, year_index, x_init = chunk$x_init)
+    chunk$x, year_index, x_init = chunk$x_init, share = chunk$share)
   correction <- project_cells(setup$fit, setup$fields[[b]], chunk,
                               setup$years, noise = noise)
   out <- list(dynamical = list(), two_stage = list())

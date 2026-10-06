@@ -69,7 +69,7 @@ environment variables:
 | `JOB` | the arguments of `run_pod_job.sh`: `<name> fold <experiment> <fold>`, `<name> full`, or `<name> --in <job> -- <command>`, with `--threads`, `--chains`, `--warmup`, `--samples` |
 | `CODE_REF` | the commit to run (a full commit id), downloaded from GitHub |
 | `CODE_REPO` | if not `idem-lab/ir_cube`, e.g. a fork for a PR branch |
-| `IR_CUBE_MODEL_OPTIONS` | an R expression for `dynamical_model_options()`, if not the defaults (population d½ 270, no mortality floor); needed for a fold paired with a full fit made with other options |
+| `IR_CUBE_MODEL_OPTIONS` | an R expression for `dynamical_model_options()`, if not the defaults (population d½ 270, no mortality floor); needed for a fold paired with a full fit made with other options. It may contain spaces, e.g. `dynamical_model_options(species = species_options())` for the species model (#47), which reads `data/clean/arabiensis_fraction.tif` |
 | `IR_CUBE_INITS` | cached initial values under `temporary/`, comma-separated, each for an equal share of the chains (e.g. both floor modes, `R/floor_mode_inits.R`), if not `temporary/inits_refit.RDS` |
 | `OMP_NUM_THREADS`, `IR_CUBE_NO_MEMORY_WAIT` | as the job needs |
 

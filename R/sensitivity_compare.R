@@ -181,7 +181,8 @@ if (identical(mode, "predict")) {
           matrix(d$logit_init[, country_index[rows[ok]], k],
                  d$parameters$n_draws),
           x, keep - baseline_year + 1,
-          x_init = covariates$init[rows[ok], , drop = FALSE])
+          x_init = covariates$init[rows[ok], , drop = FALSE],
+          share = prediction_share(d$parameters$options, cells[rows[ok]]))
         for (j in seq_along(keep)) {
           p <- plogis(dyn[[j]])
           mean_out[ok, k, j] <- colMeans(p)

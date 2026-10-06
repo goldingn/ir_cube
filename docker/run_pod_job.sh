@@ -98,9 +98,12 @@ ln -s "$root/data" "$job/data"
 cp "$root"/temporary/*.RDS "$job/temporary/"
 cp "$root"/outputs/bioassay_rho*.csv "$job/outputs/"
 printf '%s' "${IR_CUBE_MODEL_OPTIONS:-}" > "$job/job.options"
+# the arabiensis fraction map, read by the species model (#47)
+fraction=$root/data/clean/arabiensis_fraction.tif
+fraction_sum=$([ -f "$fraction" ] && sha256sum < "$fraction" | cut -c1-16 || echo none)
 cat > "$job/job.spec" <<EOF
 code: $repo@$CODE_REF
-inputs (sha256): bioassays $(sha256sum < "$root/data/clean/all_gambiae_complex_data.RDS" | cut -c1-16), initial values $(sha256sum < "$root/temporary/inits_refit.RDS" | cut -c1-16)
+inputs (sha256): bioassays $(sha256sum < "$root/data/clean/all_gambiae_complex_data.RDS" | cut -c1-16), initial values $(sha256sum < "$root/temporary/inits_refit.RDS" | cut -c1-16), arabiensis fraction $fraction_sum
 command: ${command[*]}
 IR_CUBE_MODEL_OPTIONS: ${IR_CUBE_MODEL_OPTIONS:-}
 IR_CUBE_MCMC_SETTINGS: ${IR_CUBE_MCMC_SETTINGS:-}
