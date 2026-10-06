@@ -146,10 +146,10 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   mortality_floor      draws (NULL for none)
 #   kappa_type           draws x n_types, the reversion kappa (<= 0; NULL for
 #                        none, see reversion_kappa())
-#   gamma_selection, gamma_cost, arabiensis_floor
+#   gamma_selection, gamma_cost, other_floor, arabiensis_floor
 #                        draws, with the species model (#47; NULL without it,
-#                        and gamma_cost and arabiensis_floor NULL when not in
-#                        the model; see dynamical_terms())
+#                        and gamma_cost and the floors NULL when not in the
+#                        model; see dynamical_terms())
 #   init_min             n_types, init_frac_min
 #   x_cells_init         the fit's initial-state covariates, one row per
 #                        cell_id (NULL for none)
@@ -198,6 +198,7 @@ dynamical_parameter_draws <- function(fold,
          c(v$gamma_selection)
        },
        gamma_cost = if (!is.null(v$gamma_cost)) c(v$gamma_cost),
+       other_floor = if (!is.null(v$other_floor)) c(v$other_floor),
        arabiensis_floor = if (!is.null(v$arabiensis_floor)) {
          c(v$arabiensis_floor)
        },
@@ -220,7 +221,8 @@ subset_draws <- function(parameters, draws) {
   }
   for (name in c("effect_type", "logit_init_relative", "init_coef",
                  "rho_types", "mortality_floor", "kappa_type",
-                 "gamma_selection", "gamma_cost", "arabiensis_floor")) {
+                 "gamma_selection", "gamma_cost", "other_floor",
+                 "arabiensis_floor")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
   parameters$variables <- lapply(parameters$variables, rows)
@@ -286,9 +288,9 @@ mix_trajectories <- function(trajectories, share) {
 # years_keep of draws x cells logit mortality, or with the species model, of
 # lists of two of them, "other" (the other members of the complex) and
 # "arabiensis", whose log fitness from selection is the other members' times
-# exp(gamma_selection) and reversion kappa theirs times exp(gamma_cost), and
-# which has its own mortality floor (species_mortality(), R/dynamical_model.R).
-# One cumulative log fitness serves both.
+# exp(gamma_selection) and reversion kappa theirs times exp(gamma_cost); each
+# species has its own mortality floor, if any (species_mortality(),
+# R/dynamical_model.R). One cumulative log fitness serves both.
 dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
                                    x_init = NULL) {
   n_cells <- dim(x)[1]
@@ -318,7 +320,7 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
         }
         out[[as.character(t)]] <- list(
           other = floored_logit(logit_init - cumulative - reversion,
-                                parameters$mortality_floor),
+                                parameters$other_floor),
           arabiensis = floored_logit(
             logit_init - exp(parameters$gamma_selection) * cumulative -
               reversion_arabiensis,
