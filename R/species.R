@@ -13,19 +13,20 @@ arabiensis_fraction_file <- "data/clean/arabiensis_fraction.tif"
 
 # Settings of the species model, for dynamical_model_options(species = ).
 # Arabiensis shares every parameter of the other members, with a multiplier
-# exp(gamma_selection) on its log fitness from selection, a multiplier
-# exp(gamma_cost) on the fitness cost (with reversion), and its own mortality
-# floor (species_mortality(), R/dynamical_model.R). The other members' floor
-# is the model's mortality_floor option.
-#   arabiensis_floor  TRUE to estimate a mortality floor for arabiensis,
-#                     FALSE for none
-#   floor_prior       the Beta shape parameters of its prior, by default
-#                     those of mortality_floor (dynamical_variables())
+# exp(gamma_selection) on its log fitness from selection and a multiplier
+# exp(gamma_cost) on the fitness cost (with reversion)
+# (species_mortality(), R/dynamical_model.R).
+#   floors            TRUE for a mortality floor for each species, estimated
+#                     separately; FALSE (the default) for none. Never one
+#                     species only, and the model's mortality_floor option
+#                     must be FALSE
+#   floor_prior       the Beta shape parameters of the prior of each floor
+#                     (dynamical_variables())
 #   fraction_file     the map of r(x)
-species_options <- function(arabiensis_floor = TRUE,
-                            floor_prior = c(1, 49),
+species_options <- function(floors = FALSE,
+                            floor_prior = c(1, 4),
                             fraction_file = arabiensis_fraction_file) {
-  list(arabiensis_floor = arabiensis_floor,
+  list(floors = floors,
        floor_prior = floor_prior,
        fraction_file = fraction_file)
 }
@@ -43,7 +44,7 @@ check_species_options <- function(species) {
   stopifnot(
     is.list(species),
     setequal(names(species), names(species_options())),
-    isTRUE(species$arabiensis_floor) || isFALSE(species$arabiensis_floor),
+    isTRUE(species$floors) || isFALSE(species$floors),
     is.numeric(species$floor_prior), length(species$floor_prior) == 2,
     all(species$floor_prior > 0),
     is.character(species$fraction_file), length(species$fraction_file) == 1)

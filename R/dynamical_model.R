@@ -26,6 +26,8 @@ source("R/windowed_hmc.R")
 #                     mortality of a fully resistant population (#14); FALSE
 #                     (the default) for none, while the floor has two modes
 #                     (#37). The fits before #37 estimated it
+#   floor_prior       the Beta shape parameters of the prior of the floor:
+#                     Beta(1, 49) by default (dynamical_variables())
 #   init_covariates   names of static covariates of the initial state, from
 #                     init_covariate_names(selection_columns), or NULL for
 #                     none (#19)
@@ -39,14 +41,17 @@ source("R/windowed_hmc.R")
 #                     complex; species_options() (R/species.R) for two, one
 #                     for An. arabiensis and one for the other members, mixed
 #                     at each bioassay by its arabiensis share (#47). With it,
-#                     mortality_floor is the floor of the other members
+#                     species_options() sets the floors of both species, and
+#                     mortality_floor must be FALSE
 dynamical_model_options <- function(mortality_floor = FALSE,
+                                    floor_prior = c(1, 49),
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
                                     reversion = "estimated",
                                     species = FALSE) {
   list(mortality_floor = mortality_floor,
+       floor_prior = floor_prior,
        init_covariates = init_covariates,
        selection_columns = selection_columns,
        reversion = reversion,
@@ -63,6 +68,8 @@ check_dynamical_model_options <- function(options) {
     is.null(options$init_covariate_centre) ||
       identical(colnames(options$init_covariate_centre), init_covariates),
     isFALSE(options$mortality_floor) || isTRUE(options$mortality_floor),
+    is.numeric(options$floor_prior), length(options$floor_prior) == 2,
+    all(options$floor_prior > 0),
     isFALSE(reversion) || identical(reversion, "estimated"),
     is.null(init_covariates) ||
       (is.character(init_covariates) && !anyDuplicated(init_covariates) &&
@@ -71,6 +78,10 @@ check_dynamical_model_options <- function(options) {
   # errors on a design selection_design() does not build
   complete_selection_design(options$selection_columns)
   check_species_options(options$species)
+  if (species_on(options) && isTRUE(options$mortality_floor)) {
+    stop("with the species model, the floors are set by ",
+         "species_options(floors = ); leave mortality_floor FALSE")
+  }
   invisible(options)
 }
 
@@ -174,9 +185,11 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # mortality above 20% are discarded and those at 5-20% Abbott-corrected.
   # Beta(1, 9) left a second mode once the initial state was constrained
   # (#19): f near 0.27, about 59 lower in log posterior than f near 0.002,
-  # which trapped whole chains and folds.
+  # which trapped whole chains and folds. options$floor_prior sets another
+  # prior, e.g. Beta(1, 4) for a reference fit to the species model (#47).
   floor <- if (isTRUE(options$mortality_floor)) {
-    list(mortality_floor = beta(1, 49))
+    list(mortality_floor = beta(options$floor_prior[1],
+                                options$floor_prior[2]))
   }
 
   # Coefficients of the standardised initial-state covariates on the logit
@@ -239,16 +252,19 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # selection and on its fitness cost (species_mortality()), N(0, 1) like the
   # log selection effects (beta_overall), centred on no difference between
   # the species and putting 95% of the prior mass of each multiplier between
-  # 0.14 and 7.1; and arabiensis's own mortality floor, with the prior of
-  # mortality_floor unless species_options() says otherwise.
+  # 0.14 and 7.1; and with species_options(floors = TRUE), a mortality floor
+  # for each species, estimated separately, each with the prior
+  # species_options()$floor_prior (Beta(1, 4) by default: mean 0.2, P(f >
+  # 0.5) = 0.06, which allows the plateaus of #37)
   species <- if (species_on(options)) {
+    floor_prior <- options$species$floor_prior
     c(list(gamma_selection = normal(0, 1)),
       if (identical(options$reversion, "estimated")) {
         list(gamma_cost = normal(0, 1))
       },
-      if (isTRUE(options$species$arabiensis_floor)) {
-        list(arabiensis_floor = beta(options$species$floor_prior[1],
-                                     options$species$floor_prior[2]))
+      if (isTRUE(options$species$floors)) {
+        list(other_floor = beta(floor_prior[1], floor_prior[2]),
+             arabiensis_floor = beta(floor_prior[1], floor_prior[2]))
       })
   }
 
@@ -303,9 +319,9 @@ init_covariate_shift <- function(init_coef, options) {
 # and beta_class, which the figure scripts read. With the species model
 # (#47), also gamma_selection and gamma_cost (NULL without reversion), the log
 # multipliers of arabiensis's log fitness from selection and of its fitness
-# cost (species_mortality()), and arabiensis_floor (NULL for none); the other
-# terms are those of the other members of the complex, and shared by
-# arabiensis. logit_init_country is the
+# cost (species_mortality()), and other_floor and arabiensis_floor, the floors
+# of the other members of the complex and of arabiensis (NULL for none); the
+# other terms are shared by both species. logit_init_country is the
 # initial state without covariates, i.e. at a cell whose covariates are all 0
 # (the mean).
 #
@@ -359,6 +375,7 @@ dynamical_terms <- function(v, classes_index, types,
   if (species_on(options)) {
     terms <- c(terms, list(gamma_selection = v$gamma_selection,
                            gamma_cost = v$gamma_cost,
+                           other_floor = v$other_floor,
                            arabiensis_floor = v$arabiensis_floor))
   }
   terms
@@ -452,9 +469,18 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
   # the other new terms start near the model without them. Left to greta, the
   # reversion rate starts around 1 per year, which drives p to 1 at most
   # assays and stalled a short run at its initial values. The species
-  # multipliers start at no difference between the species (#47)
+  # multipliers start at no difference between the species, and both species'
+  # floors at the cached mortality_floor if there is one (so that cached
+  # values in either floor mode, R/floor_mode_inits.R, start both there), or
+  # else at 0.02 (#47)
+  species_floor <- if (!is.null(cached$mortality_floor)) {
+    c(cached$mortality_floor)[1]
+  } else {
+    0.02
+  }
   starts <- c(mortality_floor = 0.02, init_coef = -0.05, reversion_rate = 0.01,
-              gamma_selection = 0, gamma_cost = 0, arabiensis_floor = 0.02)
+              gamma_selection = 0, gamma_cost = 0,
+              other_floor = species_floor, arabiensis_floor = species_floor)
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
@@ -961,8 +987,8 @@ pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
 # both species, and arabiensis costs only these few operations at each row;
 # where x' exp(beta) is small, c log(1 + x' exp(beta)) is close to
 # log(1 + c x' exp(beta)), a multiplier on the selection effects. Each species
-# then has its own mortality floor: mortality_floor for the other members and
-# arabiensis_floor for arabiensis.
+# then has its own mortality floor, other_floor and arabiensis_floor (none
+# without species_options(floors = TRUE)).
 species_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
                               cell_country_lookup, n_times, types,
                               x_init = NULL, row_pair, row_year) {
@@ -996,7 +1022,7 @@ species_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
     logit_arabiensis <- logit_arabiensis - exp(terms$gamma_cost) * reversion
   }
 
-  list(other = floored_mortality(ilogit(logit_other), terms$mortality_floor),
+  list(other = floored_mortality(ilogit(logit_other), terms$other_floor),
        arabiensis = floored_mortality(ilogit(logit_arabiensis),
                                       terms$arabiensis_floor))
 }

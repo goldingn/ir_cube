@@ -232,7 +232,7 @@ if (species_on(model_options)) {
   same <- parameters
   same$gamma_selection[] <- 0
   if (!is.null(same$gamma_cost)) same$gamma_cost[] <- 0
-  same$arabiensis_floor <- same$mortality_floor
+  same$arabiensis_floor <- same$other_floor
   rows <- df[seq(1, nrow(df), by = 10), ]
   l_mixed <- dynamical_logit(same, rows, df, x_cell_years, cell_years_index)
   l_other <- dynamical_logit(same, rows, df, x_cell_years, cell_years_index,
