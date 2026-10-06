@@ -148,10 +148,19 @@ dynamical_lookups <- function(df) {
 # The model's variables (the free parameters), with their priors, as a named
 # list of greta arrays. Every element is passed to model(), so every one has
 # named columns in the draws.
+#
+# countries is "centred" for the model, or "noncentred" for the same posterior
+# with init_country_raw ~ N(0, 1) in place of init_country_level, which is
+# then mean + sd raw and returned as attribute "init_country_level": for
+# R/floor_profile.R, which maximises the log density, unbounded in the
+# centred form where a type's country levels can all meet their means as its
+# init_country_sd goes to 0
 dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
                                 n_countries, types,
                                 options = dynamical_model_options(),
-                                country_region_index = NULL) {
+                                country_region_index = NULL,
+                                countries = c("centred", "noncentred")) {
+  countries <- match.arg(countries)
 
   init <- init_frac_constants(types)
 
@@ -244,17 +253,15 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # HMC mixes along slowly. Centring the regions too puts them in a funnel
   # with init_region_sd, which 5 regions barely identify.
   stopifnot(length(country_region_index) == n_countries)
-  region_level <- sweep(sweep(variables$init_region_raw, 2,
-                              variables$init_region_sd, FUN = "*"),
-                        2, variables$logit_init_mean, FUN = "+")
-  country_mean <- region_level[country_region_index, ]
-  shift <- init_covariate_shift(init_covariates$init_coef, options)
-  if (!is.null(shift)) {
-    country_mean <- country_mean + shift
+  prior <- country_level_prior(c(variables, init_covariates),
+                               country_region_index, options)
+  init_country_level <- NULL
+  if (countries == "centred") {
+    variables$init_country_level <- normal(prior$mean, prior$sd)
+  } else {
+    variables$init_country_raw <- normal(0, 1, dim = c(n_countries, n_types))
+    init_country_level <- prior$mean + prior$sd * variables$init_country_raw
   }
-  country_sd <- sweep(zeros(n_countries, n_types), 2,
-                      variables$init_country_sd, FUN = "+")
-  variables$init_country_level <- normal(country_mean, country_sd)
 
   # The species model (#47): log multipliers on arabiensis's log fitness from
   # selection and on its fitness cost (outer_mortality()), N(0, 1) like the
@@ -292,7 +299,39 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     slopes
   }
 
-  c(variables, rho, floor, init_covariates, reversion, species, kdr)
+  out <- c(variables, rho, floor, init_covariates, reversion, species, kdr)
+  attr(out, "init_country_level") <- init_country_level
+  out
+}
+
+# The prior of the countries' logit relative initial states (#25), N(mean,
+# sd), as list(mean, sd), both countries x types: mean, the region's level,
+# logit_init_mean plus init_region_sd times its deviation init_region_raw,
+# plus the initial-state covariates' effect at the country's mean
+# (init_covariate_shift()); sd, init_country_sd of the type. From the
+# variables `v`, greta arrays or one draw in plain R (matrices, vectors as
+# vectors or one-column matrices).
+country_level_prior <- function(v, country_region_index, options) {
+  n_countries <- length(country_region_index)
+  is_greta <- inherits(v$init_region_raw, "greta_array")
+  if (is_greta) {
+    zero <- zeros(n_countries, length(v$init_country_sd))
+  } else {
+    v[c("init_region_sd", "logit_init_mean", "init_country_sd")] <- lapply(
+      v[c("init_region_sd", "logit_init_mean", "init_country_sd")], c)
+    zero <- matrix(0, n_countries, length(v$init_country_sd))
+  }
+  region_level <- sweep(sweep(v$init_region_raw, 2, v$init_region_sd,
+                              FUN = "*"),
+                        2, v$logit_init_mean, FUN = "+")
+  country_mean <- if (is_greta) region_level[country_region_index, ] else
+    region_level[country_region_index, , drop = FALSE]
+  shift <- init_covariate_shift(v$init_coef, options)
+  if (!is.null(shift)) {
+    country_mean <- country_mean + shift
+  }
+  list(mean = country_mean,
+       sd = sweep(zero, 2, v$init_country_sd, FUN = "+"))
 }
 
 # Reversion to susceptibility (#24). A fitness cost c of resistance, paid
@@ -643,6 +682,9 @@ floored_mortality <- function(q, floor) {
 #   x_cells_init      initial-state covariates, one row per cell_id, with
 #                     named columns (init_covariate_matrix()); needed when
 #                     options$init_covariates is set
+#   countries         "centred" (the model), or "noncentred" for the same
+#                     posterior in other coordinates (dynamical_variables()),
+#                     for R/floor_profile.R
 #
 # Returns a list with the model, its variables (as passed to model()), the
 # derived terms, and two functions for predictions after sampling:
@@ -667,7 +709,8 @@ build_dynamical_model <- function(train_df,
                                   classes_index,
                                   types,
                                   options = dynamical_model_options(),
-                                  x_cells_init = NULL) {
+                                  x_cells_init = NULL,
+                                  countries = "centred") {
 
   check_dynamical_model_options(options)
   check_greta_fill()
@@ -731,11 +774,16 @@ build_dynamical_model <- function(train_df,
                                    types = types,
                                    options = options,
                                    country_region_index =
-                                     lookups$country_region_index)
-  terms <- dynamical_terms(variables,
-                           classes_index = classes_index,
-                           types = types,
-                           options = options)
+                                     lookups$country_region_index,
+                                   countries = countries)
+  # the country levels, a variable when centred, and derived when not
+  levels_noncentred <- attr(variables, "init_country_level")
+  terms <- dynamical_terms(
+    if (is.null(levels_noncentred)) variables else
+      c(variables, list(init_country_level = levels_noncentred)),
+    classes_index = classes_index,
+    types = types,
+    options = options)
 
   # predicted mortality (the fraction susceptible) at the (cell_id, type_id,
   # year_id) of `rows`, computing the states only for the cell-type pairs there
