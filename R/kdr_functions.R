@@ -213,3 +213,91 @@ kdr_period <- function(year) {
       breaks = c(-Inf, 2009, 2014, 2019, Inf),
       labels = c("to 2009", "2010-2014", "2015-2019", "2020+"))
 }
+
+# the first word of a citation (the first author's surname, or the first word
+# of a compound surname), without accents, hyphens or apostrophes
+normalise_surname <- function(citation) {
+  citation %>%
+    stringi::stri_trans_general("Latin-ASCII") %>%
+    str_squish() %>%
+    str_extract("^[^ ,(]+") %>%
+    tolower() %>%
+    str_remove_all("[^a-z]")
+}
+
+# a DOI in a citation or URL
+extract_doi <- function(text) {
+  text %>%
+    str_extract("10\\.[0-9]{4,}/[^ ?#&]+") %>%
+    str_remove("[.;,)]+$") %>%
+    tolower()
+}
+
+# The first author and year of each study with Vgsc data in the raw files, and
+# whether any of its records are in the kdr records (prep_kdr.R drops records
+# without coordinates or a year, located only to a wide area, or of survivors
+# or dead mosquitoes only). The citations are those prep_kdr.R gives: a DOI
+# for Vector Atlas (or the author and year where there is none), "Author et
+# al. year" for the IR Mapper contact files, and a full reference for the
+# analysis-ready data, so we take the authors and years from the raw files.
+# `kdr_records` are the records read from data/clean/kdr_records.csv.
+kdr_study_lookup <- function(kdr_records) {
+  va_studies <- read_csv("data/raw/VA_FULL_DATA_20250721.csv",
+                         col_types = cols(.default = "c"),
+                         col_select = c(insecticide_resistance_data,
+                                        citation_doi, author, publication_year,
+                                        starts_with("vgsc"))) %>%
+    filter(
+      insecticide_resistance_data %in% c("genotypic", "both"),
+      if_any(starts_with("vgsc") & !matches("method|generation|notes"),
+             ~ !is.na(.x))
+    ) %>%
+    transmute(
+      source = "vector_atlas",
+      citation = coalesce(citation_doi, paste(author, publication_year)),
+      surname = normalise_surname(author),
+      publication_year = as_number(publication_year),
+      doi = extract_doi(citation_doi)
+    )
+
+  ir_mapper_studies <- bind_rows(
+    read_xlsx("data/raw/IR Mapper data August 2022.xlsx",
+              col_types = "text") %>%
+      filter(grepl("^Kdr", IR_Mechanism_Name, ignore.case = TRUE)) %>%
+      transmute(source = "ir_mapper_2022", citation = Reference_Name),
+    read_xlsx("data/raw/IR_Mapper_Anopheles_data_2021_Sept_2024.xlsx",
+              col_types = "text") %>%
+      filter(grepl("^Kdr", iR_Mechanism_Name, ignore.case = TRUE)) %>%
+      transmute(source = "ir_mapper_2024", citation = reference_Name)
+  ) %>%
+    mutate(
+      surname = normalise_surname(citation),
+      publication_year = as_number(str_extract(citation, "(19|20)[0-9]{2}")),
+      doi = NA_character_
+    )
+
+  ready_studies <- c("6_Vgsc-allele-freq_complex-subgroup.csv",
+                     "7_Vgsc-allele-freq_species.csv") %>%
+    map(\(file) read.csv(file.path("data/raw",
+                                   "IRMapper Analysis ready data sets",
+                                   file),
+                         fileEncoding = "latin1",
+                         check.names = FALSE)) %>%
+    map(\(x) select(x, citation = `Source 1 citation`,
+                    publication_year = `Publication year`)) %>%
+    bind_rows() %>%
+    transmute(
+      source = "ir_mapper_ready",
+      citation,
+      surname = normalise_surname(citation),
+      publication_year = as_number(publication_year),
+      doi = NA_character_
+    )
+
+  bind_rows(va_studies, ir_mapper_studies, ready_studies) %>%
+    distinct() %>%
+    mutate(
+      in_records = paste(source, citation) %in%
+        paste(kdr_records$source, kdr_records$citation)
+    )
+}
