@@ -15,7 +15,7 @@ arabiensis_fraction_file <- "data/clean/arabiensis_fraction.tif"
 # Arabiensis shares every parameter of the other members, with a multiplier
 # exp(gamma_selection) on its log fitness from selection and a multiplier
 # exp(gamma_cost) on the fitness cost (with reversion)
-# (species_mortality(), R/dynamical_model.R).
+# (outer_mortality(), R/dynamical_model.R).
 #   floors            TRUE for a mortality floor for each species, estimated
 #                     separately; FALSE (the default) for none. Never one
 #                     species only, and the model's mortality_floor option
@@ -81,25 +81,35 @@ fill_from_nearest_cells <- function(values, template, cells) {
   values
 }
 
-# r(x) at every cell of the model grid, with every mask cell filled
-# (fill_from_nearest_cells()), as a vector indexed by cell number; cached for
-# the session, as a plain vector so that forked workers can use it. The map
-# has no value at 10,176 of the 1,479,742 mask cells (lake edges and coasts,
-# and St Helena, 1,300 km from the nearest value), which hold 253 of the
-# 27,865 modelled bioassays (41 cells)
-arabiensis_fraction_cache <- new.env()
-arabiensis_fraction_values <- function(file = arabiensis_fraction_file) {
-  if (is.null(arabiensis_fraction_cache[[file]])) {
+# Layer `layer` (a name or number) of the raster `file` on the model grid at
+# every cell, with every mask cell filled (fill_from_nearest_cells()), as a
+# vector indexed by cell number; cached for the session, as a plain vector so
+# that forked workers can use it
+filled_layer_cache <- new.env()
+filled_layer_values <- function(file, layer = 1) {
+  key <- paste(file, layer)
+  if (is.null(filled_layer_cache[[key]])) {
     if (!file.exists(file)) {
-      stop(file, " not found; run R/prep_arabiensis_fraction.R")
+      stop(file, " not found")
     }
     mask <- terra::rast("data/clean/raster_mask.tif")
-    layer <- terra::rast(file)
-    stopifnot(terra::compareGeom(layer, mask))
-    arabiensis_fraction_cache[[file]] <- fill_from_nearest_cells(
-      terra::values(layer, mat = FALSE), layer, terra::cells(mask))
+    values <- terra::rast(file)[[layer]]
+    stopifnot(terra::compareGeom(values, mask))
+    filled_layer_cache[[key]] <- fill_from_nearest_cells(
+      terra::values(values, mat = FALSE), values, terra::cells(mask))
   }
-  arabiensis_fraction_cache[[file]]
+  filled_layer_cache[[key]]
+}
+
+# r(x) at every cell of the model grid, filled (filled_layer_values()). The
+# map has no value at 10,176 of the 1,479,742 mask cells (lake edges and
+# coasts, and St Helena, 1,300 km from the nearest value), which hold 253 of
+# the 27,865 modelled bioassays (41 cells)
+arabiensis_fraction_values <- function(file = arabiensis_fraction_file) {
+  if (!file.exists(file)) {
+    stop(file, " not found; run R/prep_arabiensis_fraction.R")
+  }
+  filled_layer_values(file)
 }
 
 # r(x) at mask cells `cells` (cell numbers of data/clean/raster_mask.tif)
