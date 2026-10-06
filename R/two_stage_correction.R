@@ -519,13 +519,22 @@ project_correction <- function(fit, fields, new, noise = FALSE) {
       A_xi[rows, , drop = FALSE] %*% fields$xi[[as.character(year)]])
   }
   if (noise) {
-    for (term in correction_iid_terms) {
-      key <- term$key(new)
-      levels <- unique(key)
-      fresh <- matrix(rnorm(length(levels) * ncol(out), 0,
-                            fit$hyper[[term$sd]]), length(levels))
-      out <- out + fresh[match(key, levels), , drop = FALSE]
-    }
+    out <- out + iid_noise(fit, new, ncol(out))
+  }
+  out
+}
+
+# Fresh draws of the iid terms (correction_iid_terms) at the rows of `new`
+# (cell and year), rows x n_draws: one per level of each term's key, shared by
+# the rows with that level within a draw (caller's RNG)
+iid_noise <- function(fit, new, n_draws) {
+  out <- 0
+  for (term in correction_iid_terms) {
+    key <- term$key(new)
+    levels <- unique(key)
+    fresh <- matrix(rnorm(length(levels) * n_draws, 0, fit$hyper[[term$sd]]),
+                    length(levels))
+    out <- out + fresh[match(key, levels), , drop = FALSE]
   }
   out
 }

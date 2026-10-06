@@ -8,6 +8,12 @@ insecticide resistance among malaria vectors in Africa. It uses a
 semi-mechanistic model to predict future levels of resistance across the
 continent, fitting closely to resistance data.
 
+The published maps and time series are of the two-stage model: the
+dynamical model, corrected by a second-stage geostatistical model of its
+residuals (`R/two_stage_maps.R`, `doc/two_stage_plan.md`). The
+cross-validation figures and the dynamical model’s own parameters
+(e.g. the covariate effects) show the dynamical model separately.
+
 Running order of scripts:
 
 *To be tidied: this may not be the correct order*
@@ -29,17 +35,24 @@ Running order of scripts:
 13. mtm_ir_explore.R
 14. ploidy_demo.R
 15. predict.R
-16. summarise_model_fit.R
-17. visualise_colony_net_bioassay.R
-18. visualise_data.R
-19. fig_admin_maps.R
-20. fig_baseline_susceptibility.R
-21. fig_bioassay_maps.R
-22. fig_covariate_effects.R
-23. fig_covariate_maps.R
-24. fig_data_distribution.R
-25. fig_illustrate_bioassay_variability.R
-26. fig_internal_validation.R
-27. fig_ir_maps.R
-28. fig_temporal_preds_data.R
-29. fig_temporal_preds_net_use.R
+16. two_stage_maps.R: `prepare`, `fit` 1-9, `map` for the six types not
+    in LLINs and `llin_effective`, then `figures`
+    (`doc/two_stage_plan.md`). The figure scripts below that show
+    predictions read its outputs
+17. summarise_model_fit.R
+18. visualise_colony_net_bioassay.R
+19. visualise_data.R
+20. fig_admin_maps.R
+21. fig_baseline_susceptibility.R
+22. fig_bioassay_maps.R
+23. fig_covariate_effects.R
+24. fig_covariate_maps.R
+25. fig_data_distribution.R
+26. fig_illustrate_bioassay_variability.R
+27. fig_internal_validation.R
+28. fig_ir_maps.R
+29. fig_ir_map_2025.R
+30. fig_ir_map_2000_2030.R
+31. fig_ento_epi_impact.R
+32. fig_temporal_preds_data.R
+33. fig_temporal_preds_net_use.R

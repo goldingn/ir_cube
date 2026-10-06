@@ -1,21 +1,31 @@
 # figures to validate internal consistency of model predictions, along important
 # gradients
+#
+#   Rscript R/fig_internal_validation.R [two_stage|dynamical]
+#
+# for the two-stage model (the default), or the dynamical model alone, whose
+# figures and tables carry the suffix _dynamical
+
+model <- commandArgs(trailingOnly = TRUE)[1]
+if (is.na(model)) model <- "two_stage"
+stopifnot(model %in% c("two_stage", "dynamical"))
+suffix <- if (model == "dynamical") "_dynamical" else ""
 
 # load packages and functions
-# greta first, so python starts before terra and sf are attached
-source("R/greta_setup.R")
-start_greta()
 source("R/packages.R")
 source("R/functions.R")
-source("R/validation_functions.R")
+source("R/bioassay_subset.R")
+source("R/two_stage_predictions.R")
 
-# load the fitted model objects here, to set up predictions
-load(file = "temporary/fitted_model.RData")
+# the modelled data, as R/fit_model.R builds them
+baseline_year <- 1995
+final_data_year <- 2024
+invisible(list2env(modelled_bioassays(baseline_year, final_data_year),
+                   environment()))
 
 # the covariates at the data cells, on their own scales (R/model_covariates.R)
-source("R/model_covariates.R")
 all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,
-                                 model_options$selection_columns)
+                                 two_stage_design(types[1]))
 
 mask <- rast("data/clean/raster_mask.tif")
 
@@ -33,24 +43,23 @@ country_borders <- geom_sf(data = borders,
 
 insecticides_col <- insecticide_colours()
 
-# draw the posterior predictive distribution at each observation. The
-# predicted fraction and the overdispersion are drawn in one call so that each
-# pair comes from the same posterior sample
-rho_observations <- rho_types[df$type_id]
-set.seed(2024)
-sims <- calculate(population_mortality_vec,
-                  rho_observations,
-                  values = draws,
-                  nsim = 1e3)
+# draws of the posterior predictive distribution at each observation
+# (R/two_stage_predictions.R): for the two-stage model, the mortality of a new
+# assay, with fresh pixel-year and pixel noise, at the external per-type
+# overdispersion; for the dynamical model, its predicted mortality at its own
+# overdispersion, each paired with the same posterior draw
+sims <- assay_draws(df, types)
+rho_observations <- sims[[paste0("rho_", model)]]
 
 # randomised quantile residuals, computed from the analytic beta-binomial
 # mixture rather than by simulation, so the residuals carry no Monte Carlo
 # noise and the out-of-sample residuals in validation_metrics.R are computed
 # the same way (#10)
+set.seed(2024)
 ppd <- ppd_summary(df$died,
                    df$mosquito_number,
-                   sims$population_mortality_vec[, , 1],
-                   sims$rho_observations[, , 1])
+                   sims[[model]],
+                   rho_observations)
 
 # scale to a normal distribution for easier checking
 df_validate <- df %>%
@@ -101,7 +110,7 @@ df_validate %>%
   coord_sf(xlim = c(-18, 52), ylim = c(-35, 38)) +
   theme_ir_maps()
 
-ggsave("figures/internal_validation_residual_map.png",
+ggsave(sprintf("figures/internal_validation_residual_map%s.png", suffix),
        bg = "white",
        width = 9,
        height = 9)
@@ -158,7 +167,7 @@ ggplot() +
   coord_sf(xlim = c(-18, 52), ylim = c(-35, 38)) +
   theme_ir_maps()
 
-ggsave("figures/internal_validation_residual_smooth.png",
+ggsave(sprintf("figures/internal_validation_residual_smooth%s.png", suffix),
        bg = "white",
        width = 6,
        height = 6)
@@ -225,7 +234,8 @@ df_validate %>%
     axis.text.x = element_text(size = 6)
   )
 
-ggsave("figures/internal_validation_residual_covariates.png",
+ggsave(sprintf("figures/internal_validation_residual_covariates%s.png",
+               suffix),
        bg = "white",
        width = 18,
        height = 12)
@@ -275,7 +285,8 @@ df_validate %>%
     axis.text.x = element_text(size = 6, angle = 45, hjust = 1)
   )
 
-ggsave("figures/internal_validation_residual_year_country.png",
+ggsave(sprintf("figures/internal_validation_residual_year_country%s.png",
+               suffix),
        bg = "white",
        width = 14,
        height = 14)
@@ -306,9 +317,12 @@ ks_cluster_class <- df_validate %>%
   reframe(ks_summary(z_resid)) %>%
   arrange(desc(D))
 
-write_csv(ks_type, "outputs/internal_validation_ks_type.csv")
-write_csv(ks_year_class, "outputs/internal_validation_ks_year_class.csv")
-write_csv(ks_cluster_class, "outputs/internal_validation_ks_cluster_class.csv")
+write_csv(ks_type,
+          sprintf("outputs/internal_validation_ks_type%s.csv", suffix))
+write_csv(ks_year_class,
+          sprintf("outputs/internal_validation_ks_year_class%s.csv", suffix))
+write_csv(ks_cluster_class,
+          sprintf("outputs/internal_validation_ks_cluster_class%s.csv", suffix))
 
 ks_type
 ks_year_class

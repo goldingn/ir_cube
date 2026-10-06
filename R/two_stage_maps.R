@@ -1,11 +1,13 @@
-# Maps of the two-stage model (#21): the final correction model
-# (R/two_stage_correction.R) fitted per insecticide type to ALL the bioassay
-# data, on top of the full dynamical fit (R/fit_model.R), on the full
-# prediction grid for the panel years of the dynamical-model maps
-# (R/fig_ir_maps.R).
+# Maps of the two-stage model (#21), the model behind the published maps and
+# time series: the final correction model (R/two_stage_correction.R) fitted
+# per insecticide type to ALL the bioassay data, on top of the full dynamical
+# fit (R/fit_model.R), on the full prediction grid for every year from the
+# baseline to 2030.
 #
 #   Rscript R/two_stage_maps.R prepare
-#   Rscript R/two_stage_maps.R <type index>     (1-9, one process each)
+#   Rscript R/two_stage_maps.R fit <type index>   (1-9, one process each)
+#   Rscript R/two_stage_maps.R map <type index>   (the six types not in LLINs)
+#   Rscript R/two_stage_maps.R map llin_effective
 #   Rscript R/two_stage_maps.R figures
 #
 # Run with OpenBLAS (reference BLAS is ~10x slower), e.g.
@@ -16,29 +18,42 @@
 #            build, and recompute its 2000 paired posterior logit draws at
 #            every assay and its initial conditions in every country
 #            (R/dynamical_predictions.R), with the fit's model options. Save,
-#            per type, the draws at its assays and the parameters the grid
-#            recursion needs to outputs/two_stage/maps/<type>/dynamical.rds
-#            (also read by R/fig_two_stage_components.R);
-#   <k>      fit the final model for type k (fit_correction(), m_ref = the
+#            per type, the draws at its assays, the parameters the grid
+#            recursion needs and the assays' key columns (to check that later
+#            steps pair the draws with the same data) to
+#            outputs/two_stage/maps/<type>/dynamical.rds;
+#   fit      fit the final model for type k (fit_correction(), m_ref = the
 #            posterior mean logit at the assays, per-type rho, t0 = 1995,
-#            T = the type's last data year) and save it without its TMB object
-#            to outputs/two_stage/maps/<type>/fit.rds. Then, on every mask cell
-#            and map year, from n_map_draws paired draws (dynamical draw d with
-#            a latent draw shifted for it, the cut posterior), write rasters of
-#              two_stage_mortality  posterior mean of ilogit(m + omega + xi)
-#              two_stage_sd_pp      its posterior SD, in percentage points:
-#                                   the uncertainty of the dynamical model and
-#                                   of the correction together
-#              dynamical_mortality  posterior mean of ilogit(m)
-#              difference_pp        two-stage minus dynamical, percentage points
+#            T = the type's last data year), check that its meshes cover every
+#            cell of the prediction mask, and save it without its TMB object
+#            to outputs/two_stage/maps/<type>/fit.rds, and its hyperparameters
+#            to hyperparameters.csv there. The fit and dynamical.rds are what
+#            the predictions of R/two_stage_predictions.R read, in the figure
+#            scripts too;
+#   map      on every mask cell and year, from n_map_draws paired draws
+#            (dynamical draw d with a latent draw shifted for it, the cut
+#            posterior), the posterior mean and SD of the predicted fraction
+#            susceptible (bioassay mortality), ilogit(m + omega + xi), written
+#            as R/predict.R writes the dynamical model's, one file per year:
+#              outputs/two_stage/ir_maps/<output>/ir_<year>_susceptibility.tif
+#              outputs/two_stage/ir_maps/<output>/ir_<year>_susceptibility_sd.tif
+#            and, at the panel years of the figures, to outputs/two_stage/maps/
+#            <type>/:
+#              dynamical_mortality  posterior mean of ilogit(m), from the same
+#                                   draws
 #              correction_mean      posterior mean of omega + xi (logit)
-#            The target is m + omega + xi. u and p are observation-level noise
-#            and are not mapped. Beyond T, xi is the AR(1) forecast;
-#   figures  maps in figures/two_stage/, in the layout of R/fig_ir_maps.R.
+#            `map llin_effective` maps Alpha-cypermethrin, Deltamethrin and
+#            Permethrin together with llin_effective, their mortality weighted
+#            draw by draw by temporary/ingredient_weights.RDS, as R/predict.R
+#            does. The target is m + omega + xi. u and p are observation-level
+#            noise and are not mapped. Beyond T, xi is the AR(1) forecast;
+#   figures  the two-stage-specific maps in figures/two_stage/ (posterior SD,
+#            correction, difference from the dynamical model), in the layout
+#            of R/fig_ir_maps.R, which maps the two-stage model's mortality.
 
 arguments <- commandArgs(trailingOnly = TRUE)
-stopifnot(length(arguments) == 1)
 step <- arguments[1]
+stopifnot(length(arguments) == if (step %in% c("fit", "map")) 2 else 1)
 
 source("R/two_stage_helpers.R")
 suppressMessages({
@@ -58,11 +73,14 @@ type_dir <- function(type) file.path(output_dir, type)
 raster_file <- function(type, quantity) {
   file.path(type_dir(type), sprintf("%s.tif", quantity))
 }
+ir_map_file <- function(output, year, quantity = "susceptibility") {
+  ir_map_files(output, year, quantity)
+}
 
-# the panel years of R/fig_ir_maps.R; covariate year index 1 is baseline_year
+# every year, as R/predict.R; the panel years of R/fig_ir_maps.R
+end_year <- 2030
+years_all <- baseline_year:end_year
 map_years <- c(2000, 2005, 2010, 2015, 2020, 2025, 2030)
-end_year <- max(map_years)
-year_index <- map_years - baseline_year + 1
 
 # 1000 paired draws (every other one of the 2000), in batches of 100: the sums
 # behind the means and SD are accumulated batch by batch, so memory is set by
@@ -73,9 +91,15 @@ year_index <- map_years - baseline_year + 1
 # spatially smooth
 n_map_draws <- 1000
 map_batch_size <- 100
-chunk_size <- 25000
-quantities <- c("two_stage_mortality", "two_stage_sd_pp",
-                "dynamical_mortality", "difference_pp", "correction_mean")
+chunk_size <- 10000
+
+# forked workers, each mapping a group of the cells, or the environment
+# variable IR_CUBE_MAP_WORKERS. Each held ~5 GB at 4 workers (its cells'
+# covariates, and a batch of draws for a chunk)
+n_map_workers <- as.integer(Sys.getenv("IR_CUBE_MAP_WORKERS", "1"))
+
+# the types weighted into llin_effective
+llin_weights <- unlist(readRDS("temporary/ingredient_weights.RDS"))
 
 # the grid cells and each one's country (NA outside the UNSD lookup)
 grid_cells <- function() {
@@ -142,7 +166,9 @@ if (step == "prepare") {
     dir.create(type_dir(types[k]), showWarnings = FALSE)
     saveRDS(list(logit_train = logit_assays[, df$type_id == k, drop = FALSE],
                  parameters = parameters,
-                 logit_init = logit_init),
+                 logit_init = logit_init,
+                 keys = df[df$type_id == k, c("cell", "year_start", "died",
+                                              "mosquito_number")]),
             file.path(type_dir(types[k]), "dynamical.rds"))
   }
   report("saved; peak memory %.1f GB", peak_memory_gb())
@@ -150,15 +176,17 @@ if (step == "prepare") {
 }
 
 
-# one type: fit and map -------------------------------------------------------------
+# fit: one type -------------------------------------------------------------------
 
-if (step != "figures") {
+if (step == "fit") {
 
   source("R/two_stage_correction.R")
-  k <- as.integer(step)
+  k <- as.integer(arguments[2])
   stopifnot(!is.na(k), k >= 1, k <= length(types))
   type <- types[k]
+  source("R/two_stage_predictions.R")
   dynamical <- readRDS(file.path(type_dir(type), "dynamical.rds"))
+  check_two_stage_data(dynamical, df, type)
   rows_k <- which(df$type_id == k)
   train_k <- tibble(lon = df$longitude[rows_k], lat = df$latitude[rows_k],
                     year = df$year_start[rows_k], cell = df$cell[rows_k],
@@ -175,133 +203,227 @@ if (step != "figures") {
                                                 meshes = meshes))
   stopifnot(fit$opt$convergence == 0, isTRUE(fit$stage_b$converged_first),
             !isFALSE(fit$stage_b$converged_second))
+
+  # every mapped cell must be inside both meshes, or its correction would be 0
+  grid <- grid_cells()
+  xy <- terra::xyFromCell(mask, grid$cells[!is.na(grid$country)])
+  coords <- project_km(xy[, 1], xy[, 2])
+  for (mesh in list(fit$mesh, fit$mesh_xi)) {
+    stopifnot(all(Matrix::rowSums(mesh_basis(mesh, coords)) > 0.5))
+  }
   fit$obj <- NULL
   saveRDS(fit, file.path(type_dir(type), "fit.rds"))
-  report("%s fitted in %.0f s and saved; peak memory %.1f GB", type,
-         time_fit[["elapsed"]], peak_memory_gb())
-
-  time_map <- system.time({
-    grid <- grid_cells()
-    covariates <- map_covariates(grid$cells, baseline_year, end_year,
-                                 dynamical$parameters$options$selection_columns)
-    xy <- terra::xyFromCell(mask, grid$cells)
-    coords <- project_km(xy[, 1], xy[, 2])
-    cell_country <- match(grid$country, dimnames(dynamical$logit_init)[[2]])
-    rm(xy)
-
-    # the map draws are an even subset of the 2000, by the scoring's rule.
-    # The node fields of each batch of draws (omega and xi at the map years,
-    # without the full latent vector) are small, so they are drawn up front
-    map_draws <- thin_draws(matrix(seq_len(nrow(dynamical$logit_train))),
-                            n_map_draws)[, 1]
-    batches <- split(map_draws, ceiling(seq_along(map_draws) / map_batch_size))
-    batch_parameters <- lapply(batches, subset_draws,
-                               parameters = dynamical$parameters)
-    logit_init <- dynamical$logit_init
-    set.seed(string_seed(paste("maps draws", type, sep = "__")))
-    fields <- lapply(batches, function(draws) {
-      f <- correction_node_draws(
-        fit, map_years, length(draws),
-        m_draws_train = dynamical$logit_train[draws, , drop = FALSE])
-      f$theta <- NULL
-      f
-    })
-    fields_mean <- correction_node_draws(fit, map_years, mean = TRUE)
-    rm(dynamical)
-    invisible(gc())
-
-    # project_correction() warns about points outside the mesh; count them
-    n_outside <- 0
-    # (counted once per chunk, from the draws' projection)
-    project <- function(fields, new, count = TRUE) {
-      withCallingHandlers(
-        project_correction(fit, fields, new),
-        warning = function(w) {
-          if (grepl("outside the mesh", conditionMessage(w))) {
-            if (count) n_outside <<- n_outside +
-              as.numeric(sub(" .*", "", conditionMessage(w)))
-            invokeRestart("muffleWarning")
-          }
-        })
-    }
-
-    results <- lapply(setNames(quantities, quantities), function(q) {
-      matrix(NA_real_, length(grid$cells), length(map_years))
-    })
-    chunks <- split(seq_along(grid$cells),
-                    ceiling(seq_along(grid$cells) / chunk_size))
-    for (chunk in chunks) {
-      ok <- chunk[!is.na(cell_country[chunk])]
-      if (length(ok) == 0) next
-      x_chunk <- map_x(covariates, ok, max(year_index))
-      new <- tibble(x_km = rep(coords[ok, 1], length(map_years)),
-                    y_km = rep(coords[ok, 2], length(map_years)),
-                    year = rep(map_years, each = length(ok)))
-      correction_mean <- project(fields_mean, new, count = FALSE)
-
-      # sums over the draws, cells x years, accumulated batch by batch
-      sum_two_stage <- matrix(0, length(ok), length(map_years))
-      sum_sq_two_stage <- sum_two_stage
-      sum_dynamical <- sum_two_stage
-      for (b in seq_along(batches)) {
-        draws <- batches[[b]]
-        m <- dynamical_logit_cells(batch_parameters[[b]], k,
-                                   matrix(logit_init[draws, cell_country[ok],
-                                                     k], length(draws)),
-                                   x_chunk, year_index,
-                                   x_init = covariates$init[ok, , drop = FALSE])
-        correction <- project(fields[[b]], new, count = b == 1)
-        for (j in seq_along(map_years)) {
-          rows <- (j - 1) * length(ok) + seq_along(ok)
-          m_j <- t(m[[as.character(year_index[j])]])
-          p_two_stage <- plogis(m_j + correction[rows, , drop = FALSE])
-          sum_two_stage[, j] <- sum_two_stage[, j] + rowSums(p_two_stage)
-          sum_sq_two_stage[, j] <- sum_sq_two_stage[, j] +
-            rowSums(p_two_stage ^ 2)
-          sum_dynamical[, j] <- sum_dynamical[, j] + rowSums(plogis(m_j))
-        }
-        rm(m, correction, p_two_stage)
-      }
-
-      mean_two_stage <- sum_two_stage / n_map_draws
-      p_dynamical <- sum_dynamical / n_map_draws
-      variance <- pmax(0, (sum_sq_two_stage - n_map_draws * mean_two_stage ^ 2) /
-                         (n_map_draws - 1))
-      results$two_stage_mortality[ok, ] <- mean_two_stage
-      results$two_stage_sd_pp[ok, ] <- 100 * sqrt(variance)
-      results$dynamical_mortality[ok, ] <- p_dynamical
-      results$difference_pp[ok, ] <- 100 * (mean_two_stage - p_dynamical)
-      results$correction_mean[ok, ] <- matrix(correction_mean[, 1], length(ok))
-    }
-  })
-  n_outside_cells <- n_outside / length(map_years)
-  if (n_outside_cells > 0) {
-    warning(sprintf("%s: %.0f of %i mapped cells lie outside the mesh; ",
-                    type, n_outside_cells,
-                    sum(!is.na(cell_country))),
-            "the correction there is 0 with SD 0")
-  }
-
-  for (q in quantities) {
-    r <- rast(mask, nlyrs = length(map_years))
-    full <- matrix(NA_real_, ncell(mask), length(map_years))
-    full[grid$cells, ] <- results[[q]]
-    values(r) <- full
-    names(r) <- map_years
-    writeRaster(r, raster_file(type, q), overwrite = TRUE, datatype = "FLT4S",
-                gdal = c("COMPRESS=DEFLATE", "PREDICTOR=3"))
-  }
   write.csv(bind_cols(tibble(insecticide_type = type,
                              rho = train_k$rho[1]),
                       fit_summary(fit),
-                      tibble(n_cells_outside_mesh = n_outside_cells,
-                             time_fit_s = time_fit[["elapsed"]],
-                             time_map_s = time_map[["elapsed"]],
-                             peak_memory_gb = peak_memory_gb())),
+                      tibble(time_fit_s = time_fit[["elapsed"]],
+                             peak_memory_fit_gb = peak_memory_gb())),
             file.path(type_dir(type), "hyperparameters.csv"),
             row.names = FALSE)
-  report("%s mapped in %.0f s (%.0f cells outside the mesh); peak memory %.1f GB",
-         type, time_map[["elapsed"]], n_outside_cells, peak_memory_gb())
+  report("%s fitted in %.0f s and saved; peak memory %.1f GB", type,
+         time_fit[["elapsed"]], peak_memory_gb())
+  quit(save = "no")
+}
+
+# map: one type, or llin_effective with its three types ---------------------------
+
+if (step == "map") {
+
+  source("R/two_stage_correction.R")
+  source("R/two_stage_predictions.R")
+  output <- arguments[2]
+  if (output == "llin_effective") {
+    map_types <- names(llin_weights)
+  } else {
+    k <- as.integer(output)
+    stopifnot(!is.na(k), k >= 1, k <= length(types),
+              !types[k] %in% names(llin_weights))
+    map_types <- types[k]
+  }
+  stopifnot(all(map_types %in% types))
+
+  time_map <- system.time({
+    # one setup per type, with the same dynamical draws batch for batch, so
+    # the types combine draw by draw. The node fields of each batch of draws
+    # (omega and xi at every year, without the full latent vector) are small,
+    # so they are drawn up front
+    setups <- lapply(setNames(nm = map_types), two_stage_setup,
+                     years = years_all, data = df, n_draws = n_map_draws,
+                     batch_size = map_batch_size,
+                     baseline_year = baseline_year)
+    # the posterior mean of omega + xi at the panel years
+    fields_mean <- lapply(setups, function(setup) {
+      correction_node_draws(setup$fit, map_years, mean = TRUE)
+    })
+
+    grid <- grid_cells()
+    mapped <- which(!is.na(grid$country))
+    n_mapped <- length(mapped)
+    panel <- match(map_years, years_all)
+
+    # the posterior mean and SD of each output at every year, and the
+    # type-specific panel-year quantities, for the cells `rows` of `cells`
+    # (two_stage_cells())
+    outputs <- c(map_types, if (output == "llin_effective") output)
+    map_chunk <- function(cells, rows) {
+      chunk <- two_stage_chunk(setups[[1]], cells, rows)
+      # sums over the draws, cells x years, accumulated batch by batch
+      zeros <- function(n_years) matrix(0, length(rows), n_years)
+      sums <- lapply(setNames(nm = outputs), function(o) {
+        list(p = zeros(length(years_all)), p_sq = zeros(length(years_all)))
+      })
+      sum_dynamical <- lapply(setNames(nm = map_types), function(type) {
+        zeros(length(map_years))
+      })
+      for (b in seq_along(setups[[1]]$batches)) {
+        combined <- if (output == "llin_effective") {
+          lapply(years_all, function(year) 0)
+        }
+        for (type in map_types) {
+          logit <- two_stage_logit_batch(setups[[type]], b, chunk)
+          for (j in seq_along(years_all)) {
+            p <- plogis(logit$two_stage[[j]])
+            sums[[type]]$p[, j] <- sums[[type]]$p[, j] + colSums(p)
+            sums[[type]]$p_sq[, j] <- sums[[type]]$p_sq[, j] + colSums(p ^ 2)
+            if (!is.null(combined)) {
+              combined[[j]] <- combined[[j]] + llin_weights[[type]] * p
+            }
+          }
+          for (i in seq_along(map_years)) {
+            sum_dynamical[[type]][, i] <- sum_dynamical[[type]][, i] +
+              colSums(plogis(logit$dynamical[[panel[i]]]))
+          }
+          rm(logit, p)
+        }
+        if (!is.null(combined)) {
+          for (j in seq_along(years_all)) {
+            sums[[output]]$p[, j] <- sums[[output]]$p[, j] +
+              colSums(combined[[j]])
+            sums[[output]]$p_sq[, j] <- sums[[output]]$p_sq[, j] +
+              colSums(combined[[j]] ^ 2)
+          }
+          rm(combined)
+        }
+      }
+
+      results <- lapply(sums, function(sum) {
+        mean <- sum$p / n_map_draws
+        variance <- pmax(0, (sum$p_sq - n_map_draws * mean ^ 2) /
+                           (n_map_draws - 1))
+        list(mean = mean, sd = sqrt(variance))
+      })
+      panel_results <- lapply(setNames(nm = map_types), function(type) {
+        correction_mean <- project_cells(setups[[type]]$fit,
+                                         fields_mean[[type]], chunk, map_years)
+        list(dynamical_mortality = sum_dynamical[[type]] / n_map_draws,
+             correction_mean = sapply(correction_mean, function(x) x[, 1]))
+      })
+      list(rows = rows, results = results, panel_results = panel_results)
+    }
+
+    # the mapped cells in one contiguous group per forked worker, which shares
+    # the setups and builds the covariates of its own cells (a few GB for the
+    # whole grid), then maps them in chunks. Each worker saves its results to
+    # a temporary file, read back one group at a time: returning them all at
+    # once to the parent held every result twice and ran out of memory
+    map_group <- function(group) {
+      cells <- two_stage_cells(setups[[1]], grid$cells[mapped[group]],
+                               grid$country[mapped[group]])
+      invisible(gc())
+      chunks <- split(seq_along(group),
+                      ceiling(seq_along(group) / chunk_size))
+      results <- lapply(seq_along(chunks), function(i) {
+        chunk <- map_chunk(cells, chunks[[i]])
+        chunk$rows <- group[chunks[[i]]]
+        if (i %% 10 == 0) {
+          report("cells %i-%i: %i of %i chunks", min(group), max(group), i,
+                 length(chunks))
+        }
+        chunk
+      })
+      file <- tempfile(fileext = ".rds")
+      saveRDS(results, file, compress = FALSE)
+      file
+    }
+    groups <- split(seq_len(n_mapped),
+                    ceiling(seq_len(n_mapped) /
+                              ceiling(n_mapped / n_map_workers)))
+    done <- parallel::mclapply(groups, map_group, mc.cores = n_map_workers,
+                               mc.preschedule = FALSE)
+    # a worker that fails returns a try-error, and one that is killed (e.g.
+    # out of memory) returns NULL, rather than its file name
+    failed <- !vapply(done, is.character, logical(1))
+    if (any(failed)) {
+      stop("mapping failed for ", sum(failed), " groups of cells: ",
+           paste(unique(unlist(done[failed])), collapse = "; "))
+    }
+    files <- unlist(done)
+
+    # assembled into mapped cells x years, freeing each chunk's results
+    empty <- function(n_years) matrix(NA_real_, n_mapped, n_years)
+    results <- lapply(setNames(nm = outputs), function(o) {
+      list(mean = empty(length(years_all)), sd = empty(length(years_all)))
+    })
+    panel_results <- lapply(setNames(nm = map_types), function(type) {
+      list(dynamical_mortality = empty(length(map_years)),
+           correction_mean = empty(length(map_years)))
+    })
+    for (file in files) {
+      done <- readRDS(file)
+      unlink(file)
+      for (chunk in done) {
+        for (o in outputs) {
+          for (q in c("mean", "sd")) {
+            results[[o]][[q]][chunk$rows, ] <- chunk$results[[o]][[q]]
+          }
+        }
+        for (type in map_types) {
+          for (q in names(panel_results[[type]])) {
+            panel_results[[type]][[q]][chunk$rows, ] <-
+              chunk$panel_results[[type]][[q]]
+          }
+        }
+      }
+      rm(done)
+      invisible(gc())
+    }
+  })
+
+  # one raster per year (and quantity) per output, as R/predict.R; one layer
+  # per panel year for the type-specific quantities
+  write_cells <- function(values, file, layer_names = NULL) {
+    values <- as.matrix(values)
+    r <- rast(mask, nlyrs = ncol(values))
+    full <- matrix(NA_real_, ncell(mask), ncol(values))
+    full[grid$cells[mapped], ] <- values
+    values(r) <- full
+    if (!is.null(layer_names)) names(r) <- layer_names
+    writeRaster(r, file, overwrite = TRUE, datatype = "FLT4S",
+                gdal = c("COMPRESS=DEFLATE", "PREDICTOR=3"))
+  }
+  for (o in outputs) {
+    dir.create(dirname(ir_map_file(o, years_all[1])), showWarnings = FALSE,
+               recursive = TRUE)
+    for (j in seq_along(years_all)) {
+      write_cells(results[[o]]$mean[, j], ir_map_file(o, years_all[j]))
+      write_cells(results[[o]]$sd[, j],
+                  ir_map_file(o, years_all[j], "susceptibility_sd"))
+    }
+  }
+  for (type in map_types) {
+    for (q in names(panel_results[[type]])) {
+      write_cells(panel_results[[type]][[q]], raster_file(type, q),
+                  layer_names = map_years)
+    }
+  }
+  write.csv(tibble(output = output, insecticide_type = map_types,
+                   n_draws = n_map_draws,
+                   time_map_s = time_map[["elapsed"]],
+                   peak_memory_gb = peak_memory_gb()),
+            file.path(output_dir, sprintf("map_summary_%s.csv", output)),
+            row.names = FALSE)
+  report("%s mapped in %.0f s; peak memory %.1f GB", output,
+         time_map[["elapsed"]], peak_memory_gb())
   quit(save = "no")
 }
 
@@ -332,8 +454,20 @@ insecticides_plot <- c("Alpha-cypermethrin", "Deltamethrin",
 insecticides_col <- setNames(rev(scales::hue_pal()(length(insecticides_plot))),
                              insecticides_plot)
 
+# a quantity at the panel years, masked: the two-stage posterior SD
+# (percentage points) and the difference from the dynamical model (two-stage
+# minus dynamical posterior mean, percentage points, from the same draws) from
+# the yearly rasters, the correction from the panel-year raster
 read_map <- function(type, quantity) {
-  r <- rast(raster_file(type, quantity))
+  yearly <- function(stem) {
+    rast(sapply(map_years, function(year) ir_map_file(type, year, stem)))
+  }
+  r <- switch(quantity,
+              two_stage_sd_pp = 100 * yearly("susceptibility_sd"),
+              difference_pp = 100 * (yearly("susceptibility") -
+                                       rast(raster_file(type,
+                                                        "dynamical_mortality"))),
+              rast(raster_file(type, quantity)))
   names(r) <- map_years
   terra::mask(r, pf_water_mask)
 }
@@ -389,20 +523,8 @@ model_note <- function(type) {
                 "of xi"), T_k)
 }
 
+# the posterior mean is mapped by R/fig_ir_maps.R
 for (type in insecticides_plot) {
-
-  year_panels(
-    read_map(type, "two_stage_mortality"),
-    scale_fill_gradient(labels = scales::percent, name = "Susceptibility",
-                        limits = c(0, 1), breaks = c(0, 0.5, 1),
-                        high = insecticides_col[[type]], low = "white",
-                        na.value = "transparent", guide = colourbar),
-    title = sprintf("%s: two-stage model", type),
-    subtitle = paste("Susceptibility of An. gambiae (s.l./s.s.) in WHO",
-                     "bioassays; posterior mean of ilogit(m + omega + xi)",
-                     sprintf("over %i paired draws;", n_map_draws),
-                     model_note(type)),
-    file = file.path(figure_dir, sprintf("%s_two_stage_ir_map.png", type)))
 
   year_panels(
     read_map(type, "two_stage_sd_pp"),

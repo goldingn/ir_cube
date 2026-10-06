@@ -20,19 +20,18 @@ pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 nets <- rast("data/clean/net_use_cube.tif")
 names(nets) <- str_remove(names(nets), "^nets_")
 
-# Next, Susceptibility to the pyrethroids used in LLINs:
+# Next, Susceptibility to the pyrethroids used in LLINs, of the two-stage model
+# (R/two_stage_maps.R):
 ir_yrs_all <- 2000:2030
-ir_filenames <- sprintf(
-  "outputs/ir_maps/llin_effective/ir_%s_susceptibility.tif",
-  ir_yrs_all
-)
-ir <- rast(ir_filenames)
+ir <- rast(ir_map_files("llin_effective", ir_yrs_all))
 names(ir) <- ir_yrs_all
 
 # compute change in IR, and average net use, over fixed periods
 
-# compute absolute change
-change <- function(x) diff(range(x))
+# compute the change from the start to the end of a period. Signed: the
+# two-stage model's susceptibility need not fall monotonically, so the range
+# over the period would count a rise as a fall
+change <- function(x) x[[nlyr(x)]] - x[[1]]
 
 breaks <- c(2000, 2005, 2010, 2015, 2020, 2025)
 n_breaks <- length(breaks)
@@ -42,22 +41,22 @@ period_name <- paste0(period_start, "-", period_end)
 n_periods <- length(period_start)
 
 net_use_list <- list()
-ir_loss_list <- list()
+ir_change_list <- list()
 for(i in seq_len(n_periods)) {
   period_yrs <- seq(period_start[i],
                     period_end[i],
                     by = 1)
-  period_ir_loss <- change(ir[[names(ir) %in% period_yrs]])
+  period_ir_change <- change(ir[[names(ir) %in% period_yrs]])
   # alternative: make this annualised to account for different-sized bins?
-  # period_ir_loss <- period_ir_loss / change(period_yrs)
+  # period_ir_change <- period_ir_change / diff(range(period_yrs))
   period_net_use <- mean(nets[[names(nets) %in% period_yrs]])
 
-  names(period_ir_loss) <- names(period_net_use) <- period_name[i]
-  ir_loss_list[[i]] <- period_ir_loss
+  names(period_ir_change) <- names(period_net_use) <- period_name[i]
+  ir_change_list[[i]] <- period_ir_change
   net_use_list[[i]] <- period_net_use
 }
 
-ir_loss <- rast(ir_loss_list)
+ir_change <- rast(ir_change_list)
 net_use <- rast(net_use_list)
 
 # grey background for Africa
@@ -72,17 +71,19 @@ country_borders <- geom_sf(data = borders,
                            linewidth = 0.1,
                            fill = "transparent")
 
-ir_loss_mask <- terra::mask(ir_loss, pf_water_mask)
+ir_change_mask <- terra::mask(ir_change, pf_water_mask)
 ir_change_fig <- ggplot() +
   africa_bg +
-  geom_spatraster(data = -ir_loss_mask) +
+  geom_spatraster(data = ir_change_mask) +
   country_borders +
   facet_wrap(~lyr, nrow = 2) +
-  scale_fill_gradient(
+  # losses in red; any gains in blue
+  scale_fill_gradient2(
     labels = scales::percent,
-    high = grey(0.9),
-    # limits = c(-0.08, 0),
     low = "red",
+    mid = grey(0.9),
+    high = "#2166ac",
+    midpoint = 0,
     na.value = "transparent"
   ) +
   labs(fill = "Change in susceptibility") +

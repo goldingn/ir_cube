@@ -44,12 +44,9 @@ borders <- readRDS("data/clean/country_borders.RDS")
 # load mask with limits of transmission and water bodies for plotting
 pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 
-# - IR layers (susceptibility to the pyrethroids used in LLINs)
-ir_filenames <- sprintf(
-  "outputs/ir_maps/llin_effective/ir_%s_susceptibility.tif",
-  years_plot
-)
-ir <- rast(ir_filenames)
+# - IR layers (susceptibility to the pyrethroids used in LLINs), of the
+# two-stage model (R/two_stage_maps.R)
+ir <- rast(ir_map_files("llin_effective", years_plot))
 names(ir) <- years_plot
 
 # - MAP net use (to manually project to 2030)

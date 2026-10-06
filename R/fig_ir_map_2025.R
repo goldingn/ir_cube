@@ -15,16 +15,12 @@ borders <- readRDS("data/clean/country_borders.RDS")
 # load mask with limits of transmission and water bodies for plotting
 pf_water_mask <- rast("data/clean/pfpr_water_mask.tif")
 
-# load in and prepare estimate rasters
+# load in and prepare estimate rasters, of the two-stage model
+# (R/two_stage_maps.R)
 
 # First, the pyrethroids used in LLINs:
 
-llin_filename <- sprintf(
-  "outputs/ir_maps/llin_effective/ir_%s_susceptibility.tif",
-  ir_yr
-)
-
-llin_rast <- rast(llin_filename)
+llin_rast <- rast(ir_map_files("llin_effective", ir_yr))
 names(llin_rast) <- "A) LLIN pyrethroids*"
 
 # now, all the individual ones
@@ -40,13 +36,7 @@ insecticide_names <- c(
   "Bendiocarb"
 )
 
-ir_filenames <- sprintf(
-  "outputs/ir_maps/%s/ir_%s_susceptibility.tif",
-  insecticide_names,
-  ir_yr
-)
-
-ir_rasts <- rast(ir_filenames)
+ir_rasts <- rast(ir_map_files(insecticide_names, ir_yr))
 
 llin_pyrethroid_names <- c("Alpha-cypermethrin",
                            "Deltamethrin",
