@@ -81,7 +81,8 @@ print(as.data.frame(select(fit_rows, -file, -options)), digits = 4)
 
 # the new parameters: medians, 50% and 95% intervals, by fit
 new <- parameters %>%
-  filter(group %in% c("multiplier", "floor")) %>%
+  filter(group %in% c("multiplier", "floor"),
+         !grepl("^floor_intercept", parameter)) %>%
   mutate(label = factor(label, levels = rev(names(fits))))
 if (nrow(new) > 0) {
   p <- ggplot(new, aes(y = label)) +

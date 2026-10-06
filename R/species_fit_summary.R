@@ -82,11 +82,18 @@ key_parameters <- function(chain) {
       out[[sprintf("reversion_rate[%s]", fit$classes[c])]] <- reversion[, c]
     }
   }
-  new <- grep("^(gamma_|delta_)|floor$", colnames(m), value = TRUE)
+  new <- grep("^(gamma_|delta_|floor_)|floor$", colnames(m), value = TRUE)
   for (name in new) {
     out[[name]] <- m[, name]
     if (grepl("^(gamma_|delta_)", name)) {
       out[[sprintf("exp(%s)", name)]] <- exp(m[, name])
+    }
+    # the kdr-dependent floor at the mean kdr, per class with floor = "class"
+    if (grepl("^floor_intercept", name)) {
+      index <- if (name == "floor_intercept") "" else
+        sprintf("[%s]", fit$classes[as.integer(sub("^.*\\[(\\d+),.*$", "\\1",
+                                                    name))])
+      out[[paste0("floor_at_k0", index)]] <- plogis(m[, name])
     }
   }
   do.call(cbind, out)
@@ -148,7 +155,7 @@ parameters <- summary_usable %>%
   mutate(group = case_when(
     str_detect(parameter, "^exp\\(") ~ "multiplier",
     str_detect(parameter, "^(gamma_|delta_)") ~ "species and kdr",
-    str_detect(parameter, "floor$") ~ "floor",
+    str_detect(parameter, "floor$|^floor_") ~ "floor",
     str_detect(parameter, "^rho") ~ "rho",
     str_detect(parameter, "^reversion") ~ "reversion",
     .default = "selection"), .after = parameter)
@@ -162,7 +169,8 @@ parameters_by_mode <- bind_rows(lapply(names(modes), function(this_mode) {
     ~ setNames(quantiles(.x), c("q2.5", "q25", "q50", "q75", "q97.5")),
     rhat = posterior::rhat) %>%
     rename(parameter = variable) %>%
-    filter(str_detect(parameter, "^exp\\(|^(gamma_|delta_)|floor$")) %>%
+    filter(str_detect(parameter,
+                      "^exp\\(|^(gamma_|delta_|floor_)|floor$")) %>%
     mutate(label = label, mode = this_mode,
            chains = toString(modes[[this_mode]]), .before = 1)
 }))

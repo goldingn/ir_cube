@@ -9,13 +9,17 @@
 source("R/two_stage_helpers.R")
 
 # The floors of a fit: mortality_floor, or the species model's other_floor and
-# arabiensis_floor
+# arabiensis_floor, or the kdr-dependent floor's intercepts (floor_intercept,
+# one or one per class: the logit floor at the mean kdr; #47). The scripts
+# treat an intercept as its floor, plogis(floor_intercept) (floor_values(),
+# R/dynamical_model.R), whose free state is the same, qlogis(floor)
 floor_names <- c("mortality_floor", "other_floor", "arabiensis_floor")
 
 # A fit's saved options, completed for the current code. Options added since
 # the fit take the values that reproduce it: floor_prior (#47) the prior of
 # the floor before #47, Beta(1, 49), unless `floor_prior` gives another (the
-# fits before d2dee17, 2 October 2026, used Beta(1, 9)); species and kdr off.
+# fits before d2dee17, 2 October 2026, used Beta(1, 9)); species and kdr off;
+# with kdr, no kdr-dependent floor.
 # Settings of older code that the current code no longer has are dropped if
 # their values are what the current code does, and stop the script otherwise.
 complete_model_options <- function(options, floor_prior = c(1, 49)) {
@@ -42,6 +46,8 @@ complete_model_options <- function(options, floor_prior = c(1, 49)) {
   if (is.null(out$floor_prior)) out$floor_prior <- floor_prior
   if (is.null(out$species)) out$species <- FALSE
   if (is.null(out$kdr)) out$kdr <- FALSE
+  # kdr options saved before the kdr-dependent floor have none
+  if (is.list(out$kdr) && is.null(out$kdr$floor)) out$kdr$floor <- FALSE
   out$selection_columns <- complete_selection_design(design)
   out
 }
@@ -83,7 +89,8 @@ load_fit <- function(file, floor_prior = floor_prior_override()) {
 
 # The floors of `draws` (a greta_mcmc_list) it has
 fit_floor_names <- function(draws) {
-  intersect(floor_names, colnames(draws[[1]]))
+  c(intersect(floor_names, colnames(draws[[1]])),
+    grep("^floor_intercept", colnames(draws[[1]]), value = TRUE))
 }
 
 # The floor mode of each chain of `draws`: as chain_floor_modes(), "low" or
@@ -93,7 +100,7 @@ chain_floor_mode <- function(draws, high_floor = 0.1) {
   floors <- fit_floor_names(draws)
   vapply(draws, function(chain) {
     if (length(floors) == 0) return("none")
-    means <- colMeans(as.matrix(chain)[, floors, drop = FALSE])
+    means <- colMeans(floor_values(as.matrix(chain)[, floors, drop = FALSE]))
     paste(ifelse(means > high_floor, "high", "low"), collapse = "/")
   }, character(1))
 }
@@ -167,7 +174,16 @@ free_states <- function(fit, built, chains = seq_along(fit$draws)) {
 # (free_state_columns(), R/dynamical_predictions.R)
 free_column <- function(model, name) {
   columns <- free_state_columns(model)
-  columns[[attr(columns, "targets")[[name]]]]
+  base <- sub("\\[.*$", "", name)
+  block <- columns[[attr(columns, "targets")[[base]]]]
+  if (base == name) {
+    return(block)
+  }
+  # an element of a vector variable, e.g. floor_intercept[2,1], whose free
+  # state is in element order
+  index <- as.integer(strsplit(sub("^.*\\[(.*)\\]$", "\\1", name), ",")[[1]])
+  stopifnot(length(index) == 2, index[2] == 1)
+  block[index[1]]
 }
 
 # The log density of greta model `model` at free states `free` (states x
@@ -230,6 +246,6 @@ floor_free <- function(f) qlogis(f)
 floor_free_check <- function(model, free, name, f = 0.123) {
   free[free_column(model, name)] <- floor_free(f)
   trace <- model$dag$trace_values(matrix(free, nrow = 1))
-  stopifnot(abs(trace[1, name] - f) < 1e-12)
+  stopifnot(abs(floor_values(trace[, name, drop = FALSE])[1, 1] - f) < 1e-12)
   invisible(TRUE)
 }
