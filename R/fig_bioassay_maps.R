@@ -5,8 +5,13 @@
 source("R/packages.R")
 source("R/functions.R")
 
-# load the fitted model objects here, to set up predictions
-load(file = "temporary/fitted_model.RData")
+source("R/bioassay_subset.R")
+
+# the modelled bioassays and their indices, as in R/fit_model.R
+mask <- rast("data/clean/raster_mask.tif")
+ir_africa <- readRDS("data/clean/all_gambiae_complex_data.RDS")
+df <- subset_modelled_bioassays(ir_africa, mask)
+list2env(index_bioassays(df), environment())
 
 # load admin borders for plotting
 borders <- readRDS("data/clean/country_borders.RDS")
