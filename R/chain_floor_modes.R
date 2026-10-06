@@ -11,11 +11,15 @@
 # modes are compared on) and "adjusted" (with the Jacobian of greta's
 # transforms to the free state, the density HMC samples). Draws are evaluated
 # `batch` at a time, which bounds the memory of the batched states. NULL for a
-# model without a floor.
+# model without a floor. With the species model's two floors (#47), floor is
+# NA, other_floor and arabiensis_floor are the chain's mean floors, and mode
+# is the mode of each, other members first, e.g. "low/high".
 chain_floor_modes <- function(model, draws, n_per_chain = 60,
                               high_floor = 0.1, batch = 10) {
-  floor_column <- grep("^mortality_floor", colnames(draws[[1]]), value = TRUE)
-  if (length(floor_column) == 0) {
+  floor_columns <- intersect(c("mortality_floor", "other_floor",
+                               "arabiensis_floor"),
+                             colnames(draws[[1]]))
+  if (length(floor_columns) == 0) {
     return(NULL)
   }
   raw <- attr(draws, "model_info")$raw_draws
@@ -31,13 +35,20 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
             adjusted = as.numeric(result$adjusted))
     })
     values <- do.call(rbind, values)
-    floor <- mean(as.matrix(draws[[chain]])[, floor_column])
-    data.frame(chain = chain, floor = floor,
-               mode = if (floor > high_floor) "high" else "low",
-               log_posterior = mean(values[, "unadjusted"]),
-               log_posterior_max = max(values[, "unadjusted"]),
-               log_posterior_adjusted = mean(values[, "adjusted"]),
-               n_evaluated = nrow(values))
+    floors <- colMeans(as.matrix(draws[[chain]])[, floor_columns,
+                                                 drop = FALSE])
+    row <- data.frame(chain = chain,
+                      floor = if (length(floors) == 1) floors[[1]] else NA,
+                      mode = paste(ifelse(floors > high_floor, "high", "low"),
+                                   collapse = "/"),
+                      log_posterior = mean(values[, "unadjusted"]),
+                      log_posterior_max = max(values[, "unadjusted"]),
+                      log_posterior_adjusted = mean(values[, "adjusted"]),
+                      n_evaluated = nrow(values))
+    if (length(floors) > 1) {
+      row <- cbind(row, as.list(floors))
+    }
+    row
   })
   do.call(rbind, rows)
 }
