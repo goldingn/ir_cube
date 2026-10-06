@@ -4,11 +4,46 @@
 source("R/packages.R")
 source("R/functions.R")
 
+# The 20261005 MTM discriminating concentration download fills missing values
+# of MORTALITY_ADJUSTED with 0: it has no missing values, and all 306 records
+# missing in the 20251031 download are exactly 0, 87 of them labelled
+# susceptible. The papers checked report nonzero mortality for these (#27). So
+# we treat them as missing and drop them, matching on ID against the 20251031
+# download; the 232 zeros already in that download are kept. Set this to FALSE
+# to keep them.
+drop_mtm_filled_mortality <- TRUE
+
+# the records in the `new` MTM download (matched on ID) whose MORTALITY_ADJUSTED
+# is missing in the `old` download and present in the new one
+mtm_filled_mortality <- function(new, old) {
+  old_missing <- read_xlsx(old, sheet = "Data", col_types = "text") %>%
+    filter(is.na(MORTALITY_ADJUSTED)) %>%
+    pull(ID)
+  read_xlsx(new, sheet = "Data", col_types = "text") %>%
+    filter(ID %in% old_missing,
+           !is.na(MORTALITY_ADJUSTED))
+}
+
+mtm_suspect <- mtm_filled_mortality(
+  new = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20261005.xlsx",
+  old = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx")
+dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
+mtm_suspect %>%
+  select(ID, COUNTRY_NAME, YEAR_START, INSECTICIDE_TYPE, SPECIES,
+         MOSQUITO_NUMBER, MORTALITY_ADJUSTED, RESISTANCE_STATUS, CITATION,
+         CITATION_URL) %>%
+  write.csv("outputs/review/mtm_zero_mortality_suspect.csv",
+            row.names = FALSE)
+
 # load data from malaria threat map discrimintating concentraation bioassays and
 # subset to Africa
 ir_dis_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20261005.xlsx",
   sheet = "Data") %>%
+  # drop the suspect zero mortality records, see above
+  filter(
+    !(drop_mtm_filled_mortality & ID %in% mtm_suspect$ID)
+  ) %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
     across(
@@ -73,7 +108,7 @@ ir_dis_mtm_africa <- read_xlsx(
 # load data from malaria threat map intensity concentration bioassays and
 # subset to Africa
 ir_int_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20261005.xlsx",
   sheet = "Data") %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
@@ -830,10 +865,14 @@ ir_everything <- ir_everything %>%
                                           "Anopheles stephensi sl"),
                            "Anopheles stephensi",
                            species),
-         species = if_else(species == "coluzzii (gambiae m)",
+         # S and M molecular forms are An. gambiae s.s. and An. coluzzii
+         # (Coetzee et al. 2013); mixed S/M samples go to complex level
+         species = if_else(species %in% c("coluzzii (gambiae m)",
+                                          "coluzzii_gambiae_m form"),
                            "Anopheles coluzzii",
                            species),
-         species = if_else(species == "gambiae (s)",
+         species = if_else(species %in% c("gambiae (s)",
+                                          "gambiae_s form"),
                            "Anopheles gambiae s.s.",
                            species),
          # standardise complex names
@@ -851,6 +890,7 @@ ir_everything <- ir_everything %>%
                                           "Anopheles gambiae s.l.",
                                           "Anopheles gambiae sl",
                                           "gambiae (S_M)",
+                                          "gambiae_s form_m form",
                                           "Anopheles coluzzii/gambiae"),
                            "gambiae complex",
                            species)
