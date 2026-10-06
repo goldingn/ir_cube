@@ -7,12 +7,18 @@
 #     prior and Jacobian term), against the plain-R betabinomial log likelihood
 #     of the other assays
 # and print the log density itself, for regression checks between versions.
+# With the species model (#47) the predictions are the mixture at each assay's
+# arabiensis share, the map path is checked at the arabiensis fraction r(x),
+# and the plain-R mixture is checked to reduce to one trajectory when the
+# species do not differ.
 #
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
 # (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
 # where p rounds to 1 at assays with survivors, and the log density is NaN)
 # e.g.
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(reversion = FALSE)' \
+#     Rscript R/check_dynamical_model.R
+#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(species = species_options())' \
 #     Rscript R/check_dynamical_model.R
 #
 # Run with the greta 0.6 environment (doc/cv_run_plan.md, section 1).
@@ -180,6 +186,9 @@ if (length(trend_columns) > 0) {
 logit_init_all <- map_logit_init(parameters, countries, regions, df)
 cell_country_index <- match(map_rows$country_name,
                             dimnames(logit_init_all)[[2]])
+# the share of the complex-wide predictions at each map cell (NULL without the
+# species model), and for dynamical_logit(), at each row
+map_share <- prediction_share(model_options, map_rows$cell)
 x_years <- map_x(covariates, seq_len(nrow(map_rows)),
                  max(map_years) - baseline_year + 1)
 clamp <- function(l) pmin(pmax(l, qlogis(1e-12)), qlogis(1 - 1e-12))
@@ -189,12 +198,12 @@ for (k in seq_along(types)) {
                                matrix(logit_init_all[, cell_country_index, k],
                                       1),
                                x_years, map_years - baseline_year + 1,
-                               x_init = covariates$init)
+                               x_init = covariates$init, share = map_share)
   for (y in map_years) {
     rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
                    year_id = y - baseline_year + 1)
     l_rows <- c(dynamical_logit(parameters, rows, df, x_cell_years,
-                                cell_years_index))
+                                cell_years_index, share = map_share))
     l_map <- c(dyn[[as.character(y - baseline_year + 1)]])
     map_difference <- max(map_difference, abs(clamp(l_map) - clamp(l_rows)))
   }
@@ -202,4 +211,35 @@ for (k in seq_along(types)) {
 cat(sprintf("map path vs plain R, logit, %d cells x %d types x %d years: max abs diff %.3g\n",
             nrow(map_rows), length(types), length(map_years), map_difference))
 stopifnot(map_difference < 1e-9)
+
+if (species_on(model_options)) {
+  # identified assays (share 0 or 1) are predicted by one trajectory alone
+  share <- arabiensis_share(df, model_options)
+  cat(sprintf("species: %d assays of arabiensis, %d of other members, %d of the complex (share %.2f-%.2f)\n",
+              sum(share == 1), sum(share == 0), sum(share > 0 & share < 1),
+              min(share[share > 0 & share < 1]),
+              max(share[share > 0 & share < 1])))
+  l_assays <- c(dynamical_logit(parameters, df, df, x_cell_years,
+                                cell_years_index))
+  for (pure in c(0, 1)) {
+    rows <- share == pure
+    l_pure <- c(dynamical_logit(parameters, df[rows, ], df, x_cell_years,
+                                cell_years_index, share = pure))
+    stopifnot(max(abs(clamp(l_assays[rows]) - clamp(l_pure))) < 1e-12)
+  }
+  # with no difference between the species, the mixture is the other
+  # members' trajectory at any share
+  same <- parameters
+  same$gamma_selection[] <- 0
+  if (!is.null(same$gamma_cost)) same$gamma_cost[] <- 0
+  same$arabiensis_floor <- same$mortality_floor
+  rows <- df[seq(1, nrow(df), by = 10), ]
+  l_mixed <- dynamical_logit(same, rows, df, x_cell_years, cell_years_index)
+  l_other <- dynamical_logit(same, rows, df, x_cell_years, cell_years_index,
+                             share = 0)
+  species_difference <- max(abs(clamp(l_mixed) - clamp(l_other)))
+  cat(sprintf("species: no difference between them, mixture vs one trajectory, logit: max abs diff %.3g\n",
+              species_difference))
+  stopifnot(species_difference < 1e-9)
+}
 cat("all checks passed\n")
