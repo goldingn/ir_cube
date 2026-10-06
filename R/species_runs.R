@@ -18,6 +18,12 @@
 #   sp_v3         V3: the species model with the kdr covariate, each species
 #                 with its own band and slopes, no floors
 #   sp_v3_floor   V3f: as V3, a floor for each species, each Beta(1, 4)
+#   sp_v4         V4: V2 with the kdr-dependent floor, plogis(floor_intercept
+#                 + floor_kdr k(x)), the intercept's prior matched to
+#                 Beta(1, 4) (kdr_options(floor = TRUE))
+#   sp_v4_class   V4 class: as V4, with an intercept per insecticide class and
+#                 the kdr term for the pyrethroids and DDT only
+#                 (kdr_options(floor = "class"))
 # Otherwise the default options (d_half 270, reversion estimated), given in
 # full so that a later change of default does not change these fits. The fits
 # with floors start chains 1-2 from the low-floor mode and 3-4 from the
@@ -40,8 +46,8 @@ floor_mode_inits <- paste("temporary/inits_floor_low.RDS",
 species_floors <- "species_options(floors = TRUE, floor_prior = c(1, 4))"
 species_runs <- data.frame(
   name = c("sp_ref_floor", "sp_v1", "sp_v1_floor", "sp_v2", "sp_v2_floor",
-           "sp_v3", "sp_v3_floor"),
-  label = c("B_f", "V1", "V1f", "V2", "V2f", "V3", "V3f"),
+           "sp_v3", "sp_v3_floor", "sp_v4", "sp_v4_class"),
+  label = c("B_f", "V1", "V1f", "V2", "V2f", "V3", "V3f", "V4", "V4_class"),
   options = sprintf("dynamical_model_options(%s)", c(
     "mortality_floor = TRUE, floor_prior = c(1, 4)",
     "species = species_options(floors = FALSE)",
@@ -49,9 +55,13 @@ species_runs <- data.frame(
     "kdr = kdr_options()",
     "mortality_floor = TRUE, floor_prior = c(1, 4), kdr = kdr_options()",
     "species = species_options(floors = FALSE), kdr = kdr_options()",
-    sprintf("species = %s, kdr = kdr_options()", species_floors))),
+    sprintf("species = %s, kdr = kdr_options()", species_floors),
+    paste("mortality_floor = TRUE, floor_prior = c(1, 4),",
+          "kdr = kdr_options(floor = TRUE)"),
+    paste("mortality_floor = TRUE, floor_prior = c(1, 4),",
+          "kdr = kdr_options(floor = \"class\")"))),
   inits = c(floor_mode_inits, "", floor_mode_inits, "", floor_mode_inits, "",
-            floor_mode_inits))
+            floor_mode_inits, floor_mode_inits, floor_mode_inits))
 
 # One row per pod job, as net_grid_jobs() makes them
 species_run_jobs <- function(code_ref, threads = 8) {
