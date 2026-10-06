@@ -68,8 +68,8 @@ slices <- list()
 grids <- list()
 for (mode in names(modes)) {
   centre <- colMeans(free_states(fit, built, modes[[mode]]))
-  centre_floors <- built$model$dag$trace_values(
-    matrix(centre, nrow = 1))[1, floors]
+  centre_floors <- floor_values(built$model$dag$trace_values(
+    matrix(centre, nrow = 1))[, floors, drop = FALSE])[1, ]
   for (name in floors) {
     floor_free_check(built$model, centre, name)
     states <- matrix(centre, length(floor_grid), length(centre), byrow = TRUE)

@@ -65,7 +65,8 @@ figure_dir <- "figures/species_runs"
 dir.create(points_dir, showWarnings = FALSE, recursive = TRUE)
 dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
 point_file <- function(name, i) {
-  file.path(points_dir, sprintf("%s_%02d.rds", name, i))
+  file.path(points_dir, sprintf("%s_%02d.rds",
+                                gsub("[^A-Za-z0-9_]+", "_", name), i))
 }
 
 
@@ -411,8 +412,8 @@ for (name in profile_floors) {
     eigenvalues <- eigen(hessian$H, symmetric = TRUE, only.values = TRUE)$values
     positive <- all(eigenvalues > 0)
     half_log_det <- if (positive) -0.5 * sum(log(eigenvalues)) else NA_real_
-    floors_at <- noncentred$model$dag$trace_values(
-      matrix(polished$free, nrow = 1))[1, floors]
+    floors_at <- floor_values(noncentred$model$dag$trace_values(
+      matrix(polished$free, nrow = 1))[, floors, drop = FALSE])[1, ]
     stopifnot(abs(floors_at[[name]] - f) < 1e-10)
     point <- list(
       floor = name, index = i, value = f, u = qlogis(f),
