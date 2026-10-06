@@ -322,8 +322,9 @@ full fit — are partly a comparison between modes.
 
 ### Sensitivity fits
 
-Each is the full fit with one change to `dynamical_model_options()`, at half
-length (4 chains, 2,000 warmup + 1,500 samples), in both the constrained refit
+Each is the full fit with one change to `dynamical_model_options()` (whose
+defaults were then d½ 50 and an estimated floor; since #37, d½ 270 and no
+floor), at half length (4 chains, 2,000 warmup + 1,500 samples), in both the constrained refit
 and round 2 (floor Beta(1, 49)):
 
 | fit | options |

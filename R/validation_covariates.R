@@ -8,7 +8,8 @@ source("R/dynamical_model.R")
 
 # the default model terms, or an R expression for them in
 # IR_CUBE_MODEL_OPTIONS (docker/run_pod_job.sh), unless the calling script has
-# set model_options
+# set model_options. A fold paired with a full fit made with other options
+# (e.g. before #37 changed the defaults) needs that fit's options
 if (!exists("model_options")) {
   model_options <- eval(str2lang(Sys.getenv("IR_CUBE_MODEL_OPTIONS",
                                             "dynamical_model_options()")))

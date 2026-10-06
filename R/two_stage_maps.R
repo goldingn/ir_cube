@@ -94,6 +94,14 @@ if (step == "prepare") {
   # the current scripts build, or its draws cannot be paired with the assays
   fit_env <- new.env()
   load("temporary/fitted_model.RData", envir = fit_env)
+  # the design matrix rebuilt with the fit's own selection design, not that of
+  # the default options (R/validation_covariates.R)
+  selection <- selection_design_matrix(unique_cells, baseline_year,
+                                       final_data_year,
+                                       fit_env$model_options$selection_columns)
+  x_cell_years <- selection$x_cell_years
+  cell_years_index <- selection$cell_years_index
+  rm(selection)
   stopifnot(
     isTRUE(all.equal(fit_env$df, df)),
     identical(fit_env$types, types),

@@ -46,10 +46,12 @@ for (i in seq_len(last_expr)) {
 
 # the trended designs (selection_design()): population by the encounter
 # transform of density (the default), d / (d + d_half), raw or log, times
-# g_dom, and the crops times g_ag, both linear, 0 in 1995 and 1 in 2025
+# g_dom, and the crops times g_ag, both linear, 0 in 1995 and 1 in 2025; d_half
+# 50, the value of this analysis (the default is now 270, #37)
 x_trend <- map(c("encounter", "saturating", "raw", "log"), function(pop) {
   selection_design_matrix(unique_cells, baseline_year, final_data_year,
-                          selection_design(pop = pop))$x_cell_years
+                          selection_design(pop = pop,
+                                           pop_d_half = 50))$x_cell_years
 })
 x_trend <- do.call(cbind, c(x_trend[1],
                             map(x_trend[-1], ~ .x[, 3, drop = FALSE])))

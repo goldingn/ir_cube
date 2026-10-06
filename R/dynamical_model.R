@@ -17,9 +17,14 @@ source("R/windowed_hmc.R")
 
 # model options ------------------------------------------------------------
 
-# Switches for model terms. The defaults are the model for the refit.
+# Switches for model terms. The defaults are the preferred model of #37:
+# population d_half 270 (selection_design()) and no mortality floor. A fit's
+# own options are saved with it (model_options), and the scripts that use a
+# fit take them from there, not from these defaults.
 #   mortality_floor   TRUE for an estimated floor on bioassay mortality, the
-#                     mortality of a fully resistant population (#14)
+#                     mortality of a fully resistant population (#14); FALSE
+#                     (the default) for none, while the floor has two modes
+#                     (#37). The fits before #37 estimated it
 #   init_covariates   names of static covariates of the initial state, from
 #                     init_covariate_names(selection_columns), or NULL for
 #                     none (#19)
@@ -29,7 +34,7 @@ source("R/windowed_hmc.R")
 #                     against it
 #   reversion         reversion to susceptibility (#24): "estimated" for one
 #                     rate per class, or FALSE for none
-dynamical_model_options <- function(mortality_floor = TRUE,
+dynamical_model_options <- function(mortality_floor = FALSE,
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
