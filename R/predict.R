@@ -125,6 +125,10 @@ report("%i cells: %i without a country and %i in a country outside the lookup (b
 
 chunks <- split(seq_len(n_cells), ceiling(seq_len(n_cells) / chunk_size))
 
+# the standardised kdr at every cell, with the kdr covariate (#47; NULL
+# without it)
+cell_kdr <- prediction_kdr(options, cells)
+
 # the arabiensis share of each map (#47): r(x) for the whole complex, and with
 # the species model, 1 and 0 for each species alone; and where each is written
 species <- species_on(options)
@@ -164,7 +168,8 @@ predict_output <- function(output) {
       trajectories <- dynamical_trajectories(
         parameters, k, matrix(logit_init[, cell_country_index[ok], k], n_draws),
         x_chunk, seq_along(years_predict),
-        x_init = covariates$init[ok, , drop = FALSE])
+        x_init = covariates$init[ok, , drop = FALSE],
+        kdr = if (!is.null(cell_kdr)) cell_kdr[ok, , drop = FALSE])
       for (mix in names(mix_share)) {
         share <- mix_share[[mix]]
         if (length(share) > 1) share <- share[ok]

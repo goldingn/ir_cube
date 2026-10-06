@@ -12,6 +12,12 @@
 #   sp_v1         V1: the species model, no floors
 #   sp_v1_floor   V1f: the species model, a floor for each species, each
 #                 Beta(1, 4)
+#   sp_v2         V2: one trajectory, with the kdr covariate (kdr_options(),
+#                 R/kdr_covariate.R; the "complex" band), no floor
+#   sp_v2_floor   V2f: as V2, the floor estimated with prior Beta(1, 4)
+#   sp_v3         V3: the species model with the kdr covariate, each species
+#                 with its own band and slopes, no floors
+#   sp_v3_floor   V3f: as V3, a floor for each species, each Beta(1, 4)
 # Otherwise the default options (d_half 270, reversion estimated), which the
 # option strings leave out: a change of default would change a rerun. The fits
 # with floors start chains 1-2 from the low-floor mode and 3-4 from the
@@ -29,15 +35,21 @@
 
 floor_mode_inits <- paste("temporary/inits_floor_low.RDS",
                           "temporary/inits_floor_high.RDS", sep = ",")
+species_floors <- "species_options(floors = TRUE, floor_prior = c(1, 4))"
 species_runs <- data.frame(
-  name = c("sp_ref_floor", "sp_v1", "sp_v1_floor"),
-  label = c("B_f", "V1", "V1f"),
-  options = c(
-    "dynamical_model_options(mortality_floor = TRUE, floor_prior = c(1, 4))",
-    "dynamical_model_options(species = species_options(floors = FALSE))",
-    paste0("dynamical_model_options(species = species_options(floors = TRUE, ",
-           "floor_prior = c(1, 4)))")),
-  inits = c(floor_mode_inits, "", floor_mode_inits))
+  name = c("sp_ref_floor", "sp_v1", "sp_v1_floor", "sp_v2", "sp_v2_floor",
+           "sp_v3", "sp_v3_floor"),
+  label = c("B_f", "V1", "V1f", "V2", "V2f", "V3", "V3f"),
+  options = sprintf("dynamical_model_options(%s)", c(
+    "mortality_floor = TRUE, floor_prior = c(1, 4)",
+    "species = species_options(floors = FALSE)",
+    sprintf("species = %s", species_floors),
+    "kdr = kdr_options()",
+    "mortality_floor = TRUE, floor_prior = c(1, 4), kdr = kdr_options()",
+    "species = species_options(floors = FALSE), kdr = kdr_options()",
+    sprintf("species = %s, kdr = kdr_options()", species_floors))),
+  inits = c(floor_mode_inits, "", floor_mode_inits, "", floor_mode_inits, "",
+            floor_mode_inits))
 
 # One row per pod job, with its environment (docker/README.md)
 species_run_jobs <- function(code_ref, threads = 8) {
@@ -84,7 +96,7 @@ if (sys.nframe() == 0) {
   for (expression in species_runs$options) {
     check_dynamical_model_options(eval(str2lang(expression)))
   }
-  inputs <- c(arabiensis_fraction_file,
+  inputs <- c(arabiensis_fraction_file, kdr_total_file,
               unlist(strsplit(species_runs$inits[nzchar(species_runs$inits)],
                               ",")))
   missing <- inputs[!file.exists(inputs)]

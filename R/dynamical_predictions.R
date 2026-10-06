@@ -14,11 +14,13 @@
 # The logit draws are of predicted mortality: q_t, or with a mortality floor
 # f, f + (1 - f) q_t. With the species model (#47), the one cumulative log
 # fitness gives the states of the other members of the complex and of
-# arabiensis (species_mortality() in R/dynamical_model.R), and the
+# arabiensis (outer_mortality() in R/dynamical_model.R), and the
 # predictions are of their mixture at a share of arabiensis: each bioassay's
 # own (arabiensis_share(), R/species.R) in dynamical_logit(), and one given
 # per cell in dynamical_logit_cells() (r(x) for the whole complex, 0 or 1 for
-# one species).
+# one species). With the kdr covariate (#47), each trajectory's cumulative log
+# fitness and reversion are multiplied by its factors at the cell's kdr, by
+# the same outer form.
 
 source("R/dynamical_model.R")
 # thin_draws() and max_draws
@@ -150,6 +152,9 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #                        draws, with the species model (#47; NULL without it,
 #                        and gamma_cost and the floors NULL when not in the
 #                        model; see dynamical_terms())
+#   delta_selection, delta_cost, and so on (kdr_slope_names)
+#                        draws, with the kdr covariate (#47; those not in the
+#                        model NULL)
 #   init_min             n_types, init_frac_min
 #   x_cells_init         the fit's initial-state covariates, one row per
 #                        cell_id (NULL for none)
@@ -173,7 +178,9 @@ dynamical_parameter_draws <- function(fold,
               draws_matrix = draws_matrix)
   stopifnot(!is.null(options),
             identical(dim(v$logit_init_mean), c(n_draws, n_types)),
-            species_on(options) == !is.null(v$gamma_selection))
+            species_on(options) == !is.null(v$gamma_selection),
+            kdr_on(options) ==
+              any(kdr_slope_names %in% names(v)))
 
   reversion <- !isFALSE(options$reversion)
   terms <- dynamical_terms_draws(
@@ -202,6 +209,7 @@ dynamical_parameter_draws <- function(fold,
        arabiensis_floor = if (!is.null(v$arabiensis_floor)) {
          c(v$arabiensis_floor)
        },
+       kdr_slopes = lapply(v[intersect(kdr_slope_names, names(v))], c),
        init_min = init_frac_constants(types)$min,
        x_cells_init = select_init_covariates(fold$x_cells_init, options),
        variables = v,
@@ -225,6 +233,7 @@ subset_draws <- function(parameters, draws) {
                  "arabiensis_floor")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
+  parameters$kdr_slopes <- lapply(parameters$kdr_slopes, rows)
   parameters$variables <- lapply(parameters$variables, rows)
   parameters$n_draws <- length(draws)
   parameters
@@ -259,11 +268,14 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
 #               arabiensis share of the predictions at each cell (length 1
 #               or cells): r(x) for the whole complex (prediction_share()),
 #               0 for the other members or 1 for arabiensis
+#   kdr         with the kdr covariate (#47) only, and needed there: the
+#               standardised kdr at each cell, cells x kdr_bands()
+#               (prediction_kdr())
 # Returns a list named by years_keep of draws x cells logit mortality.
 dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
-                                  x_init = NULL, share = NULL) {
+                                  x_init = NULL, share = NULL, kdr = NULL) {
   mix_trajectories(dynamical_trajectories(parameters, k, logit_init, x,
-                                          years_keep, x_init),
+                                          years_keep, x_init, kdr),
                    share)
 }
 
@@ -289,10 +301,11 @@ mix_trajectories <- function(trajectories, share) {
 # lists of two of them, "other" (the other members of the complex) and
 # "arabiensis", whose log fitness from selection is the other members' times
 # exp(gamma_selection) and reversion kappa theirs times exp(gamma_cost); each
-# species has its own mortality floor, if any (species_mortality(),
-# R/dynamical_model.R). One cumulative log fitness serves both.
+# species has its own mortality floor, if any. With the species model or the
+# kdr covariate, this is the outer form of outer_mortality()
+# (R/dynamical_model.R): one cumulative log fitness serves every trajectory.
 dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
-                                   x_init = NULL) {
+                                   x_init = NULL, kdr = NULL) {
   n_cells <- dim(x)[1]
   n_draws <- parameters$n_draws
   stopifnot(ncol(logit_init) == n_cells, nrow(logit_init) == n_draws,
@@ -303,28 +316,56 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
   effect <- matrix(parameters$effect_type[, , k], nrow = n_draws)
   kappa <- parameters$kappa_type[, k]
   species <- species_on(parameters$options)
+  outer <- species || kdr_on(parameters$options)
+  if (kdr_on(parameters$options)) {
+    if (is.null(kdr)) {
+      stop("the kdr covariate (#47) needs the standardised kdr at the ",
+           "cells: give dynamical_logit_cells() kdr, e.g. prediction_kdr()")
+    }
+    stopifnot(nrow(kdr) == n_cells)
+  } else {
+    stopifnot(is.null(kdr))
+  }
+  # logit mortality of one trajectory of the outer form, from `rows`
+  # (outer_logit()), with species offsets gamma (NULL for none), the kdr of
+  # `band` and the slopes named with `suffix` (kdr_slope_names), and `floor`
+  slopes <- parameters$kdr_slopes
+  trajectory <- function(rows, gamma_selection, gamma_cost, band, suffix,
+                         floor) {
+    k_band <- if (!is.null(kdr)) kdr[, band]
+    floored_logit(
+      outer_logit(rows,
+                  log_selection = outer_log_multiplier(
+                    gamma_selection,
+                    slopes[[paste0("delta_selection", suffix)]], k_band),
+                  log_cost = outer_log_multiplier(
+                    gamma_cost, slopes[[paste0("delta_cost", suffix)]],
+                    k_band)),
+      floor)
+  }
   cumulative <- 0
   out <- list()
   for (t in seq_len(max(years_keep))) {
     # log1p because the selection term can be tiny
     log_w <- log1p(effect %*% t(matrix(x[, t, ], nrow = n_cells)))
     cumulative <- cumulative + log_w
-    if (species) {
-      # cumulative is the log fitness alone, and the multipliers are one per
-      # draw, so per row
+    if (outer) {
+      # cumulative is the log fitness alone; the multipliers are one per draw
+      # (gamma), or per draw and cell (with kdr)
       if (t %in% years_keep) {
-        reversion <- reversion_arabiensis <- 0
-        if (!is.null(kappa)) {
-          reversion <- t * kappa
-          reversion_arabiensis <- exp(parameters$gamma_cost) * reversion
+        rows <- list(logit_init = logit_init, cumulative = cumulative,
+                     reversion = if (!is.null(kappa)) t * kappa)
+        out[[as.character(t)]] <- if (!species) {
+          trajectory(rows, NULL, NULL, "complex", "",
+                     parameters$mortality_floor)
+        } else {
+          list(other = trajectory(rows, NULL, NULL, "other", "_other",
+                                  parameters$other_floor),
+               arabiensis = trajectory(rows, parameters$gamma_selection,
+                                       parameters$gamma_cost, "arabiensis",
+                                       "_arabiensis",
+                                       parameters$arabiensis_floor))
         }
-        out[[as.character(t)]] <- list(
-          other = floored_logit(logit_init - cumulative - reversion,
-                                parameters$other_floor),
-          arabiensis = floored_logit(
-            logit_init - exp(parameters$gamma_selection) * cumulative -
-              reversion_arabiensis,
-            parameters$arabiensis_floor))
       }
       next
     }
@@ -348,6 +389,7 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
 # With the species model (#47), the prediction at each row is the mixture at
 # its arabiensis share, `share` (one per row, or one for all), by default the
 # bioassay's own (arabiensis_share(): the rows then need species and cell).
+# With the kdr covariate, each cell's kdr is that of its mask cell in `df`.
 dynamical_logit <- function(parameters, rows, df, x_cell_years,
                             cell_years_index, max_block = 2.5e7,
                             share = NULL) {
@@ -359,6 +401,10 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
   }
   cell_country <- dynamical_lookups(df)$cell_country_lookup
   stopifnot(!anyNA(cell_country[rows$cell_id]))
+  # the standardised kdr at each cell_id, NULL without the kdr covariate
+  kdr_cells <- prediction_kdr(parameters$options,
+                              df$cell[match(seq_len(max(df$cell_id)),
+                                            df$cell_id)])
 
   # row of x_cell_years for each (cell, year)
   x_row <- matrix(NA_integer_, max(cell_years_index$cell_id), n_times)
@@ -400,7 +446,8 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
         matrix(parameters$logit_init_relative[, cell_country[cells], k],
                nrow = n_draws),
         x, years_keep,
-        x_init = parameters$x_cells_init[cells, , drop = FALSE])
+        x_init = parameters$x_cells_init[cells, , drop = FALSE],
+        kdr = if (!is.null(kdr_cells)) kdr_cells[cells, , drop = FALSE])
       for (t in years_keep) {
         at_t <- target[unique_rows$year_id[target] == t]
         columns <- match(unique_rows$cell_id[at_t], cells)
