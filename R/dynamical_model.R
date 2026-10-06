@@ -89,6 +89,11 @@ check_dynamical_model_options <- function(options) {
     stop("with the species model, the floors are set by ",
          "species_options(floors = ); leave mortality_floor FALSE")
   }
+  if (!isFALSE(kdr_floor(options)) &&
+      (!isTRUE(options$mortality_floor) || species_on(options))) {
+    stop("the kdr-dependent floor (kdr_options(floor = )) replaces the ",
+         "constant floor: it needs mortality_floor = TRUE and no species model")
+  }
   invisible(options)
 }
 
@@ -207,6 +212,22 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     list(mortality_floor = beta(options$floor_prior[1],
                                 options$floor_prior[2]))
   }
+  # The kdr-dependent floor (#47; kdr_options(floor = )), in its place:
+  # plogis(floor_intercept + floor_kdr k(x)), with one intercept, or one per
+  # class (floor = "class"). The intercept, the logit floor at the mean kdr,
+  # has the normal prior with the mean and variance of the logit of a
+  # Beta(floor_prior) variable, digamma(a) - digamma(b) and trigamma(a) +
+  # trigamma(b) (for Beta(1, 4), N(-1.83, 1.39^2)); the slope N(0, 1)
+  if (!isFALSE(kdr_floor(options))) {
+    prior <- logit_beta_moments(options$floor_prior)
+    floor <- list(
+      floor_intercept = if (isTRUE(kdr_floor(options))) {
+        normal(prior$mean, prior$sd)
+      } else {
+        normal(prior$mean, prior$sd, dim = n_classes)
+      },
+      floor_kdr = normal(0, 1))
+  }
 
   # Coefficients of the standardised initial-state covariates on the logit
   # relative initial state, per type. Independent N(0, 1) rather than
@@ -303,6 +324,12 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   out
 }
 
+# The mean and sd of logit(f) for f ~ Beta(shapes[1], shapes[2])
+logit_beta_moments <- function(shapes) {
+  list(mean = digamma(shapes[1]) - digamma(shapes[2]),
+       sd = sqrt(trigamma(shapes[1]) + trigamma(shapes[2])))
+}
+
 # The prior of the countries' logit relative initial states (#25), N(mean,
 # sd), as list(mean, sd), both countries x types: mean, the region's level,
 # logit_init_mean plus init_region_sd times its deviation init_region_raw,
@@ -384,7 +411,8 @@ init_covariate_shift <- function(init_coef, options) {
 # cost (outer_mortality()), and other_floor and arabiensis_floor, the floors
 # of the other members of the complex and of arabiensis (NULL for none); the
 # other terms are shared by both species. With the kdr covariate, also its
-# slopes (kdr_slope_names, outer_mortality()). logit_init_country is the
+# slopes (kdr_slope_names, outer_mortality()), and with the kdr-dependent
+# floor, floor_intercept and floor_kdr. logit_init_country is the
 # initial state without covariates, i.e. at a cell whose covariates are all 0
 # (the mean).
 #
@@ -442,7 +470,8 @@ dynamical_terms <- function(v, classes_index, types,
                            arabiensis_floor = v$arabiensis_floor))
   }
   if (kdr_on(options)) {
-    terms <- c(terms, v[intersect(kdr_slope_names, names(v))])
+    terms <- c(terms, v[intersect(c(kdr_slope_names, "floor_intercept",
+                                    "floor_kdr"), names(v))])
   }
   terms
 }
@@ -536,9 +565,9 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
   # reversion rate starts around 1 per year, which drives p to 1 at most
   # assays and stalled a short run at its initial values. The species
   # multipliers start at no difference between the species, and both species'
-  # floors at the cached mortality_floor if there is one (so that cached
-  # values in either floor mode, R/floor_mode_inits.R, start both there), or
-  # else at 0.02 (#47)
+  # floors, and the kdr-dependent floor at the mean kdr, at the cached
+  # mortality_floor if there is one (so that cached values in either floor
+  # mode, R/floor_mode_inits.R, start there), or else at 0.02 (#47)
   species_floor <- if (!is.null(cached$mortality_floor)) {
     c(cached$mortality_floor)[1]
   } else {
@@ -547,7 +576,8 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
   starts <- c(mortality_floor = 0.02, init_coef = -0.05, reversion_rate = 0.01,
               gamma_selection = 0, gamma_cost = 0,
               other_floor = species_floor, arabiensis_floor = species_floor,
-              setNames(rep(0, length(kdr_slope_names)), kdr_slope_names))
+              setNames(rep(0, length(kdr_slope_names)), kdr_slope_names),
+              floor_intercept = qlogis(species_floor), floor_kdr = 0)
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
@@ -651,6 +681,16 @@ dynamical_chain_inits <- function(files, variables, levels, columns,
 }
 
 
+# The floors in the columns of `x` (named), on the floor's scale: as they are
+# for mortality_floor, other_floor and arabiensis_floor, and plogis() of the
+# kdr-dependent floor's intercepts (floor_intercept, the floor at the mean
+# kdr; #47)
+floor_values <- function(x) {
+  intercept <- grepl("^floor_intercept", colnames(x))
+  x[, intercept] <- plogis(x[, intercept])
+  x
+}
+
 # Bioassay mortality from the fraction susceptible q, with the floor f (a
 # scalar, or one per draw conformable with q; NULL for none): f + (1 - f) q.
 # For greta arrays or plain R.
@@ -742,6 +782,25 @@ build_dynamical_model <- function(train_df,
     options$kdr <- standardise_kdr(options$kdr, cells)
   }
   kdr_cells <- prediction_kdr(options, cells)
+  # with the kdr-dependent floor by class, whether each class has the kdr
+  # term, recorded in the options for the plain-R predictions
+  if (identical(kdr_floor(options), "class")) {
+    options$kdr$floor_classes <- lookups$levels$classes %in% kdr_floor_classes
+  }
+  # the kdr-dependent floor at rows with cell_id `cell` and type_id `type`, or
+  # NULL without it
+  row_floor <- function(cell, type) {
+    if (isFALSE(kdr_floor(options))) {
+      return(NULL)
+    }
+    k <- kdr_cells[cell, "complex"]
+    class <- rep(1L, length(type))
+    if (identical(kdr_floor(options), "class")) {
+      class <- classes_index[type]
+      k <- k * options$kdr$floor_classes[class]
+    }
+    kdr_floor_value(terms$floor_intercept[class], terms$floor_kdr, k)
+  }
   x_init <- select_init_covariates(x_cells_init, options, n_unique_cells)
   # the centred country levels are at each country's mean initial-state
   # covariates over its modelled cells (all of them, whatever the fold; the
@@ -790,7 +849,8 @@ build_dynamical_model <- function(train_df,
                            pairs$type_id, lookups$cell_country_lookup,
                            n_times, types, x_init,
                            row_pair = pair_index, row_year = rows$year_id,
-                           row_kdr = kdr_cells[rows$cell_id, , drop = FALSE])
+                           row_kdr = kdr_cells[rows$cell_id, , drop = FALSE],
+                           row_floor = row_floor(rows$cell_id, rows$type_id))
       if (!species) {
         return(p)
       }
@@ -826,7 +886,9 @@ build_dynamical_model <- function(train_df,
                          lookups$cell_country_lookup, n_times, types,
                          x_init, row_pair = row_pair,
                          row_year = rep(seq_len(n_times), each = n_pairs),
-                         row_kdr = kdr_cells[row_cell, , drop = FALSE])
+                         row_kdr = kdr_cells[row_cell, , drop = FALSE],
+                         row_floor = row_floor(row_cell,
+                                               pairs$type_id[row_pair]))
     if (species) {
       p <- switch(species_mix,
                   arabiensis = p$arabiensis,
@@ -1084,11 +1146,12 @@ pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
 # multiplier on the selection effects. With every log multiplier 0 this is
 # the closed form. Each species has its own mortality floor, other_floor and
 # arabiensis_floor (none without species_options(floors = TRUE)); one
-# trajectory has mortality_floor.
+# trajectory has mortality_floor, or row_floor, the kdr-dependent floor at each
+# row (kdr_floor_value()), if given.
 outer_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
                             cell_country_lookup, n_times, types,
                             x_init = NULL, row_pair, row_year,
-                            row_kdr = NULL) {
+                            row_kdr = NULL, row_floor = NULL) {
   inputs <- pair_inputs(terms, x_cell_years, pair_cell, pair_type,
                         cell_country_lookup, n_times, types, x_init)
 
@@ -1127,7 +1190,9 @@ outer_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
     floored_mortality(ilogit(logit_q), floor)
   }
   if (is.null(terms$gamma_selection)) {
-    return(trajectory(NULL, NULL, "complex", "", terms$mortality_floor))
+    return(trajectory(NULL, NULL, "complex", "",
+                      if (is.null(row_floor)) terms$mortality_floor else
+                        row_floor))
   }
   list(other = trajectory(NULL, NULL, "other", "_other", terms$other_floor),
        arabiensis = trajectory(terms$gamma_selection, terms$gamma_cost,

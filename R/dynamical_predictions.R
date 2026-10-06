@@ -155,9 +155,11 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #                        draws, with the species model (#47; NULL without it,
 #                        and gamma_cost and the floors NULL when not in the
 #                        model; see dynamical_terms())
-#   delta_selection, delta_cost, and so on (kdr_slope_names)
-#                        draws, with the kdr covariate (#47; those not in the
-#                        model NULL)
+#   kdr_slopes           the slopes of the kdr covariate (#47; kdr_slope_names),
+#                        a list of draws each, empty without it
+#   floor_intercept      draws x 1 or classes, and
+#   floor_kdr            draws, the kdr-dependent floor (#47; NULL without
+#                        it; kdr_floor_value())
 #   init_min             n_types, init_frac_min
 #   x_cells_init         the fit's initial-state covariates, one row per
 #                        cell_id (NULL for none)
@@ -213,6 +215,10 @@ dynamical_parameter_draws <- function(fold,
          c(v$arabiensis_floor)
        },
        kdr_slopes = lapply(v[intersect(kdr_slope_names, names(v))], c),
+       floor_intercept = if (!is.null(v$floor_intercept)) {
+         matrix(v$floor_intercept, n_draws)
+       },
+       floor_kdr = if (!is.null(v$floor_kdr)) c(v$floor_kdr),
        init_min = init_frac_constants(types)$min,
        x_cells_init = select_init_covariates(fold$x_cells_init, options),
        variables = v,
@@ -233,7 +239,7 @@ subset_draws <- function(parameters, draws) {
   for (name in c("effect_type", "logit_init_relative", "init_coef",
                  "rho_types", "mortality_floor", "kappa_type",
                  "gamma_selection", "gamma_cost", "other_floor",
-                 "arabiensis_floor")) {
+                 "arabiensis_floor", "floor_intercept", "floor_kdr")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
   parameters$kdr_slopes <- lapply(parameters$kdr_slopes, rows)
@@ -329,6 +335,19 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
   } else {
     stopifnot(is.null(kdr))
   }
+  # the floor of one trajectory: the constant mortality_floor, or the
+  # kdr-dependent floor at the cells, draws x cells (kdr_floor_value())
+  floor <- parameters$mortality_floor
+  if (!isFALSE(kdr_floor(parameters$options))) {
+    class <- 1L
+    k_floor <- kdr[, "complex"]
+    if (identical(kdr_floor(parameters$options), "class")) {
+      class <- parameters$classes_index[k]
+      k_floor <- k_floor * parameters$options$kdr$floor_classes[class]
+    }
+    floor <- kdr_floor_value(parameters$floor_intercept[, class],
+                             parameters$floor_kdr, k_floor)
+  }
   # logit mortality of one trajectory of the outer form, from `rows`
   # (outer_logit()), with species offsets gamma (NULL for none), the kdr of
   # `band` and the slopes named with `suffix` (kdr_slope_names), and `floor`
@@ -359,8 +378,7 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
         rows <- list(logit_init = logit_init, cumulative = cumulative,
                      reversion = if (!is.null(kappa)) t * kappa)
         out[[as.character(t)]] <- if (!species) {
-          trajectory(rows, NULL, NULL, "complex", "",
-                     parameters$mortality_floor)
+          trajectory(rows, NULL, NULL, "complex", "", floor)
         } else {
           list(other = trajectory(rows, NULL, NULL, "other", "_other",
                                   parameters$other_floor),

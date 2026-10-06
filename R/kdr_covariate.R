@@ -15,12 +15,32 @@ kdr_total_file <- "data/clean/kdr_total_2015.tif"
 # species model, one pair of slopes and the "complex" band; with it, a pair
 # for each species (kdr_slope_names) and each species' own band.
 #   file    the map
+#   floor   FALSE (the default) for a constant mortality floor (or none);
+#           TRUE for a floor that depends on kdr, plogis(floor_intercept +
+#           floor_kdr k(x)), in place of the constant mortality_floor; "class"
+#           for one floor_intercept per insecticide class, with the kdr term
+#           only for the classes kdr gives resistance to (kdr_floor_classes:
+#           pyrethroids and DDT). Both need mortality_floor = TRUE and no
+#           species model (check_dynamical_model_options())
 # build_dynamical_model() adds centre and scale, the mean and sd of
 # logit(kdr) of the "complex" band over the modelled bioassay cells, which
 # standardise every band, so that the species' k are on one scale and their
-# slopes comparable
-kdr_options <- function(file = kdr_total_file) {
-  list(file = file)
+# slopes comparable; and with floor = "class", floor_classes, whether each
+# class (in class_id order) has the kdr term
+kdr_options <- function(file = kdr_total_file, floor = FALSE) {
+  list(file = file, floor = floor)
+}
+
+# the insecticide classes whose floor depends on kdr with floor = "class":
+# kdr gives resistance to the pyrethroids and DDT
+kdr_floor_classes <- c("Pyrethroids", "Organochlorines")
+
+# whether a model's options have the kdr-dependent floor, and its kind: FALSE,
+# TRUE (one intercept) or "class". kdr options saved before it have no floor
+# element, and have none
+kdr_floor <- function(options) {
+  if (!kdr_on(options) || is.null(options$kdr$floor)) FALSE else
+    options$kdr$floor
 }
 
 # The slopes of the kdr covariate (dynamical_variables()): one pair without
@@ -43,8 +63,10 @@ check_kdr_options <- function(kdr) {
   stopifnot(
     is.list(kdr),
     all(names(kdr_options()) %in% names(kdr)),
-    all(names(kdr) %in% c(names(kdr_options()), "centre", "scale")),
+    all(names(kdr) %in% c(names(kdr_options()), "centre", "scale",
+                          "floor_classes")),
     is.character(kdr$file), length(kdr$file) == 1,
+    isFALSE(kdr$floor) || isTRUE(kdr$floor) || identical(kdr$floor, "class"),
     is.null(kdr$centre) || (is.numeric(kdr$centre) && length(kdr$centre) == 1),
     is.null(kdr$scale) || (is.numeric(kdr$scale) && length(kdr$scale) == 1 &&
                              kdr$scale > 0))
@@ -80,6 +102,19 @@ standardise_kdr <- function(kdr, cells) {
   kdr$centre <- mean(l)
   kdr$scale <- stats::sd(l)
   kdr
+}
+
+# The kdr-dependent floor (kdr_options(floor = )) at rows with floor
+# intercepts `intercept` (the intercept of each row's class), slope `slope`
+# and standardised kdr `k` (0 where the row's class has no kdr term):
+# plogis(intercept + slope k). For greta arrays (one element per row) or
+# plain R (intercept and slope one per draw, k one per cell, giving draws x
+# cells)
+kdr_floor_value <- function(intercept, slope, k) {
+  if (inherits(slope, "greta_array")) {
+    return(ilogit(intercept + slope * k))
+  }
+  plogis(intercept + outer(slope, k))
 }
 
 # The standardised kdr k(x) of a model with `options` at mask cells `cells`,
