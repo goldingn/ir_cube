@@ -24,6 +24,14 @@
 #   outputs/ir_maps/<type>/ir_<year>_susceptibility_sd.tif  posterior SD
 # llin_effective is the mortality of each draw weighted over the active
 # ingredients by temporary/ingredient_weights.RDS.
+#
+# With the species model (#47), those maps are of the whole complex: the
+# mixture of the two species' mortality at the arabiensis fraction r(x) of
+# each cell (prediction_share(), R/species.R). Each species alone is mapped
+# too, in the same layout under outputs/ir_maps_arabiensis/ and
+# outputs/ir_maps_other/ (the other members of the complex), from the same
+# recursion. That holds three cells x years means and SDs per worker rather
+# than one, about 1.7 GB more per worker.
 
 source("R/greta_setup.R")
 start_greta()
@@ -113,6 +121,18 @@ report("%i cells: %i without a country and %i in a country outside the lookup (b
 
 chunks <- split(seq_len(n_cells), ceiling(seq_len(n_cells) / chunk_size))
 
+# the arabiensis share of each map (#47): r(x) for the whole complex, and with
+# the species model, 1 and 0 for each species alone; and where each is written
+species <- species_on(options)
+mix_share <- list(complex = prediction_share(options, cells))
+if (species) {
+  mix_share$arabiensis <- 1
+  mix_share$other <- 0
+}
+mix_dir <- c(complex = output_dir,
+             arabiensis = paste0(output_dir, "_arabiensis"),
+             other = paste0(output_dir, "_other"))
+
 
 # predictions ----------------------------------------------------------------
 
@@ -123,37 +143,46 @@ stopifnot(all(names(ingredient_weights) %in% types))
 outputs <- c(list(llin_effective = ingredient_weights),
              lapply(setNames(types, types), function(type) setNames(1, type)))
 
-# posterior mean and SD of one output at every cell and year, written as one
-# raster per year
+# posterior mean and SD of one output at every cell and year, for each
+# species mix, written as one raster per year
 predict_output <- function(output) {
   weights <- outputs[[output]]
-  mean_out <- sd_out <- matrix(NA_real_, n_cells, length(years_predict))
+  empty <- matrix(NA_real_, n_cells, length(years_predict))
+  mean_out <- sd_out <- lapply(mix_share, function(share) empty)
+  rm(empty)
   for (chunk in chunks) {
     ok <- chunk[!is.na(cell_country_index[chunk])]
     if (length(ok) == 0) next
-    p <- NULL
+    p <- list()
     x_chunk <- map_x(covariates, ok, length(years_predict))
     for (type in names(weights)) {
       k <- match(type, types)
-      dyn <- dynamical_logit_cells(
+      trajectories <- dynamical_trajectories(
         parameters, k, matrix(logit_init[, cell_country_index[ok], k], n_draws),
         x_chunk, seq_along(years_predict),
         x_init = covariates$init[ok, , drop = FALSE])
-      p_type <- lapply(dyn, function(x) weights[[type]] * plogis(x))
-      p <- if (is.null(p)) p_type else Map(`+`, p, p_type)
-      rm(dyn, p_type)
+      for (mix in names(mix_share)) {
+        share <- mix_share[[mix]]
+        if (length(share) > 1) share <- share[ok]
+        dyn <- mix_trajectories(trajectories, share)
+        p_type <- lapply(dyn, function(x) weights[[type]] * plogis(x))
+        p[[mix]] <- if (is.null(p[[mix]])) p_type else
+          Map(`+`, p[[mix]], p_type)
+        rm(dyn, p_type)
+      }
+      rm(trajectories)
     }
-    for (j in seq_along(years_predict)) {
-      mean_out[ok, j] <- colMeans(p[[j]])
-      sd_out[ok, j] <- col_sds(p[[j]])
+    for (mix in names(mix_share)) {
+      for (j in seq_along(years_predict)) {
+        mean_out[[mix]][ok, j] <- colMeans(p[[mix]][[j]])
+        sd_out[[mix]][ok, j] <- col_sds(p[[mix]][[j]])
+      }
     }
     rm(p, x_chunk)
   }
 
   # a fresh raster handle in this process
   template <- rast("data/clean/raster_mask.tif")
-  dir.create(file.path(output_dir, output), showWarnings = FALSE,
-             recursive = TRUE)
   write_layer <- function(values, file) {
     full <- rep(NA_real_, ncell(template))
     full[cells] <- values
@@ -162,11 +191,15 @@ predict_output <- function(output) {
     writeRaster(r, file, overwrite = TRUE, datatype = "FLT4S",
                 gdal = c("COMPRESS=DEFLATE", "PREDICTOR=3"))
   }
-  for (j in seq_along(years_predict)) {
-    stem <- file.path(output_dir, output,
-                      sprintf("ir_%i_susceptibility", years_predict[j]))
-    write_layer(mean_out[, j], paste0(stem, ".tif"))
-    write_layer(sd_out[, j], paste0(stem, "_sd.tif"))
+  for (mix in names(mix_share)) {
+    dir.create(file.path(mix_dir[[mix]], output), showWarnings = FALSE,
+               recursive = TRUE)
+    for (j in seq_along(years_predict)) {
+      stem <- file.path(mix_dir[[mix]], output,
+                        sprintf("ir_%i_susceptibility", years_predict[j]))
+      write_layer(mean_out[[mix]][, j], paste0(stem, ".tif"))
+      write_layer(sd_out[[mix]][, j], paste0(stem, "_sd.tif"))
+    }
   }
 }
 

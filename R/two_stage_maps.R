@@ -33,7 +33,10 @@
 #              difference_pp        two-stage minus dynamical, percentage points
 #              correction_mean      posterior mean of omega + xi (logit)
 #            The target is m + omega + xi. u and p are observation-level noise
-#            and are not mapped. Beyond T, xi is the AR(1) forecast;
+#            and are not mapped. Beyond T, xi is the AR(1) forecast. With the
+#            species model (#47), m at the assays is the mixture at each
+#            bioassay's arabiensis share, and on the grid the mixture at the
+#            arabiensis fraction r(x), the whole complex;
 #   figures  maps in figures/two_stage/, in the layout of R/fig_ir_maps.R.
 
 arguments <- commandArgs(trailingOnly = TRUE)
@@ -195,6 +198,8 @@ if (step != "figures") {
     xy <- terra::xyFromCell(mask, grid$cells)
     coords <- project_km(xy[, 1], xy[, 2])
     cell_country <- match(grid$country, dimnames(dynamical$logit_init)[[2]])
+    # r(x) at every cell with the species model (#47), NULL without it
+    grid_share <- prediction_share(dynamical$parameters$options, grid$cells)
     rm(xy)
 
     # the map draws are an even subset of the 2000, by the scoring's rule.
@@ -257,7 +262,8 @@ if (step != "figures") {
                                    matrix(logit_init[draws, cell_country[ok],
                                                      k], length(draws)),
                                    x_chunk, year_index,
-                                   x_init = covariates$init[ok, , drop = FALSE])
+                                   x_init = covariates$init[ok, , drop = FALSE],
+                                   share = grid_share[ok])
         correction <- project(fields[[b]], new, count = b == 1)
         for (j in seq_along(map_years)) {
           rows <- (j - 1) * length(ok) + seq_along(ok)
