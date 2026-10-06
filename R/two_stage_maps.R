@@ -198,8 +198,10 @@ if (step != "figures") {
     xy <- terra::xyFromCell(mask, grid$cells)
     coords <- project_km(xy[, 1], xy[, 2])
     cell_country <- match(grid$country, dimnames(dynamical$logit_init)[[2]])
-    # r(x) at every cell with the species model (#47), NULL without it
+    # r(x) at every cell with the species model, and the standardised kdr
+    # with the kdr covariate (#47), each NULL without it
     grid_share <- prediction_share(dynamical$parameters$options, grid$cells)
+    grid_kdr <- prediction_kdr(dynamical$parameters$options, grid$cells)
     rm(xy)
 
     # the map draws are an even subset of the 2000, by the scoring's rule.
@@ -263,7 +265,8 @@ if (step != "figures") {
                                                      k], length(draws)),
                                    x_chunk, year_index,
                                    x_init = covariates$init[ok, , drop = FALSE],
-                                   share = grid_share[ok])
+                                   share = grid_share[ok],
+                                   kdr = grid_kdr[ok, , drop = FALSE])
         correction <- project(fields[[b]], new, count = b == 1)
         for (j in seq_along(map_years)) {
           rows <- (j - 1) * length(ok) + seq_along(ok)

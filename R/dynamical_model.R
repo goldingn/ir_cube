@@ -13,6 +13,7 @@
 source("R/greta_setup.R")
 source("R/model_covariates.R")
 source("R/species.R")
+source("R/kdr_covariate.R")
 source("R/windowed_hmc.R")
 
 
@@ -43,19 +44,25 @@ source("R/windowed_hmc.R")
 #                     at each bioassay by its arabiensis share (#47). With it,
 #                     species_options() sets the floors of both species, and
 #                     mortality_floor must be FALSE
+#   kdr               FALSE (the default) for no kdr covariate;
+#                     kdr_options() (R/kdr_covariate.R) for the map of total
+#                     kdr as a covariate of the strength of selection and the
+#                     fitness cost, with or without the species model (#47)
 dynamical_model_options <- function(mortality_floor = FALSE,
                                     floor_prior = c(1, 49),
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
                                     reversion = "estimated",
-                                    species = FALSE) {
+                                    species = FALSE,
+                                    kdr = FALSE) {
   list(mortality_floor = mortality_floor,
        floor_prior = floor_prior,
        init_covariates = init_covariates,
        selection_columns = selection_columns,
        reversion = reversion,
-       species = species)
+       species = species,
+       kdr = kdr)
 }
 
 check_dynamical_model_options <- function(options) {
@@ -78,6 +85,7 @@ check_dynamical_model_options <- function(options) {
   # errors on a design selection_design() does not build
   complete_selection_design(options$selection_columns)
   check_species_options(options$species)
+  check_kdr_options(options$kdr)
   if (species_on(options) && isTRUE(options$mortality_floor)) {
     stop("with the species model, the floors are set by ",
          "species_options(floors = ); leave mortality_floor FALSE")
@@ -249,7 +257,7 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   variables$init_country_level <- normal(country_mean, country_sd)
 
   # The species model (#47): log multipliers on arabiensis's log fitness from
-  # selection and on its fitness cost (species_mortality()), N(0, 1) like the
+  # selection and on its fitness cost (outer_mortality()), N(0, 1) like the
   # log selection effects (beta_overall), centred on no difference between
   # the species and putting 95% of the prior mass of each multiplier between
   # 0.14 and 7.1; and with species_options(floors = TRUE), a mortality floor
@@ -268,7 +276,23 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
       })
   }
 
-  c(variables, rho, floor, init_covariates, reversion, species)
+  # The kdr covariate (#47): slopes of the log multipliers of the cumulative
+  # log fitness and of the fitness cost on a cell's standardised kdr
+  # (outer_mortality()), N(0, 1) like gamma_selection: one pair, or with the
+  # species model one pair per species, each on its own band
+  kdr <- if (kdr_on(options)) {
+    suffixes <- if (species_on(options)) c("_other", "_arabiensis") else ""
+    slopes <- list()
+    for (suffix in suffixes) {
+      slopes[[paste0("delta_selection", suffix)]] <- normal(0, 1)
+      if (identical(options$reversion, "estimated")) {
+        slopes[[paste0("delta_cost", suffix)]] <- normal(0, 1)
+      }
+    }
+    slopes
+  }
+
+  c(variables, rho, floor, init_covariates, reversion, species, kdr)
 }
 
 # Reversion to susceptibility (#24). A fitness cost c of resistance, paid
@@ -319,9 +343,10 @@ init_covariate_shift <- function(init_coef, options) {
 # and beta_class, which the figure scripts read. With the species model
 # (#47), also gamma_selection and gamma_cost (NULL without reversion), the log
 # multipliers of arabiensis's log fitness from selection and of its fitness
-# cost (species_mortality()), and other_floor and arabiensis_floor, the floors
+# cost (outer_mortality()), and other_floor and arabiensis_floor, the floors
 # of the other members of the complex and of arabiensis (NULL for none); the
-# other terms are shared by both species. logit_init_country is the
+# other terms are shared by both species. With the kdr covariate, also its
+# slopes (kdr_slope_names, outer_mortality()). logit_init_country is the
 # initial state without covariates, i.e. at a cell whose covariates are all 0
 # (the mean).
 #
@@ -377,6 +402,9 @@ dynamical_terms <- function(v, classes_index, types,
                            gamma_cost = v$gamma_cost,
                            other_floor = v$other_floor,
                            arabiensis_floor = v$arabiensis_floor))
+  }
+  if (kdr_on(options)) {
+    terms <- c(terms, v[intersect(kdr_slope_names, names(v))])
   }
   terms
 }
@@ -480,7 +508,8 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
   }
   starts <- c(mortality_floor = 0.02, init_coef = -0.05, reversion_rate = 0.01,
               gamma_selection = 0, gamma_cost = 0,
-              other_floor = species_floor, arabiensis_floor = species_floor)
+              other_floor = species_floor, arabiensis_floor = species_floor,
+              setNames(rep(0, length(kdr_slope_names)), kdr_slope_names))
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
@@ -623,12 +652,14 @@ floored_mortality <- function(q, floor) {
 # susceptible) with the mortality floor applied, if there is one.
 #
 # With the species model (options$species, #47), mortality is computed for
-# arabiensis and for the other members of the complex (species_mortality()),
+# arabiensis and for the other members of the complex (outer_mortality()),
 # and mortality(rows) is their mixture a pA + (1 - a) pG at each row's
 # arabiensis share a (arabiensis_share(), R/species.R; the rows need species
 # and cell), which is the mean of the beta-binomial. all_states(species_mix)
 # is the mixture at the arabiensis fraction r(x) of each cell ("complex", the
-# default), or the mortality of "arabiensis" or "other" alone.
+# default), or the mortality of "arabiensis" or "other" alone. With the kdr
+# covariate (options$kdr), mortality is computed by outer_mortality() too, at
+# each cell's standardised kdr.
 build_dynamical_model <- function(train_df,
                                   df,
                                   x_cell_years,
@@ -663,6 +694,18 @@ build_dynamical_model <- function(train_df,
 
   lookups <- dynamical_lookups(df)
   species <- species_on(options)
+  # the outer form (outer_mortality()) for the species model or the kdr
+  # covariate, and the closed-form op otherwise
+  outer <- species || kdr_on(options)
+  # the mask cell of each cell_id
+  cells <- df$cell[match(seq_len(n_unique_cells), df$cell_id)]
+  # the standardised kdr at each cell_id (NULL without it), standardised over
+  # these cells, all of them whatever the fold, recorded in the options for
+  # the plain-R predictions
+  if (kdr_on(options)) {
+    options$kdr <- standardise_kdr(options$kdr, cells)
+  }
+  kdr_cells <- prediction_kdr(options, cells)
   x_init <- select_init_covariates(x_cells_init, options, n_unique_cells)
   # the centred country levels are at each country's mean initial-state
   # covariates over its modelled cells (all of them, whatever the fold; the
@@ -701,11 +744,15 @@ build_dynamical_model <- function(train_df,
                              type_id = as.integer(rows$type_id)))
     pair_index <- match(paste(rows$cell_id, rows$type_id),
                         paste(pairs$cell_id, pairs$type_id))
-    if (species) {
-      p <- species_mortality(terms, x_cell_years, pairs$cell_id,
-                             pairs$type_id, lookups$cell_country_lookup,
-                             n_times, types, x_init,
-                             row_pair = pair_index, row_year = rows$year_id)
+    if (outer) {
+      p <- outer_mortality(terms, x_cell_years, pairs$cell_id,
+                           pairs$type_id, lookups$cell_country_lookup,
+                           n_times, types, x_init,
+                           row_pair = pair_index, row_year = rows$year_id,
+                           row_kdr = kdr_cells[rows$cell_id, , drop = FALSE])
+      if (!species) {
+        return(p)
+      }
       share <- arabiensis_share(rows, options)
       return(share * p$arabiensis + (1 - share) * p$other)
     }
@@ -722,7 +769,7 @@ build_dynamical_model <- function(train_df,
   all_states <- function(species_mix = c("complex", "arabiensis", "other")) {
     pairs <- expand.grid(cell_id = seq_len(n_unique_cells),
                          type_id = seq_len(n_types))
-    if (!species) {
+    if (!outer) {
       states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
                                    pairs$type_id, lookups$cell_country_lookup,
                                    n_times, types, x_init)
@@ -733,19 +780,21 @@ build_dynamical_model <- function(train_df,
     species_mix <- match.arg(species_mix)
     n_pairs <- nrow(pairs)
     row_pair <- rep(seq_len(n_pairs), n_times)
-    p <- species_mortality(terms, x_cell_years, pairs$cell_id, pairs$type_id,
-                           lookups$cell_country_lookup, n_times, types,
-                           x_init, row_pair = row_pair,
-                           row_year = rep(seq_len(n_times), each = n_pairs))
-    p <- switch(species_mix,
-                arabiensis = p$arabiensis,
-                other = p$other,
-                complex = {
-                  # r(x) at each cell, from its mask cell number in df
-                  cells <- df$cell[match(seq_len(n_unique_cells), df$cell_id)]
-                  r <- prediction_share(options, cells)[pairs$cell_id[row_pair]]
-                  r * p$arabiensis + (1 - r) * p$other
-                })
+    row_cell <- pairs$cell_id[row_pair]
+    p <- outer_mortality(terms, x_cell_years, pairs$cell_id, pairs$type_id,
+                         lookups$cell_country_lookup, n_times, types,
+                         x_init, row_pair = row_pair,
+                         row_year = rep(seq_len(n_times), each = n_pairs),
+                         row_kdr = kdr_cells[row_cell, , drop = FALSE])
+    if (species) {
+      p <- switch(species_mix,
+                  arabiensis = p$arabiensis,
+                  other = p$other,
+                  complex = {
+                    r <- prediction_share(options, cells)[row_cell]
+                    r * p$arabiensis + (1 - r) * p$other
+                  })
+    }
     dim(p) <- c(n_unique_cells, n_types, n_times)
     p
   }
@@ -944,7 +993,7 @@ closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
 }
 
 # The covariates and initial state of the cell-type pairs (pair_cell,
-# pair_type), for closed_form_states() and species_mortality(): x_pairs,
+# pair_type), for closed_form_states() and outer_mortality(): x_pairs,
 # J x n_times x n_covs, and logit_init, logit q_0 of each pair (a J x 1 greta
 # array). Arguments as closed_form_states().
 pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
@@ -971,27 +1020,34 @@ pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
   list(x_pairs = x_pairs, logit_init = logit_init)
 }
 
-# The species model (#47): predicted bioassay mortality of the other members
-# of the complex and of arabiensis, at pair row_pair (of the cell-type pairs
-# pair_cell, pair_type) and year index row_year of each row, as a list of two
-# greta arrays, `other` and `arabiensis`, with one element per row. Other
-# arguments as closed_form_states().
+# Predicted bioassay mortality by the outer form (#47), for the species model
+# or the kdr covariate, at pair row_pair (of the cell-type pairs pair_cell,
+# pair_type) and year index row_year of each row: with the species model, a
+# list of two greta arrays, `other` (the other members of the complex) and
+# `arabiensis`, and otherwise one, each with one element per row. row_kdr is
+# the standardised kdr at each row's cell, rows x kdr_bands() (NULL without the
+# kdr covariate). Other arguments as closed_form_states().
 #
-# Arabiensis's log fitness from selection is the other members' times
-# c = exp(gamma_selection), i.e. its fitness is (1 + x' exp(beta))^c, and its
-# reversion kappa is theirs times exp(gamma_cost), so with C_t the other
-# members' cumulative log fitness,
-#   logit q_t (other)      = logit q_0 - C_t - t kappa
-#   logit q_t (arabiensis) = logit q_0 - c C_t - t exp(gamma_cost) kappa.
-# The multiplier is outside the log so that the one cumulative sum C serves
-# both species, and arabiensis costs only these few operations at each row;
-# where x' exp(beta) is small, c log(1 + x' exp(beta)) is close to
-# log(1 + c x' exp(beta)), a multiplier on the selection effects. Each species
-# then has its own mortality floor, other_floor and arabiensis_floor (none
-# without species_options(floors = TRUE)).
-species_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
-                              cell_country_lookup, n_times, types,
-                              x_init = NULL, row_pair, row_year) {
+# Each trajectory multiplies the cumulative log fitness C_t and the reversion
+# of the closed form by its own factors:
+#   logit q_t = logit q_0 - exp(s) C_t - exp(c) t kappa,
+# with log multipliers s and c of 0 for the other members of the complex, or
+# the whole complex, and gamma_selection and gamma_cost for arabiensis, i.e.
+# arabiensis's fitness is (1 + x' exp(beta))^exp(gamma_selection); plus, with
+# the kdr covariate, delta_selection k(x) and delta_cost k(x) for the
+# trajectory's kdr k(x) at the cell and its own slopes (delta_selection_other
+# and so on with the species model). The multipliers are outside the log so
+# that one cumulative sum C serves every trajectory and cell, and each costs
+# only these few operations at each row; where x' exp(beta) is small,
+# exp(s) log(1 + x' exp(beta)) is close to log(1 + exp(s) x' exp(beta)), a
+# multiplier on the selection effects. With every log multiplier 0 this is
+# the closed form. Each species has its own mortality floor, other_floor and
+# arabiensis_floor (none without species_options(floors = TRUE)); one
+# trajectory has mortality_floor.
+outer_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
+                            cell_country_lookup, n_times, types,
+                            x_init = NULL, row_pair, row_year,
+                            row_kdr = NULL) {
   inputs <- pair_inputs(terms, x_cell_years, pair_cell, pair_type,
                         cell_country_lookup, n_times, types, x_init)
 
@@ -1012,17 +1068,64 @@ species_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
                            tf_function_env = op_env,
                            dim = c(length(pair_cell), n_times))
 
-  logit_init <- inputs$logit_init[row_pair]
-  selection <- cumulative[cbind(row_pair, row_year)]
-  logit_other <- logit_init - selection
-  logit_arabiensis <- logit_init - exp(terms$gamma_selection) * selection
-  if (!is.null(terms$kappa_type)) {
-    reversion <- terms$kappa_type[pair_type[row_pair]] * row_year
-    logit_other <- logit_other - reversion
-    logit_arabiensis <- logit_arabiensis - exp(terms$gamma_cost) * reversion
+  rows <- list(logit_init = inputs$logit_init[row_pair],
+               cumulative = cumulative[cbind(row_pair, row_year)],
+               reversion = if (!is.null(terms$kappa_type)) {
+                 terms$kappa_type[pair_type[row_pair]] * row_year
+               })
+  # a trajectory with species offsets gamma (NULL for none), the kdr of
+  # `band` and the slopes named with `suffix`, and `floor`
+  trajectory <- function(gamma_selection, gamma_cost, band, suffix, floor) {
+    k <- if (!is.null(row_kdr)) row_kdr[, band]
+    logit_q <- outer_logit(
+      rows,
+      log_selection = outer_log_multiplier(
+        gamma_selection, terms[[paste0("delta_selection", suffix)]], k),
+      log_cost = outer_log_multiplier(
+        gamma_cost, terms[[paste0("delta_cost", suffix)]], k))
+    floored_mortality(ilogit(logit_q), floor)
   }
+  if (is.null(terms$gamma_selection)) {
+    return(trajectory(NULL, NULL, "complex", "", terms$mortality_floor))
+  }
+  list(other = trajectory(NULL, NULL, "other", "_other", terms$other_floor),
+       arabiensis = trajectory(terms$gamma_selection, terms$gamma_cost,
+                               "arabiensis", "_arabiensis",
+                               terms$arabiensis_floor))
+}
 
-  list(other = floored_mortality(ilogit(logit_other), terms$other_floor),
-       arabiensis = floored_mortality(ilogit(logit_arabiensis),
-                                      terms$arabiensis_floor))
+# The outer form's logit q: logit q_0 - exp(log_selection) C -
+# exp(log_cost) reversion, from `rows`, a list of logit_init, cumulative and
+# reversion (NULL for none), and the log multipliers (NULL for none, a
+# multiplier of 1). For greta arrays (one element per row) or plain R (draws
+# x cells, log multipliers one per draw or draws x cells, and reversion one
+# per draw).
+outer_logit <- function(rows, log_selection = NULL, log_cost = NULL) {
+  selection <- rows$cumulative
+  if (!is.null(log_selection)) {
+    selection <- exp(log_selection) * selection
+  }
+  logit_q <- rows$logit_init - selection
+  if (!is.null(rows$reversion)) {
+    reversion <- rows$reversion
+    if (!is.null(log_cost)) {
+      reversion <- exp(log_cost) * reversion
+    }
+    logit_q <- logit_q - reversion
+  }
+  logit_q
+}
+
+# A trajectory's log multiplier: its species offset gamma (NULL for none) plus
+# the kdr slope delta times its kdr k (both NULL without the kdr covariate),
+# or NULL if there is neither. For greta arrays (k one per row) or plain R
+# (gamma and delta one per draw, k one per cell, giving draws x cells)
+outer_log_multiplier <- function(gamma, delta, k) {
+  kdr <- if (!is.null(delta)) {
+    if (inherits(delta, "greta_array")) delta * k else outer(delta, k)
+  }
+  if (is.null(gamma)) {
+    return(kdr)
+  }
+  if (is.null(kdr)) gamma else gamma + kdr
 }

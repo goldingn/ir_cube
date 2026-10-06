@@ -10,7 +10,9 @@
 # With the species model (#47) the predictions are the mixture at each assay's
 # arabiensis share, the map path is checked at the arabiensis fraction r(x),
 # and the plain-R mixture is checked to reduce to one trajectory when the
-# species do not differ.
+# species do not differ. With the kdr covariate (#47), the model with its
+# slopes at 0 is checked against the model without it, in greta (the log
+# density) and in plain R (the predictions).
 #
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
 # (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
@@ -19,6 +21,8 @@
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(reversion = FALSE)' \
 #     Rscript R/check_dynamical_model.R
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(species = species_options())' \
+#     Rscript R/check_dynamical_model.R
+#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(kdr = kdr_options())' \
 #     Rscript R/check_dynamical_model.R
 #
 # Run with the greta 0.6 environment (doc/cv_run_plan.md, section 1).
@@ -42,14 +46,14 @@ source("R/two_stage_map_functions.R")
 
 cat("options:", Sys.getenv("IR_CUBE_MODEL_OPTIONS", "defaults"), "\n")
 
-build <- function(train_df) {
+build <- function(train_df, options = model_options) {
   build_dynamical_model(train_df = train_df,
                         df = df,
                         x_cell_years = x_cell_years,
                         cell_years_index = cell_years_index,
                         classes_index = classes_index,
                         types = types,
-                        options = model_options,
+                        options = options,
                         x_cells_init = x_cells_init)
 }
 
@@ -187,8 +191,10 @@ logit_init_all <- map_logit_init(parameters, countries, regions, df)
 cell_country_index <- match(map_rows$country_name,
                             dimnames(logit_init_all)[[2]])
 # the share of the complex-wide predictions at each map cell (NULL without the
-# species model), and for dynamical_logit(), at each row
+# species model), and for dynamical_logit(), at each row; and the standardised
+# kdr at each map cell (NULL without the kdr covariate)
 map_share <- prediction_share(model_options, map_rows$cell)
+map_kdr <- prediction_kdr(model_options, map_rows$cell)
 x_years <- map_x(covariates, seq_len(nrow(map_rows)),
                  max(map_years) - baseline_year + 1)
 clamp <- function(l) pmin(pmax(l, qlogis(1e-12)), qlogis(1 - 1e-12))
@@ -198,7 +204,8 @@ for (k in seq_along(types)) {
                                matrix(logit_init_all[, cell_country_index, k],
                                       1),
                                x_years, map_years - baseline_year + 1,
-                               x_init = covariates$init, share = map_share)
+                               x_init = covariates$init, share = map_share,
+                               kdr = map_kdr)
   for (y in map_years) {
     rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
                    year_id = y - baseline_year + 1)
@@ -233,6 +240,8 @@ if (species_on(model_options)) {
   same$gamma_selection[] <- 0
   if (!is.null(same$gamma_cost)) same$gamma_cost[] <- 0
   same$arabiensis_floor <- same$other_floor
+  # and no kdr effect, as the species' bands differ
+  same$kdr_slopes <- lapply(same$kdr_slopes, function(x) 0 * x)
   rows <- df[seq(1, nrow(df), by = 10), ]
   l_mixed <- dynamical_logit(same, rows, df, x_cell_years, cell_years_index)
   l_other <- dynamical_logit(same, rows, df, x_cell_years, cell_years_index,
@@ -241,5 +250,48 @@ if (species_on(model_options)) {
   cat(sprintf("species: no difference between them, mixture vs one trajectory, logit: max abs diff %.3g\n",
               species_difference))
   stopifnot(species_difference < 1e-9)
+}
+
+if (kdr_on(model_options)) {
+  cat(sprintf("kdr: standardised by logit kdr (complex) over %d cells, mean %.3f, sd %.3f\n",
+              max(df$cell_id), model_options$kdr$centre,
+              model_options$kdr$scale))
+  # with its slopes at 0, the model is the model without the kdr covariate:
+  # in greta, the log density differs by the slopes' priors at 0 only
+  options_off <- model_options
+  options_off$kdr <- FALSE
+  built_off <- build(df, options_off)
+  delta_names <- intersect(kdr_slope_names, names(built$variables))
+  cat("kdr: slopes", toString(delta_names), "\n")
+  free_zero <- free
+  for (name in delta_names) {
+    free_zero[free_columns(built$model, name)] <- 0
+  }
+  columns_off <- free_state_columns(built_off$model)
+  free_off <- numeric(length(unlist(
+    built_off$model$dag$example_parameters(free = TRUE))))
+  for (name in names(attr(columns_off, "targets"))) {
+    free_off[columns_off[[attr(columns_off, "targets")[[name]]]]] <-
+      free_zero[free_columns(built$model, name)]
+  }
+  ld_difference <- log_density(built$model, free_zero) -
+    log_density(built_off$model, free_off) -
+    length(delta_names) * dnorm(0, log = TRUE)
+  cat(sprintf("kdr: slopes 0 vs no kdr covariate, greta log density: diff %.3g\n",
+              ld_difference))
+  stopifnot(abs(ld_difference) < 1e-6)
+  rm(built_off)
+  # and in plain R, the predictions at every assay
+  zero <- parameters
+  zero$kdr_slopes <- lapply(zero$kdr_slopes, function(x) 0 * x)
+  off <- zero
+  off$kdr_slopes <- list()
+  off$options <- options_off
+  l_zero <- dynamical_logit(zero, df, df, x_cell_years, cell_years_index)
+  l_off <- dynamical_logit(off, df, df, x_cell_years, cell_years_index)
+  kdr_difference <- max(abs(clamp(l_zero) - clamp(l_off)))
+  cat(sprintf("kdr: slopes 0 vs no kdr covariate, plain R, logit: max abs diff %.3g\n",
+              kdr_difference))
+  stopifnot(kdr_difference < 1e-9)
 }
 cat("all checks passed\n")
