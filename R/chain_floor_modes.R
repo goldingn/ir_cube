@@ -12,12 +12,17 @@
 # `batch` at a time, which bounds the memory of the batched states. NULL for a
 # model without a floor. With the species model's two floors (#47), floor is
 # NA, other_floor and arabiensis_floor are the chain's mean floors, and mode
-# is the mode of each, other members first, e.g. "low/high".
+# is the mode of each, other members first, e.g. "low/high". With the
+# kdr-dependent floor (#47), the floor is that at the mean kdr,
+# plogis(floor_intercept) (floor_at_k0), one per class with floor = "class"
+# (floor NA, and a mode per class in class order).
 chain_floor_modes <- function(model, draws, n_per_chain = 60,
                               high_floor = 0.1, batch = 10) {
-  floor_columns <- intersect(c("mortality_floor", "other_floor",
-                               "arabiensis_floor"),
-                             colnames(draws[[1]]))
+  floor_columns <- c(intersect(c("mortality_floor", "other_floor",
+                                 "arabiensis_floor"),
+                               colnames(draws[[1]])),
+                     grep("^floor_intercept", colnames(draws[[1]]),
+                          value = TRUE))
   if (length(floor_columns) == 0) {
     return(NULL)
   }
@@ -32,8 +37,9 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
         free[i, , drop = FALSE], dtype = tensorflow::tf$float64))
       as.numeric(result$unadjusted)
     })
-    floors <- colMeans(as.matrix(draws[[chain]])[, floor_columns,
-                                                 drop = FALSE])
+    floors <- colMeans(floor_values(as.matrix(draws[[chain]])[
+      , floor_columns, drop = FALSE]))
+    names(floors) <- sub("^floor_intercept", "floor_at_k0", names(floors))
     row <- data.frame(chain = chain,
                       floor = if (length(floors) == 1) floors[[1]] else NA,
                       mode = paste(ifelse(floors > high_floor, "high", "low"),

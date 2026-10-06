@@ -12,7 +12,8 @@
 # and the plain-R mixture is checked to reduce to one trajectory when the
 # species do not differ. With the kdr covariate (#47), the model with its
 # slopes at 0 is checked against the model without it, in greta (the log
-# density) and in plain R (the predictions).
+# density) and in plain R (the predictions), and with the kdr-dependent floor,
+# with its slope at 0 against the constant floor.
 #
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
 # (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
@@ -256,42 +257,81 @@ if (kdr_on(model_options)) {
   cat(sprintf("kdr: standardised by logit kdr (complex) over %d cells, mean %.3f, sd %.3f\n",
               max(df$cell_id), model_options$kdr$centre,
               model_options$kdr$scale))
-  # with its slopes at 0, the model is the model without the kdr covariate:
-  # in greta, the log density differs by the slopes' priors at 0 only
+  floor_kind <- kdr_floor(model_options)
+  # With its slopes at 0, the model is the model without the kdr covariate,
+  # and with the kdr-dependent floor's slope at 0 too, the floor is constant:
+  # floor_intercept takes the place of mortality_floor (the same free state,
+  # qlogis(floor)). In greta, the log density then differs by the priors of
+  # the slopes at 0, and of the floor: N(floor_intercept; logit_beta_moments())
+  # in place of Beta(floor) times its Jacobian floor (1 - floor). Not checked
+  # in greta for one floor per class, which has no single floor to map to
   options_off <- model_options
   options_off$kdr <- FALSE
-  built_off <- build(df, options_off)
-  delta_names <- intersect(kdr_slope_names, names(built$variables))
-  cat("kdr: slopes", toString(delta_names), "\n")
-  free_zero <- free
-  for (name in delta_names) {
-    free_zero[free_columns(built$model, name)] <- 0
+  zero_names <- intersect(c(kdr_slope_names, "floor_kdr"),
+                          names(built$variables))
+  cat("kdr: slopes", toString(zero_names), "\n")
+  if (!identical(floor_kind, "class")) {
+    built_off <- build(df, options_off)
+    free_zero <- free
+    for (name in zero_names) {
+      free_zero[free_columns(built$model, name)] <- 0
+    }
+    columns_off <- free_state_columns(built_off$model)
+    free_off <- numeric(length(unlist(
+      built_off$model$dag$example_parameters(free = TRUE))))
+    for (name in names(attr(columns_off, "targets"))) {
+      source_name <- if (name == "mortality_floor" && isTRUE(floor_kind)) {
+        "floor_intercept"
+      } else {
+        name
+      }
+      free_off[columns_off[[attr(columns_off, "targets")[[name]]]]] <-
+        free_zero[free_columns(built$model, source_name)]
+    }
+    expected <- length(zero_names) * dnorm(0, log = TRUE)
+    if (isTRUE(floor_kind)) {
+      intercept <- free_zero[free_columns(built$model, "floor_intercept")]
+      f <- plogis(intercept)
+      prior <- logit_beta_moments(model_options$floor_prior)
+      expected <- expected +
+        dnorm(intercept, prior$mean, prior$sd, log = TRUE) -
+        (dbeta(f, model_options$floor_prior[1], model_options$floor_prior[2],
+               log = TRUE) + log(f) + log1p(-f))
+    }
+    ld_difference <- log_density(built$model, free_zero) -
+      log_density(built_off$model, free_off) - expected
+    cat(sprintf("kdr: slopes 0 vs no kdr covariate%s, greta log density: diff %.3g\n",
+                if (isTRUE(floor_kind)) " and a constant floor" else "",
+                ld_difference))
+    stopifnot(abs(ld_difference) < 1e-6)
+    rm(built_off)
   }
-  columns_off <- free_state_columns(built_off$model)
-  free_off <- numeric(length(unlist(
-    built_off$model$dag$example_parameters(free = TRUE))))
-  for (name in names(attr(columns_off, "targets"))) {
-    free_off[columns_off[[attr(columns_off, "targets")[[name]]]]] <-
-      free_zero[free_columns(built$model, name)]
-  }
-  ld_difference <- log_density(built$model, free_zero) -
-    log_density(built_off$model, free_off) -
-    length(delta_names) * dnorm(0, log = TRUE)
-  cat(sprintf("kdr: slopes 0 vs no kdr covariate, greta log density: diff %.3g\n",
-              ld_difference))
-  stopifnot(abs(ld_difference) < 1e-6)
-  rm(built_off)
-  # and in plain R, the predictions at every assay
+  # and in plain R, the predictions at every assay, with the floor's slope at
+  # 0 and its intercepts equal, as a constant floor
   zero <- parameters
   zero$kdr_slopes <- lapply(zero$kdr_slopes, function(x) 0 * x)
   off <- zero
   off$kdr_slopes <- list()
   off$options <- options_off
+  if (!isFALSE(floor_kind)) {
+    zero$floor_kdr[] <- 0
+    zero$floor_intercept[] <- zero$floor_intercept[, 1]
+    off$floor_kdr <- off$floor_intercept <- NULL
+    off$mortality_floor <- plogis(zero$floor_intercept[, 1])
+  }
   l_zero <- dynamical_logit(zero, df, df, x_cell_years, cell_years_index)
   l_off <- dynamical_logit(off, df, df, x_cell_years, cell_years_index)
   kdr_difference <- max(abs(clamp(l_zero) - clamp(l_off)))
-  cat(sprintf("kdr: slopes 0 vs no kdr covariate, plain R, logit: max abs diff %.3g\n",
+  cat(sprintf("kdr: slopes 0 vs no kdr covariate%s, plain R, logit: max abs diff %.3g\n",
+              if (!isFALSE(floor_kind)) " and a constant floor" else "",
               kdr_difference))
   stopifnot(kdr_difference < 1e-9)
+  if (!isFALSE(floor_kind)) {
+    floors <- plogis(c(parameters$floor_intercept))
+    cat(sprintf("kdr floor (%s): floor at the mean kdr %s, floor_kdr %.3f\n",
+                if (isTRUE(floor_kind)) "one" else "by class",
+                paste(sprintf("%.3f", floors), collapse = ", "),
+                parameters$floor_kdr))
+  }
 }
 cat("all checks passed\n")
