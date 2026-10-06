@@ -977,7 +977,176 @@ ir_distinct <- ir_everything %>%
            country_name, 
            concentration,
            mortality_round = round(mortality_adjusted, digits = 0),
-           .keep_all = TRUE) 
+           .keep_all = TRUE)
+
+# The exact match above misses copies of the same bioassay held by more than one
+# database (MTM, IR Mapper, Vector Atlas), because one key often differs between
+# the copies: coordinates rounded either side of a 0.1 degree boundary, a
+# mislabelled concentration (e.g. 0.75% deltamethrin, permethrin's dose), or
+# Abbott's correction applied in one source only. See issue #31. So we match
+# records more loosely, on the model pixel, year, insecticide and the exact
+# result (died and mosquito_number).
+#
+# Between databases these matches are treated as duplicates and one copy is
+# kept, except at 0% or 100% mortality, where identical results are common in
+# genuine replicates (e.g. 100 of 100 mosquitoes dying at nearby sites). There
+# a match is only a duplicate if the species and concentration also match and
+# the sites are within duplicate_extreme_km of each other; other 0%/100%
+# matches are kept and listed for checking.
+#
+# Within a database the matches are kept and listed for checking, since they
+# may be separate tests reported with the same result. As are all matches whose
+# concentrations differ.
+duplicate_extreme_km <- 5
+
+# the bioassay database each source table comes from
+bioassay_database <- function(source) {
+  case_when(
+    grepl("^mtm", source) ~ "MTM",
+    grepl("^mapper", source) ~ "IR Mapper",
+    grepl("^va", source) ~ "Vector Atlas"
+  )
+}
+
+# all pairs of records in `ir` sharing a pixel of `mask`, year, insecticide and
+# result, as row indices a < b, with the great circle distance between them.
+# Records outside the raster have no pixel and are not matched.
+match_bioassay_pairs <- function(ir, mask) {
+  keys <- ir %>%
+    mutate(
+      row = row_number(),
+      cell = terra::cellFromXY(mask, cbind(longitude, latitude))
+    ) %>%
+    filter(!is.na(cell)) %>%
+    select(row, cell, year_start, insecticide_type, died, mosquito_number)
+  pairs <- keys %>%
+    inner_join(keys,
+               by = c("cell", "year_start", "insecticide_type",
+                      "died", "mosquito_number"),
+               suffix = c("_a", "_b"),
+               relationship = "many-to-many") %>%
+    filter(row_a < row_b) %>%
+    select(a = row_a, b = row_b)
+  points <- st_as_sf(ir, coords = c("longitude", "latitude"), crs = 4326)
+  pairs %>%
+    mutate(
+      km = as.numeric(st_distance(points[a, ], points[b, ],
+                                  by_element = TRUE)) / 1000
+    )
+}
+
+# Pick which records in `ir` to drop as cross-database duplicates. Records in a
+# match set (the pairs keys, plus species and concentration at 0% or 100%
+# mortality) are ordered by preference, and the k-th preferred record from each
+# database is matched to the k-th preferred record from each other database. So
+# a set with two MTM records and one Vector Atlas record keeps two records,
+# since the MTM records may be separate tests. Of each matched set the most
+# preferred record is kept. In order, the preferences are for: the most common
+# concentration of that insecticide (so the record stays in the modelled subset,
+# and the other copy is probably mislabelled), an assigned species complex, a
+# species-level identification, and then the order of the rows in `ir` (Vector
+# Atlas, MTM, IR Mapper). At 0% or 100% a record is only dropped if it is within
+# max_extreme_km of the record kept. Returns the row index of each dropped
+# record and of the record kept in its place.
+find_cross_database_duplicates <- function(ir, mask, max_extreme_km) {
+  matched <- ir %>%
+    mutate(
+      row = row_number(),
+      database = bioassay_database(source),
+      cell = terra::cellFromXY(mask, cbind(longitude, latitude)),
+      extreme = died == 0 | died == mosquito_number,
+      # only require these to match at 0% or 100%
+      species_key = if_else(extreme, species, NA),
+      concentration_key = if_else(extreme, concentration, NA)
+    ) %>%
+    group_by(insecticide_type) %>%
+    mutate(
+      modal_concentration = concentration == sample_mode(concentration)
+    ) %>%
+    ungroup() %>%
+    filter(!is.na(cell)) %>%
+    group_by(cell, year_start, insecticide_type, died, mosquito_number,
+             species_key, concentration_key) %>%
+    filter(n_distinct(database) > 1) %>%
+    arrange(desc(modal_concentration),
+            is.na(species_complex),
+            species %in% c("gambiae complex", "funestus complex"),
+            row,
+            .by_group = TRUE) %>%
+    group_by(database, .add = TRUE) %>%
+    mutate(k = row_number()) %>%
+    group_by(cell, year_start, insecticide_type, died, mosquito_number,
+             species_key, concentration_key, k) %>%
+    mutate(kept_row = first(row),
+           kept_longitude = first(longitude),
+           kept_latitude = first(latitude)) %>%
+    ungroup() %>%
+    filter(row != kept_row)
+  if (nrow(matched) == 0) {
+    return(tibble(row = integer(), kept_row = integer()))
+  }
+  km <- as.numeric(st_distance(
+    st_as_sf(matched, coords = c("longitude", "latitude"), crs = 4326),
+    st_as_sf(matched, coords = c("kept_longitude", "kept_latitude"),
+             crs = 4326),
+    by_element = TRUE)) / 1000
+  matched %>%
+    filter(!extreme | km <= max_extreme_km) %>%
+    select(row, kept_row)
+}
+
+mask <- rast("data/clean/raster_mask.tif")
+match_pairs <- match_bioassay_pairs(ir_distinct, mask)
+duplicates <- find_cross_database_duplicates(ir_distinct, mask,
+                                             duplicate_extreme_km)
+
+# label each matched pair, for the checking lists: whether the pair is a
+# duplicate (b dropped in favour of a, or a in favour of b), and whether either
+# record was dropped as a duplicate of any record
+duplicate_pairs <- paste(duplicates$kept_row, duplicates$row)
+review_columns <- c("source", "citation", "longitude", "latitude", "year_start",
+                    "insecticide_type", "concentration", "species",
+                    "mosquito_number", "died", "mortality_adjusted")
+match_review <- bind_cols(
+  ir_distinct[match_pairs$a, review_columns] %>%
+    rename_with(~ paste0(.x, "_a")),
+  ir_distinct[match_pairs$b, review_columns] %>%
+    rename_with(~ paste0(.x, "_b"))
+) %>%
+  mutate(
+    km = match_pairs$km,
+    same_database = bioassay_database(source_a) == bioassay_database(source_b),
+    extreme = died_a == 0 | died_a == mosquito_number_a,
+    duplicate = case_when(
+      paste(match_pairs$a, match_pairs$b) %in% duplicate_pairs ~ "drop b",
+      paste(match_pairs$b, match_pairs$a) %in% duplicate_pairs ~ "drop a",
+      .default = "no"
+    ),
+    a_dropped = match_pairs$a %in% duplicates$row,
+    b_dropped = match_pairs$b %in% duplicates$row
+  )
+
+dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
+match_review %>%
+  filter(duplicate != "no") %>%
+  write.csv("outputs/review/bioassay_duplicates_dropped.csv",
+            row.names = FALSE)
+match_review %>%
+  filter(same_database) %>%
+  write.csv("outputs/review/bioassay_within_database_matches.csv",
+            row.names = FALSE)
+match_review %>%
+  filter(!same_database, extreme, !a_dropped, !b_dropped) %>%
+  write.csv("outputs/review/bioassay_extreme_matches_kept.csv",
+            row.names = FALSE)
+match_review %>%
+  filter(concentration_a != concentration_b) %>%
+  write.csv("outputs/review/bioassay_concentration_mismatches.csv",
+            row.names = FALSE)
+print(count(match_review, same_database, extreme, duplicate))
+
+ir_distinct <- ir_distinct %>%
+  filter(!row_number() %in% duplicates$row)
 
 # # map distinct records for checking if any remaining duplicates
 # library(mapview)
