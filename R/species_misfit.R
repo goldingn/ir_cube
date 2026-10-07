@@ -61,24 +61,10 @@ dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
 
 fit <- load_fit(file)
 df <- fit$df
-usable <- usable_chains(fit$draws, label)
-
-# about n_draws draws, the same number evenly spaced in each usable chain
-# (loo::relative_eff() needs equal chains), as rows of as.matrix(fit$draws)
-# (the chains stacked in order), and the chain of each
-chain_rows <- split(seq_len(sum(vapply(fit$draws, nrow, integer(1)))),
-                    draw_chain(fit$draws))
-per_chain <- min(floor(n_draws / length(usable)),
-                 min(lengths(chain_rows[usable])))
-draw_index <- unlist(lapply(chain_rows[usable], function(rows) {
-  rows[round(seq(1, length(rows), length.out = per_chain))]
-}))
-draw_chain_id <- draw_chain(fit$draws)[draw_index]
-parameters <- dynamical_parameter_draws(
-  list(draws = fit$draws, options = fit$options,
-       x_cells_init = fit$x_cells_init),
-  fit$classes_index, fit$types, draw_index = draw_index,
-  options = fit$options)
+# about n_draws draws, the same number from each usable chain (even_draws())
+draws_used <- even_draws(fit, n_draws, label)
+draw_chain_id <- draws_used$chain
+parameters <- fit_parameter_draws(fit, draws_used$index)
 time <- system.time(
   logit <- dynamical_logit(parameters, df, df, fit$x_cell_years,
                            fit$cell_years_index)
@@ -93,26 +79,10 @@ p <- plogis(logit)
 p_mean <- colMeans(p)
 clamp <- function(x) pmin(pmax(x, 1e-12), 1 - 1e-12)
 
-# regions: the UN geoscheme's, with the Horn of Africa (and Sudan) split from
-# Eastern Africa and the southern countries of Eastern Africa moved to
-# Southern Africa, as kdr_region() on branch latent-kdr
-misfit_region <- function(country, region) {
-  case_when(
-    country %in% c("Djibouti", "Eritrea", "Ethiopia", "Somalia",
-                   "Sudan") ~ "Horn",
-    country %in% c("Comoros", "Madagascar", "Malawi", "Mauritius",
-                   "Mozambique", "Zambia", "Zimbabwe") ~ "Southern",
-    region == "Western Africa" ~ "West",
-    region == "Middle Africa" ~ "Central",
-    region == "Eastern Africa" ~ "East",
-    region == "Southern Africa" ~ "Southern",
-    region == "Northern Africa" ~ "North")
-}
-
 windows <- list(`2012-16` = 2012:2016, `2019-25` = 2019:2025)
 bioassays <- df %>%
   transmute(longitude, latitude, cell, year_start, country_name,
-            region = misfit_region(country_name, region),
+            region = analysis_region(country_name, region),
             insecticide_class, insecticide_type, species, died,
             mosquito_number,
             empirical_logit = log((died + 0.5) /
