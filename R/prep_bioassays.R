@@ -4,11 +4,29 @@
 source("R/packages.R")
 source("R/functions.R")
 
+# The 20261005 MTM discriminating concentration download fills missing values
+# of MORTALITY_ADJUSTED with 0: it has no missing values, and all 306 records
+# missing in the 20251031 download are exactly 0, 87 of them labelled
+# susceptible. The papers checked report nonzero mortality for these (#27). So
+# we treat them as missing and drop them, by ID against the 20251031 download;
+# the 232 zeros already in that download are kept. Set this to FALSE to keep
+# them.
+drop_mtm_filled_mortality <- TRUE
+mtm_filled_mortality_ids <- read_xlsx(
+  "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  sheet = "Data", col_types = "text") %>%
+  filter(is.na(MORTALITY_ADJUSTED)) %>%
+  pull(ID)
+
 # load data from malaria threat map discrimintating concentraation bioassays and
 # subset to Africa
 ir_dis_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20261005.xlsx",
   sheet = "Data") %>%
+  # drop the records whose missing mortality was filled with 0, see above
+  filter(
+    !(drop_mtm_filled_mortality & ID %in% mtm_filled_mortality_ids)
+  ) %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
     across(
@@ -73,7 +91,7 @@ ir_dis_mtm_africa <- read_xlsx(
 # load data from malaria threat map intensity concentration bioassays and
 # subset to Africa
 ir_int_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20261005.xlsx",
   sheet = "Data") %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
@@ -830,10 +848,14 @@ ir_everything <- ir_everything %>%
                                           "Anopheles stephensi sl"),
                            "Anopheles stephensi",
                            species),
-         species = if_else(species == "coluzzii (gambiae m)",
+         # S and M molecular forms are An. gambiae s.s. and An. coluzzii
+         # (Coetzee et al. 2013); mixed S/M samples go to complex level
+         species = if_else(species %in% c("coluzzii (gambiae m)",
+                                          "coluzzii_gambiae_m form"),
                            "Anopheles coluzzii",
                            species),
-         species = if_else(species == "gambiae (s)",
+         species = if_else(species %in% c("gambiae (s)",
+                                          "gambiae_s form"),
                            "Anopheles gambiae s.s.",
                            species),
          # standardise complex names
@@ -851,6 +873,7 @@ ir_everything <- ir_everything %>%
                                           "Anopheles gambiae s.l.",
                                           "Anopheles gambiae sl",
                                           "gambiae (S_M)",
+                                          "gambiae_s form_m form",
                                           "Anopheles coluzzii/gambiae"),
                            "gambiae complex",
                            species)
@@ -977,7 +1000,90 @@ ir_distinct <- ir_everything %>%
            country_name, 
            concentration,
            mortality_round = round(mortality_adjusted, digits = 0),
-           .keep_all = TRUE) 
+           .keep_all = TRUE)
+
+# The exact match above misses copies of the same bioassay held by more than one
+# database (MTM, IR Mapper, Vector Atlas), because one key often differs between
+# the copies: coordinates rounded either side of a 0.1 degree boundary, a
+# mislabelled concentration (e.g. 0.75% deltamethrin, permethrin's dose), or
+# Abbott's correction applied in one source only. See issue #31. So we match
+# records more loosely, on the model pixel, year, insecticide and the exact
+# result (died and mosquito_number); matched records are at most about 6.6 km
+# apart (one 1/24 degree pixel). At 0% or 100% mortality, where identical
+# results are common in genuine replicates (e.g. 100 of 100 mosquitoes dying at
+# nearby sites), the species and concentration must match too.
+#
+# In each match set the k-th preferred record from each database is matched to
+# the k-th preferred record from each other database, and the most preferred
+# record of each such group is kept. So matches within a database are kept, as
+# they may be separate tests: a set with two MTM records and one Vector Atlas
+# record keeps two. In order, the preferences are for: the most common
+# concentration of that insecticide (so the record stays in the modelled
+# subset, and the other copy is probably mislabelled), an assigned species
+# complex, a species-level identification, and then the order of the rows
+# (Vector Atlas, MTM, IR Mapper).
+
+# The rows of the records in `keyed` (ir_distinct's records with a model pixel,
+# with their row, database, cell and modal_concentration) to drop as
+# cross-database duplicates, by the rule above
+cross_database_duplicates <- function(keyed) {
+  keyed %>%
+    mutate(
+      extreme = died == 0 | died == mosquito_number,
+      # only require these to match at 0% or 100%
+      species_key = if_else(extreme, species, NA),
+      concentration_key = if_else(extreme, concentration, NA)
+    ) %>%
+    group_by(cell, year_start, insecticide_type, died, mosquito_number,
+             species_key, concentration_key) %>%
+    arrange(desc(modal_concentration),
+            is.na(species_complex),
+            species %in% c("gambiae complex", "funestus complex"),
+            row,
+            .by_group = TRUE) %>%
+    group_by(database, .add = TRUE) %>%
+    mutate(k = row_number()) %>%
+    group_by(cell, year_start, insecticide_type, died, mosquito_number,
+             species_key, concentration_key, k) %>%
+    filter(row != first(row)) %>%
+    pull(row)
+}
+
+mask <- rast("data/clean/raster_mask.tif")
+keyed <- ir_distinct %>%
+  mutate(
+    row = row_number(),
+    database = sub("_.*", "", source),
+    cell = terra::cellFromXY(mask, cbind(longitude, latitude))
+  ) %>%
+  group_by(insecticide_type) %>%
+  mutate(
+    modal_concentration = concentration == sample_mode(concentration)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(cell))
+duplicate_rows <- cross_database_duplicates(keyed)
+cat(length(duplicate_rows), "cross-database duplicates dropped\n")
+
+# every set of two or more records matched on pixel, year, insecticide and
+# result, for checking: the within-database matches are the sets with a
+# database more than once, and the concentration mismatches those with more
+# than one concentration
+dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
+keyed %>%
+  group_by(cell, year_start, insecticide_type, died, mosquito_number) %>%
+  filter(n() > 1) %>%
+  mutate(set = cur_group_id()) %>%
+  ungroup() %>%
+  mutate(dropped = row %in% duplicate_rows) %>%
+  arrange(set, row) %>%
+  select(set, database, source, citation, longitude, latitude, year_start,
+         insecticide_type, concentration, species, mosquito_number, died,
+         mortality_adjusted, dropped) %>%
+  write.csv("outputs/review/bioassay_match_sets.csv", row.names = FALSE)
+
+ir_distinct <- ir_distinct %>%
+  filter(!row_number() %in% duplicate_rows)
 
 # # map distinct records for checking if any remaining duplicates
 # library(mapview)

@@ -5,8 +5,10 @@
 source("R/packages.R")
 source("R/functions.R")
 
-# load the fitted model objects here, to set up predictions
-load(file = "temporary/fitted_model.RData")
+source("R/bioassay_subset.R")
+
+# the modelled bioassays and their indices, as in R/fit_model.R
+list2env(modelled_bioassays(), environment())
 
 # load admin borders for plotting
 borders <- readRDS("data/clean/country_borders.RDS")
