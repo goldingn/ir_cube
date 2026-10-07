@@ -4,11 +4,29 @@
 source("R/packages.R")
 source("R/functions.R")
 
+# The 20261005 MTM discriminating concentration download fills missing values
+# of MORTALITY_ADJUSTED with 0: it has no missing values, and all 306 records
+# missing in the 20251031 download are exactly 0, 87 of them labelled
+# susceptible. The papers checked report nonzero mortality for these (#27). So
+# we treat them as missing and drop them, by ID against the 20251031 download;
+# the 232 zeros already in that download are kept. Set this to FALSE to keep
+# them.
+drop_mtm_filled_mortality <- TRUE
+mtm_filled_mortality_ids <- read_xlsx(
+  "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  sheet = "Data", col_types = "text") %>%
+  filter(is.na(MORTALITY_ADJUSTED)) %>%
+  pull(ID)
+
 # load data from malaria threat map discrimintating concentraation bioassays and
 # subset to Africa
 ir_dis_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  path = "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20261005.xlsx",
   sheet = "Data") %>%
+  # drop the records whose missing mortality was filled with 0, see above
+  filter(
+    !(drop_mtm_filled_mortality & ID %in% mtm_filled_mortality_ids)
+  ) %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
     across(
@@ -73,7 +91,7 @@ ir_dis_mtm_africa <- read_xlsx(
 # load data from malaria threat map intensity concentration bioassays and
 # subset to Africa
 ir_int_mtm_africa <- read_xlsx(
-  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20251031.xlsx",
+  path = "data/raw/MTM_INTENSITY_CONCENTRATION_BIOASSAY_20261005.xlsx",
   sheet = "Data") %>%
   # these were read in as characters and readxl is a pain to set column types
   mutate(
@@ -830,10 +848,14 @@ ir_everything <- ir_everything %>%
                                           "Anopheles stephensi sl"),
                            "Anopheles stephensi",
                            species),
-         species = if_else(species == "coluzzii (gambiae m)",
+         # S and M molecular forms are An. gambiae s.s. and An. coluzzii
+         # (Coetzee et al. 2013); mixed S/M samples go to complex level
+         species = if_else(species %in% c("coluzzii (gambiae m)",
+                                          "coluzzii_gambiae_m form"),
                            "Anopheles coluzzii",
                            species),
-         species = if_else(species == "gambiae (s)",
+         species = if_else(species %in% c("gambiae (s)",
+                                          "gambiae_s form"),
                            "Anopheles gambiae s.s.",
                            species),
          # standardise complex names
@@ -851,6 +873,7 @@ ir_everything <- ir_everything %>%
                                           "Anopheles gambiae s.l.",
                                           "Anopheles gambiae sl",
                                           "gambiae (S_M)",
+                                          "gambiae_s form_m form",
                                           "Anopheles coluzzii/gambiae"),
                            "gambiae complex",
                            species)
