@@ -25,10 +25,14 @@
 #                 the kdr term for the pyrethroids and DDT only
 #                 (kdr_options(floor = "class"))
 #   sp_v5         V5: no kdr covariate; latent smooths (smooth_options(),
-#                 R/latent_smooth.R) of the strength of selection, for every
-#                 class, and of the logit floor, for the pyrethroids and DDT,
-#                 with an intercept per class, its prior matched to
-#                 Beta(1, 4)
+#                 R/latent_smooth.R; squared exponential, P(range < 1,500
+#                 km) = 0.05, P(sd > 1) = 0.05) of the strength of selection,
+#                 for every class, and of the logit floor, for the
+#                 pyrethroids and DDT, with an intercept per class, its prior
+#                 matched to Beta(1, 4)
+#   sp_v5_shear   V5 shear: as V5, with the selection smooth u_s = v_s + b
+#                 u_f, sharing the floor's u_f through one loading b ~ N(1,
+#                 0.5) (smooth_options(shear = TRUE)); to run with V5
 #   sp_v5_sel     V5 sel: as V5, without the smooth of the floor (a constant
 #                 floor per class)
 #   sp_v5_floor   V5 floor: as V5, without the smooth of selection
@@ -47,11 +51,11 @@
 #   irpod sync    # uploads them, and data/clean/arabiensis_fraction.tif
 # Then create one pod per element of the json (about 3.7 h and $1.05 per fit
 # on the default pod, by the gradient timing, which is the same with and
-# without the species model; the full fit of 5 October took 6.2 h; V5's
-# gradient takes 41 ms against V4_class's 38, at 4 chains and 4 threads, but
-# with 1,818 free parameters to V4_class's 739 it may need more leapfrog
-# steps; state the price first), and when each is done, `irpod fetch <name>`
-# and delete its pod (it does not delete itself).
+# without the species model; the full fit of 5 October took 6.2 h. The fits
+# with floors took 6.3-6.9 h; V5's gradient takes about 41 ms, and V5
+# shear's 42, against V4_class's 38, at 4 chains and 4 threads, so about
+# 6.7-7.5 h and $2 each; state the price first), and when each is done,
+# `irpod fetch <name>` and delete its pod (it does not delete itself).
 
 source("R/net_grid.R")
 
@@ -59,20 +63,21 @@ floor_mode_inits <- paste("temporary/inits_floor_low.RDS",
                           "temporary/inits_floor_high.RDS", sep = ",")
 species_floors <- "species_options(floors = TRUE, floor_prior = c(1, 4))"
 # the latent smooths of V5, in full, with the smooths on selection and the
-# floor as given
-v5_smooth <- function(selection, floor) {
+# floor, and the shear, as given
+v5_smooth <- function(selection, floor, shear = "FALSE") {
   sprintf(paste("mortality_floor = TRUE, floor_prior = c(1, 4),",
                 "smooth = smooth_options(selection = %s, floor = %s,",
-                "floor_intercepts = \"class\", kernel = \"matern52\", c = 1.5,",
-                "range_prior = c(1, 0.05), sd_prior = c(1, 0.05))"),
-          selection, floor)
+                "shear = %s, floor_intercepts = \"class\", kernel = \"se\",",
+                "c = 2, basis_range = 1, range_prior = c(1.5, 0.05),",
+                "sd_prior = c(1, 0.05))"),
+          selection, floor, shear)
 }
 species_runs <- data.frame(
   name = c("sp_ref_floor", "sp_v1", "sp_v1_floor", "sp_v2", "sp_v2_floor",
            "sp_v3", "sp_v3_floor", "sp_v4", "sp_v4_class", "sp_v5",
-           "sp_v5_sel", "sp_v5_floor"),
+           "sp_v5_shear", "sp_v5_sel", "sp_v5_floor"),
   label = c("B_f", "V1", "V1f", "V2", "V2f", "V3", "V3f", "V4", "V4_class",
-            "V5", "V5_sel", "V5_floor"),
+            "V5", "V5_shear", "V5_sel", "V5_floor"),
   options = sprintf("dynamical_model_options(%s)", c(
     "mortality_floor = TRUE, floor_prior = c(1, 4)",
     "species = species_options(floors = FALSE)",
@@ -86,11 +91,13 @@ species_runs <- data.frame(
     paste("mortality_floor = TRUE, floor_prior = c(1, 4),",
           "kdr = kdr_options(floor = \"class\")"),
     v5_smooth("TRUE", "\"class\""),
+    v5_smooth("TRUE", "\"class\"", shear = "TRUE"),
     v5_smooth("TRUE", "FALSE"),
     v5_smooth("FALSE", "\"class\""))),
   inits = c(floor_mode_inits, "", floor_mode_inits, "", floor_mode_inits, "",
             floor_mode_inits, floor_mode_inits, floor_mode_inits,
-            floor_mode_inits, floor_mode_inits, floor_mode_inits))
+            floor_mode_inits, floor_mode_inits, floor_mode_inits,
+            floor_mode_inits))
 
 # One row per pod job, as net_grid_jobs() makes them
 species_run_jobs <- function(code_ref, threads = 8) {

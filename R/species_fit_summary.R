@@ -6,7 +6,7 @@
 # For the key parameters: beta_overall, beta_class (overall plus the class
 # deviation, per covariate and class), sigma_overall, sigma_class, rho per
 # type, the reversion rates, and those of #47 (gamma_*, delta_*, the floors,
-# the latent smooths' sd and range),
+# the latent smooths' sd and range, and shear loading),
 # the posterior mean, sd and quantiles, R-hat and bulk and tail ESS
 # (posterior::summarise_draws()), over the usable chains (all but those
 # stuck, stuck_chains()) and, for R-hat, over all chains; gamma_* and delta_*
@@ -101,8 +101,8 @@ key_parameters <- function(chain) {
         plogis(m[, name])
     }
   }
-  # the latent smooths' sd, and range in km
-  for (name in grep("^smooth_sd_", colnames(m), value = TRUE)) {
+  # the latent smooths' sd, range in km, and shear loading b
+  for (name in grep("^smooth_(sd_|shear$)", colnames(m), value = TRUE)) {
     out[[name]] <- m[, name]
   }
   for (name in grep("^smooth_inv_range_", colnames(m), value = TRUE)) {
