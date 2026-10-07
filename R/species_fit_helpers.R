@@ -161,6 +161,48 @@ rebuild_fit_model <- function(fit, n_check = 5) {
   built
 }
 
+# About n_draws draws of `fit`, the same number evenly spaced in each usable
+# chain (loo::relative_eff() needs equal chains), as rows of
+# as.matrix(fit$draws) (the chains stacked in order): list(index, chain)
+even_draws <- function(fit, n_draws, label = "") {
+  usable <- usable_chains(fit$draws, label)
+  chain_rows <- split(seq_len(sum(vapply(fit$draws, nrow, integer(1)))),
+                      draw_chain(fit$draws))
+  per_chain <- min(floor(n_draws / length(usable)),
+                   min(lengths(chain_rows[usable])))
+  index <- unlist(lapply(chain_rows[usable], function(rows) {
+    rows[round(seq(1, length(rows), length.out = per_chain))]
+  }), use.names = FALSE)
+  list(index = index, chain = draw_chain(fit$draws)[index])
+}
+
+# The posterior parameters of `fit` (dynamical_parameter_draws(),
+# R/dynamical_predictions.R) at draws `index`
+fit_parameter_draws <- function(fit, index) {
+  dynamical_parameter_draws(
+    list(draws = fit$draws, options = fit$options,
+         x_cells_init = fit$x_cells_init),
+    fit$classes_index, fit$types, draw_index = index, options = fit$options)
+}
+
+# The regions of the misfit and trend summaries (#47): the UN geoscheme's,
+# with the Horn of Africa (and Sudan) split from Eastern Africa and the
+# southern countries of Eastern Africa moved to Southern Africa, as
+# kdr_region() on branch latent-kdr. `region` is the UNSD region of each
+# record (df$region)
+analysis_region <- function(country, region) {
+  dplyr::case_when(
+    country %in% c("Djibouti", "Eritrea", "Ethiopia", "Somalia",
+                   "Sudan") ~ "Horn",
+    country %in% c("Comoros", "Madagascar", "Malawi", "Mauritius",
+                   "Mozambique", "Zambia", "Zimbabwe") ~ "Southern",
+    region == "Western Africa" ~ "West",
+    region == "Middle Africa" ~ "Central",
+    region == "Eastern Africa" ~ "East",
+    region == "Southern Africa" ~ "Southern",
+    region == "Northern Africa" ~ "North")
+}
+
 # The free states of `fit`'s draws, chains `chains` stacked, in the order of
 # the rebuilt model `built` (rebuild_fit_model())
 free_states <- function(fit, built, chains = seq_along(fit$draws)) {
