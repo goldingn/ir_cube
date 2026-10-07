@@ -5,7 +5,8 @@
 #
 # For the key parameters: beta_overall, beta_class (overall plus the class
 # deviation, per covariate and class), sigma_overall, sigma_class, rho per
-# type, the reversion rates, and those of #47 (gamma_*, delta_*, the floors),
+# type, the reversion rates, and those of #47 (gamma_*, delta_*, the floors,
+# the latent smooths' sd and range),
 # the posterior mean, sd and quantiles, R-hat and bulk and tail ESS
 # (posterior::summarise_draws()), over the usable chains (all but those
 # stuck, stuck_chains()) and, for R-hat, over all chains; gamma_* and delta_*
@@ -83,18 +84,30 @@ key_parameters <- function(chain) {
     }
   }
   new <- grep("^(gamma_|delta_|floor_)|floor$", colnames(m), value = TRUE)
+  new <- new[!grepl("^smooth_", new)]
+  smooth <- smooth_on(fit$options)
   for (name in new) {
     out[[name]] <- m[, name]
     if (grepl("^(gamma_|delta_)", name)) {
       out[[sprintf("exp(%s)", name)]] <- exp(m[, name])
     }
-    # the kdr-dependent floor at the mean kdr, per class with floor = "class"
+    # the kdr-dependent floor at the mean kdr, or the floor of the latent
+    # smooths where u_f is 0, per class with an intercept per class
     if (grepl("^floor_intercept", name)) {
       index <- if (name == "floor_intercept") "" else
         sprintf("[%s]", fit$classes[as.integer(sub("^.*\\[(\\d+),.*$", "\\1",
                                                     name))])
-      out[[paste0("floor_at_k0", index)]] <- plogis(m[, name])
+      out[[paste0(if (smooth) "floor_at_u0" else "floor_at_k0", index)]] <-
+        plogis(m[, name])
     }
+  }
+  # the latent smooths' sd, and range in km
+  for (name in grep("^smooth_sd_", colnames(m), value = TRUE)) {
+    out[[name]] <- m[, name]
+  }
+  for (name in grep("^smooth_inv_range_", colnames(m), value = TRUE)) {
+    out[[sub("^smooth_inv_range_", "smooth_range_km_", name)]] <-
+      1000 / m[, name]
   }
   do.call(cbind, out)
 }
@@ -155,6 +168,7 @@ parameters <- summary_usable %>%
   mutate(group = case_when(
     str_detect(parameter, "^exp\\(") ~ "multiplier",
     str_detect(parameter, "^(gamma_|delta_)") ~ "species and kdr",
+    str_detect(parameter, "^smooth_") ~ "smooth",
     str_detect(parameter, "floor$|^floor_") ~ "floor",
     str_detect(parameter, "^rho") ~ "rho",
     str_detect(parameter, "^reversion") ~ "reversion",
@@ -170,7 +184,7 @@ parameters_by_mode <- bind_rows(lapply(names(modes), function(this_mode) {
     rhat = posterior::rhat) %>%
     rename(parameter = variable) %>%
     filter(str_detect(parameter,
-                      "^exp\\(|^(gamma_|delta_|floor_)|floor$")) %>%
+                      "^exp\\(|^(gamma_|delta_|floor_|smooth_)|floor$")) %>%
     mutate(label = label, mode = this_mode,
            chains = toString(modes[[this_mode]]), .before = 1)
 }))
@@ -201,7 +215,7 @@ print(as.data.frame(chains), digits = 4)
 print(as.data.frame(fit_row %>% select(-file, -options)), digits = 4)
 print(as.data.frame(parameters %>%
                       filter(group %in% c("multiplier", "floor", "species and kdr",
-                                          "reversion", "rho")) %>%
+                                          "smooth", "reversion", "rho")) %>%
                       select(parameter, mean, q2.5, q50, q97.5, rhat,
                              rhat_all_chains, ess_bulk, ess_tail)),
       digits = 3)
