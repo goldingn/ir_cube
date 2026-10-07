@@ -199,7 +199,8 @@ if (step != "figures") {
     coords <- project_km(xy[, 1], xy[, 2])
     cell_country <- match(grid$country, dimnames(dynamical$logit_init)[[2]])
     # r(x) at every cell with the species model, and the standardised kdr
-    # with the kdr covariate (#47), each NULL without it
+    # with the kdr covariate (#47), each NULL without it; the basis of the
+    # latent smooths (V5) is made for each chunk
     grid_share <- prediction_share(dynamical$parameters$options, grid$cells)
     grid_kdr <- prediction_kdr(dynamical$parameters$options, grid$cells)
     rm(xy)
@@ -249,6 +250,8 @@ if (step != "figures") {
       ok <- chunk[!is.na(cell_country[chunk])]
       if (length(ok) == 0) next
       x_chunk <- map_x(covariates, ok, max(year_index))
+      basis_chunk <- prediction_basis(batch_parameters[[1]]$options,
+                                      grid$cells[ok])
       new <- tibble(x_km = rep(coords[ok, 1], length(map_years)),
                     y_km = rep(coords[ok, 2], length(map_years)),
                     year = rep(map_years, each = length(ok)))
@@ -266,7 +269,8 @@ if (step != "figures") {
                                    x_chunk, year_index,
                                    x_init = covariates$init[ok, , drop = FALSE],
                                    share = grid_share[ok],
-                                   kdr = grid_kdr[ok, , drop = FALSE])
+                                   kdr = grid_kdr[ok, , drop = FALSE],
+                                   basis = basis_chunk)
         correction <- project(fields[[b]], new, count = b == 1)
         for (j in seq_along(map_years)) {
           rows <- (j - 1) * length(ok) + seq_along(ok)

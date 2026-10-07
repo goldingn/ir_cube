@@ -13,7 +13,12 @@
 # species do not differ. With the kdr covariate (#47), the model with its
 # slopes at 0 is checked against the model without it, in greta (the log
 # density) and in plain R (the predictions), and with the kdr-dependent floor,
-# with its slope at 0 against the constant floor.
+# with its slope at 0 against the constant floor. With the latent smooths
+# (V5, #47), each is checked to have mean 0 over the modelled cells, and the
+# model with every raw weight 0 against the kdr model with the same floor
+# intercepts (by class: V4_class) and its slopes at 0, in greta and in plain
+# R: both are then the model with a constant floor per class (or one floor,
+# or none).
 #
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
 # (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
@@ -24,6 +29,9 @@
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(species = species_options())' \
 #     Rscript R/check_dynamical_model.R
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(kdr = kdr_options())' \
+#     Rscript R/check_dynamical_model.R
+#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(mortality_floor = TRUE,
+#     floor_prior = c(1, 4), smooth = smooth_options())' \
 #     Rscript R/check_dynamical_model.R
 #
 # Run with the greta 0.6 environment (doc/cv_run_plan.md, section 1).
@@ -192,10 +200,12 @@ logit_init_all <- map_logit_init(parameters, countries, regions, df)
 cell_country_index <- match(map_rows$country_name,
                             dimnames(logit_init_all)[[2]])
 # the share of the complex-wide predictions at each map cell (NULL without the
-# species model), and for dynamical_logit(), at each row; and the standardised
-# kdr at each map cell (NULL without the kdr covariate)
+# species model), and for dynamical_logit(), at each row; the standardised
+# kdr at each map cell (NULL without the kdr covariate); and the basis of the
+# latent smooths (NULL without them)
 map_share <- prediction_share(model_options, map_rows$cell)
 map_kdr <- prediction_kdr(model_options, map_rows$cell)
+map_basis <- prediction_basis(model_options, map_rows$cell)
 x_years <- map_x(covariates, seq_len(nrow(map_rows)),
                  max(map_years) - baseline_year + 1)
 clamp <- function(l) pmin(pmax(l, qlogis(1e-12)), qlogis(1 - 1e-12))
@@ -206,7 +216,7 @@ for (k in seq_along(types)) {
                                       1),
                                x_years, map_years - baseline_year + 1,
                                x_init = covariates$init, share = map_share,
-                               kdr = map_kdr)
+                               kdr = map_kdr, basis = map_basis)
   for (y in map_years) {
     rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
                    year_id = y - baseline_year + 1)
@@ -332,6 +342,98 @@ if (kdr_on(model_options)) {
                 if (isTRUE(floor_kind)) "one" else "by class",
                 paste(sprintf("%.3f", floors), collapse = ", "),
                 parameters$floor_kdr))
+  }
+}
+if (smooth_on(model_options)) {
+  smooth <- model_options$smooth
+  kinds <- smooth_kinds(model_options)
+  cat(sprintf("smooth: %s; kernel %s, m = (%s), %d basis functions; floor intercepts %s\n",
+              paste(sprintf("%s (%s)", kinds,
+                            vapply(kinds, function(kind) {
+                              if (isTRUE(smooth[[kind]])) "every class" else
+                                "pyrethroids and DDT"
+                            }, "")), collapse = ", "),
+              smooth$kernel, toString(smooth$m), nrow(smooth$indices),
+              if (smooth_floor_on(model_options)) smooth$floor_intercepts else
+                "none"))
+  # each smooth has mean 0 over the modelled cells
+  basis_cells <- prediction_basis(model_options, map_rows$cell)
+  u_cells <- lapply(parameters$smooth_weights, function(w) {
+    c(w %*% t(basis_cells))
+  })
+  for (kind in kinds) {
+    cat(sprintf("smooth %s: sd %.3f, range %.0f km; at the cells, mean %.2g, range %.3f to %.3f\n",
+                kind, trace[1, paste0("smooth_sd_", kind)],
+                1000 / trace[1, paste0("smooth_inv_range_", kind)],
+                mean(u_cells[[kind]]), min(u_cells[[kind]]),
+                max(u_cells[[kind]])))
+  }
+  stopifnot(all(abs(vapply(u_cells, mean, numeric(1))) < 1e-12))
+
+  # With every raw weight 0 the smooths are 0, and the model is the kdr model
+  # with the same floor intercepts (kdr_options(floor = "class") for one per
+  # class, as V4_class; TRUE for one; no floor without mortality_floor) and
+  # its slopes at 0. In greta, the log density then differs by the priors:
+  # those of the smooths (the raw weights N(0, 1) at 0, and the exponential
+  # sd and inverse range with the Jacobians of their log free states) less
+  # those of the kdr slopes N(0, 1) at 0
+  floor_on <- smooth_floor_on(model_options)
+  options_base <- model_options
+  options_base$smooth <- FALSE
+  options_base$kdr <- kdr_options(floor = if (!floor_on) FALSE else
+    if (identical(smooth$floor_intercepts, "class")) "class" else TRUE)
+  built_base <- build(df, options_base)
+  free_zero <- free
+  for (kind in kinds) {
+    free_zero[free_columns(built$model, smooth_variable_names(kind)[["raw"]])] <- 0
+  }
+  columns_base <- free_state_columns(built_base$model)
+  base_slopes <- intersect(c(kdr_slope_names, "floor_kdr"),
+                           names(built_base$variables))
+  free_base <- numeric(length(unlist(
+    built_base$model$dag$example_parameters(free = TRUE))))
+  for (name in setdiff(names(attr(columns_base, "targets")), base_slopes)) {
+    free_base[columns_base[[attr(columns_base, "targets")[[name]]]]] <-
+      free_zero[free_columns(built$model, name)]
+  }
+  trace_zero <- built$model$dag$trace_values(matrix(free_zero, nrow = 1))
+  rates <- smooth_prior_rates(smooth)
+  expected <- -length(base_slopes) * dnorm(0, log = TRUE)
+  for (kind in kinds) {
+    sd <- trace_zero[1, paste0("smooth_sd_", kind)]
+    inv_range <- trace_zero[1, paste0("smooth_inv_range_", kind)]
+    expected <- expected + nrow(smooth$indices) * dnorm(0, log = TRUE) +
+      dexp(sd, rates$sd, log = TRUE) + log(sd) +
+      dexp(inv_range, rates$range, log = TRUE) + log(inv_range)
+  }
+  ld_difference <- log_density(built$model, free_zero) -
+    log_density(built_base$model, free_base) - expected
+  cat(sprintf("smooth: raw weights 0 vs the kdr model (floor %s) with slopes %s at 0, greta log density: diff %.3g\n",
+              deparse(options_base$kdr$floor), toString(base_slopes),
+              ld_difference))
+  stopifnot(abs(ld_difference) < 1e-6)
+
+  # and in plain R, the predictions at every assay
+  zero <- parameters
+  zero$smooth_weights <- lapply(zero$smooth_weights, function(x) 0 * x)
+  base <- zero
+  base$smooth_weights <- list()
+  base$options <- built_base$options
+  base$kdr_slopes <- lapply(
+    setNames(nm = intersect(kdr_slope_names, base_slopes)),
+    function(name) rep(0, parameters$n_draws))
+  if (floor_on) base$floor_kdr <- rep(0, parameters$n_draws)
+  l_zero <- dynamical_logit(zero, df, df, x_cell_years, cell_years_index)
+  l_base <- dynamical_logit(base, df, df, x_cell_years, cell_years_index)
+  smooth_difference <- max(abs(clamp(l_zero) - clamp(l_base)))
+  cat(sprintf("smooth: raw weights 0 vs the kdr model with slopes at 0, plain R, logit: max abs diff %.3g\n",
+              smooth_difference))
+  stopifnot(smooth_difference < 1e-12)
+  if (floor_on) {
+    cat(sprintf("smooth floor (%s): floor where u_f is 0 %s\n",
+                smooth$floor_intercepts,
+                paste(sprintf("%.3f", plogis(c(parameters$floor_intercept))),
+                      collapse = ", ")))
   }
 }
 cat("all checks passed\n")
