@@ -977,7 +977,90 @@ ir_distinct <- ir_everything %>%
            country_name, 
            concentration,
            mortality_round = round(mortality_adjusted, digits = 0),
-           .keep_all = TRUE) 
+           .keep_all = TRUE)
+
+# The exact match above misses copies of the same bioassay held by more than one
+# database (MTM, IR Mapper, Vector Atlas), because one key often differs between
+# the copies: coordinates rounded either side of a 0.1 degree boundary, a
+# mislabelled concentration (e.g. 0.75% deltamethrin, permethrin's dose), or
+# Abbott's correction applied in one source only. See issue #31. So we match
+# records more loosely, on the model pixel, year, insecticide and the exact
+# result (died and mosquito_number); matched records are at most about 6.6 km
+# apart (one 1/24 degree pixel). At 0% or 100% mortality, where identical
+# results are common in genuine replicates (e.g. 100 of 100 mosquitoes dying at
+# nearby sites), the species and concentration must match too.
+#
+# In each match set the k-th preferred record from each database is matched to
+# the k-th preferred record from each other database, and the most preferred
+# record of each such group is kept. So matches within a database are kept, as
+# they may be separate tests: a set with two MTM records and one Vector Atlas
+# record keeps two. In order, the preferences are for: the most common
+# concentration of that insecticide (so the record stays in the modelled
+# subset, and the other copy is probably mislabelled), an assigned species
+# complex, a species-level identification, and then the order of the rows
+# (Vector Atlas, MTM, IR Mapper).
+
+# The rows of the records in `keyed` (ir_distinct's records with a model pixel,
+# with their row, database, cell and modal_concentration) to drop as
+# cross-database duplicates, by the rule above
+cross_database_duplicates <- function(keyed) {
+  keyed %>%
+    mutate(
+      extreme = died == 0 | died == mosquito_number,
+      # only require these to match at 0% or 100%
+      species_key = if_else(extreme, species, NA),
+      concentration_key = if_else(extreme, concentration, NA)
+    ) %>%
+    group_by(cell, year_start, insecticide_type, died, mosquito_number,
+             species_key, concentration_key) %>%
+    arrange(desc(modal_concentration),
+            is.na(species_complex),
+            species %in% c("gambiae complex", "funestus complex"),
+            row,
+            .by_group = TRUE) %>%
+    group_by(database, .add = TRUE) %>%
+    mutate(k = row_number()) %>%
+    group_by(cell, year_start, insecticide_type, died, mosquito_number,
+             species_key, concentration_key, k) %>%
+    filter(row != first(row)) %>%
+    pull(row)
+}
+
+mask <- rast("data/clean/raster_mask.tif")
+keyed <- ir_distinct %>%
+  mutate(
+    row = row_number(),
+    database = sub("_.*", "", source),
+    cell = terra::cellFromXY(mask, cbind(longitude, latitude))
+  ) %>%
+  group_by(insecticide_type) %>%
+  mutate(
+    modal_concentration = concentration == sample_mode(concentration)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(cell))
+duplicate_rows <- cross_database_duplicates(keyed)
+cat(length(duplicate_rows), "cross-database duplicates dropped\n")
+
+# every set of two or more records matched on pixel, year, insecticide and
+# result, for checking: the within-database matches are the sets with a
+# database more than once, and the concentration mismatches those with more
+# than one concentration
+dir.create("outputs/review", showWarnings = FALSE, recursive = TRUE)
+keyed %>%
+  group_by(cell, year_start, insecticide_type, died, mosquito_number) %>%
+  filter(n() > 1) %>%
+  mutate(set = cur_group_id()) %>%
+  ungroup() %>%
+  mutate(dropped = row %in% duplicate_rows) %>%
+  arrange(set, row) %>%
+  select(set, database, source, citation, longitude, latitude, year_start,
+         insecticide_type, concentration, species, mosquito_number, died,
+         mortality_adjusted, dropped) %>%
+  write.csv("outputs/review/bioassay_match_sets.csv", row.names = FALSE)
+
+ir_distinct <- ir_distinct %>%
+  filter(!row_number() %in% duplicate_rows)
 
 # # map distinct records for checking if any remaining duplicates
 # library(mapview)
