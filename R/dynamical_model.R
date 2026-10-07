@@ -34,14 +34,15 @@ source("R/windowed_hmc.R")
 #   reversion         reversion to susceptibility (#24): "estimated" for one
 #                     rate per class, or FALSE for none
 #   centred           which hierarchy levels are sampled centred
-#                     (centred_options()); none by default. The same model
+#                     (centred_options()); by default the data-informed levels
+#                     (centred_options_data_informed(); #48). The same model
 #                     either way: it changes only the coordinates HMC moves in
 dynamical_model_options <- function(mortality_floor = FALSE,
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
                                     reversion = "estimated",
-                                    centred = centred_options()) {
+                                    centred = centred_options_data_informed()) {
   list(mortality_floor = mortality_floor,
        init_covariates = init_covariates,
        selection_columns = selection_columns,
@@ -722,8 +723,9 @@ noncentred_draws <- function(draws, classes_index, options) {
 # (R/fit_validation_fold.R) and fit_model.R. The arguments override single
 # settings, e.g. for a smoke test. The defaults, and the evidence for them, are
 # in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with
-# 60 to 120 leapfrog steps, redrawn every 10 iterations, target acceptance
-# 0.65, 4 chains, 2,000 warmup and 3,000 samples.
+# 30 to 60 leapfrog steps (60 to 120 before the centred selection hierarchy,
+# #48), redrawn every 10 iterations, target acceptance 0.65, 4 chains, 2,000
+# warmup and 3,000 samples.
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
 #                  burst of iterations
 #   accept_target  target acceptance of the step-size adaptation
@@ -734,8 +736,8 @@ noncentred_draws <- function(draws, classes_index, options) {
 dynamical_mcmc_settings <- function(n_chains = 4,
                                     warmup = 2000,
                                     n_samples = 3000,
-                                    Lmin = 60,
-                                    Lmax = 120,
+                                    Lmin = 30,
+                                    Lmax = 60,
                                     accept_target = 0.65,
                                     pb_update = 10) {
   list(n_chains = n_chains,
