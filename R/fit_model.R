@@ -99,9 +99,12 @@ inits <- dynamical_chain_inits(dynamical_inits_files(), built$variables,
                                options = model_options,
                                classes_index = classes_index)
 
-system.time(
+# the time is kept in the saved image, to compare runs on effective samples
+# per hour (R/centred_pilot.R)
+sampling_time <- system.time(
   draws <- run_dynamical_mcmc(m, built$variables, inits, settings)
 )
+sampling_time
 
 # check convergence
 rhats <- coda::gelman.diag(draws,
