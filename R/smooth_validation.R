@@ -1,0 +1,177 @@
+# Post-hoc checks of the latent smooths of a saved full fit (V5, #47;
+# R/latent_smooth.R) against the marker layers and the kdr records.
+#
+#   Rscript R/smooth_validation.R <fitted_model.RData> <label>
+#
+# From about n_draws (500) posterior draws, evenly spaced in each usable
+# chain, the posterior mean of each smooth (u_s, the log multiplier of
+# selection; u_f, the shift of the logit floor):
+#   layers   at each modelled bioassay cell (each once), regressed on the
+#            marker layers, each standardised over the cells: logit total kdr
+#            (995F + 995S) in 2015 of the whole complex
+#            (data/clean/kdr_total_2015.tif, band "complex") and logit
+#            arabiensis fraction r(x) (data/clean/arabiensis_fraction.tif).
+#            R^2 of each alone and of both, and the partial correlation of
+#            each with the smooth given the other. The kdr work (#46,
+#            ../ir_cube_kdr) saves no maps of 995F and 995S apart, so total
+#            kdr only
+#   records  at each sample of the kdr records (data/clean/kdr_records.csv)
+#            since 2010 with one record each of 995F and 995S and a sample
+#            size (allele counts consistent, as joint_observations() on branch
+#            latent-kdr), against the empirical logit of its total kdr, log((y
+#            + 0.5) / (2n - y + 0.5)) for y the 995F and 995S alleles of 2n:
+#            correlation and R^2, for all samples and by species group
+# Writes outputs/species_runs/smooth/<label>_validation.csv and
+# figures/species_runs/smooth_validation_<label>.png. Plain R; about 3 GB
+# and 1 minute.
+
+arguments <- commandArgs(trailingOnly = TRUE)
+stopifnot(length(arguments) == 2)
+file <- arguments[1]
+label <- arguments[2]
+n_draws <- 500
+records_since <- 2010
+
+suppressMessages({
+  library(greta)
+  library(dplyr)
+  library(stringr)
+  library(tibble)
+  library(tidyr)
+  library(ggplot2)
+})
+source("R/dynamical_predictions.R")
+source("R/species_fit_helpers.R")
+
+output_dir <- "outputs/species_runs/smooth"
+figure_dir <- "figures/species_runs"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
+
+fit <- load_fit(file)
+if (!smooth_on(fit$options)) {
+  report("%s has no latent smooths; nothing to check", label)
+  quit(save = "no")
+}
+draws_used <- even_draws(fit, n_draws, label)
+parameters <- fit_parameter_draws(fit, draws_used$index)
+kinds <- names(parameters$smooth_weights)
+crs <- fit$options$smooth$crs
+
+
+# the marker layers at the modelled cells ---------------------------------------
+
+cells <- fit$df$cell[match(seq_len(max(fit$df$cell_id)), fit$df$cell_id)]
+at_cells <- smooth_posterior_at(parameters, smooth_cell_coords(cells, crs))
+standardise <- function(x) (x - mean(x)) / sd(x)
+cell_data <- tibble(
+  kdr = standardise(kdr_logit_at(cells, "complex")),
+  arabiensis = standardise(qlogis(clamp_probability(
+    arabiensis_fraction_at(cells)))))
+for (kind in kinds) {
+  cell_data[[kind]] <- at_cells[[kind]][, "mean"]
+}
+
+# R^2 of each layer alone and of both, and the partial correlations
+partial_correlation <- function(y, x, z) {
+  cor(resid(lm(y ~ z)), resid(lm(x ~ z)))
+}
+layers <- bind_rows(lapply(kinds, function(kind) {
+  y <- cell_data[[kind]]
+  tibble(
+    label = label, smooth = kind, n = length(y),
+    r2_kdr = summary(lm(y ~ cell_data$kdr))$r.squared,
+    r2_arabiensis = summary(lm(y ~ cell_data$arabiensis))$r.squared,
+    r2_both = summary(lm(y ~ cell_data$kdr + cell_data$arabiensis))$r.squared,
+    partial_kdr = partial_correlation(y, cell_data$kdr,
+                                      cell_data$arabiensis),
+    partial_arabiensis = partial_correlation(y, cell_data$arabiensis,
+                                             cell_data$kdr),
+    slope_kdr = coef(lm(y ~ cell_data$kdr + cell_data$arabiensis))[[2]],
+    slope_arabiensis = coef(lm(y ~ cell_data$kdr +
+                                 cell_data$arabiensis))[[3]])
+}))
+options(width = 160)
+cat(sprintf("\n%s: posterior mean smooths at %d modelled cells, on the standardised marker layers\n",
+            label, length(cells)))
+print(as.data.frame(layers), digits = 3)
+
+
+# the kdr records ----------------------------------------------------------------
+
+alleles <- read.csv("data/clean/kdr_records.csv") %>%
+  filter(year_start >= records_since, variant %in% c("995F", "995S"),
+         !is.na(n_tested), n_tested > 0) %>%
+  mutate(m = 2 * n_tested, y = round(frequency * m)) %>%
+  group_by(sample_id) %>%
+  filter(sum(variant == "995F") == 1, sum(variant == "995S") == 1) %>%
+  summarise(longitude = first(longitude), latitude = first(latitude),
+            species_group = first(species_group), m = first(m),
+            y = sum(y), .groups = "drop") %>%
+  # a count over by one is rounding
+  mutate(y = if_else(y == m + 1, m, y)) %>%
+  filter(y <= m) %>%
+  mutate(empirical_logit = log((y + 0.5) / (m - y + 0.5)))
+# the samples inside the mask
+mask <- terra::rast("data/clean/raster_mask.tif")
+sample_cells <- terra::cellFromXY(mask, cbind(alleles$longitude,
+                                              alleles$latitude))
+inside <- !is.na(sample_cells) &
+  !is.na(terra::values(mask, mat = FALSE)[sample_cells])
+report("%d samples since %d typed for both 995F and 995S, %d inside the mask",
+       nrow(alleles), records_since, sum(inside))
+alleles <- alleles[inside, ]
+at_samples <- smooth_posterior_at(parameters,
+                                  smooth_coords(alleles$longitude,
+                                                alleles$latitude, crs))
+for (kind in kinds) {
+  alleles[[kind]] <- at_samples[[kind]][, "mean"]
+}
+groups <- c(list(all = alleles), split(alleles, alleles$species_group))
+records <- bind_rows(lapply(names(groups), function(group) {
+  data <- groups[[group]]
+  bind_rows(lapply(kinds, function(kind) {
+    tibble(label = label, smooth = kind, group = group, n = nrow(data),
+           correlation = if (nrow(data) > 2) {
+             cor(data$empirical_logit, data[[kind]])
+           } else NA_real_,
+           r2 = correlation ^ 2)
+  }))
+}))
+cat(sprintf("\n%s: posterior mean smooths at the kdr samples since %d, against their empirical logit total kdr\n",
+            label, records_since))
+print(as.data.frame(records), digits = 3)
+
+write.csv(bind_rows(layers %>% mutate(check = "layers", .before = 1),
+                    records %>% mutate(check = "records", .before = 1)),
+          file.path(output_dir, sprintf("%s_validation.csv", label)),
+          row.names = FALSE)
+
+
+# the figure -----------------------------------------------------------------------
+
+points <- bind_rows(
+  cell_data %>%
+    pivot_longer(all_of(kinds), names_to = "smooth", values_to = "u") %>%
+    pivot_longer(c(kdr, arabiensis), names_to = "x_name", values_to = "x") %>%
+    mutate(x_name = recode(x_name,
+                           kdr = "logit total kdr, 2015 map (standardised)",
+                           arabiensis = "logit arabiensis fraction (standardised)")),
+  alleles %>%
+    pivot_longer(all_of(kinds), names_to = "smooth", values_to = "u") %>%
+    transmute(smooth, u, x = empirical_logit,
+              x_name = sprintf("empirical logit total kdr, samples since %d",
+                               records_since)))
+p <- ggplot(points, aes(x, u)) +
+  geom_point(size = 0.4, alpha = 0.3) +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE, linewidth = 0.6) +
+  facet_grid(smooth ~ x_name, scales = "free") +
+  labs(x = NULL, y = "posterior mean of the smooth",
+       title = sprintf("%s: the latent smooths against the kdr and species markers",
+                       label),
+       caption = paste("u_s (selection): log multiplier of the cumulative log",
+                       "fitness; u_f (floor): shift of the logit floor")) +
+  theme_bw(base_size = 9)
+ggsave(file.path(figure_dir, sprintf("smooth_validation_%s.png", label)), p,
+       width = 10, height = 2.4 + 2.6 * length(kinds), dpi = 150)
+report("saved; peak memory %.1f GB", peak_memory_gb())

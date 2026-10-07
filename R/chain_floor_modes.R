@@ -16,7 +16,9 @@
 # is the mode of each, other members first, e.g. "low/high". With the
 # kdr-dependent floor (#47), the floor is that at the mean kdr,
 # plogis(floor_intercept) (floor_at_k0), one per class with floor = "class"
-# (floor NA, and a mode per class in class order).
+# (floor NA, and a mode per class in class order); with the latent smooths
+# (V5), that where u_f is 0 (floor_at_u0), and the chain's mean sd and range
+# (in km) of each smooth, also for a model without a floor.
 chain_floor_modes <- function(model, draws, n_per_chain = 60,
                               high_floor = 0.1, batch = 10) {
   floor_columns <- c(intersect(c("mortality_floor", "other_floor",
@@ -24,7 +26,9 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
                                colnames(draws[[1]])),
                      grep("^floor_intercept", colnames(draws[[1]]),
                           value = TRUE))
-  if (length(floor_columns) == 0) {
+  smooth_columns <- grep("^smooth_(sd|inv_range)_", colnames(draws[[1]]),
+                         value = TRUE)
+  if (length(floor_columns) == 0 && length(smooth_columns) == 0) {
     return(NULL)
   }
   raw <- attr(draws, "model_info")$raw_draws
@@ -40,19 +44,31 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
             adjusted = as.numeric(result$adjusted))
     })
     values <- do.call(rbind, values)
-    floors <- colMeans(floor_values(as.matrix(draws[[chain]])[
-      , floor_columns, drop = FALSE]))
-    names(floors) <- sub("^floor_intercept", "floor_at_k0", names(floors))
+    chain_draws <- as.matrix(draws[[chain]])
+    floors <- colMeans(floor_values(chain_draws[, floor_columns,
+                                                drop = FALSE]))
+    names(floors) <- sub("^floor_intercept",
+                         if (length(smooth_columns) > 0) "floor_at_u0" else
+                           "floor_at_k0", names(floors))
     row <- data.frame(chain = chain,
                       floor = if (length(floors) == 1) floors[[1]] else NA,
-                      mode = paste(ifelse(floors > high_floor, "high", "low"),
-                                   collapse = "/"),
+                      mode = if (length(floors) == 0) "none" else
+                        paste(ifelse(floors > high_floor, "high", "low"),
+                              collapse = "/"),
                       log_posterior = mean(values[, "unadjusted"]),
                       log_posterior_max = max(values[, "unadjusted"]),
                       log_posterior_adjusted = mean(values[, "adjusted"]),
                       n_evaluated = nrow(values))
     if (length(floors) > 1) {
       row <- cbind(row, as.list(floors))
+    }
+    for (column in smooth_columns) {
+      if (grepl("^smooth_sd_", column)) {
+        row[[column]] <- mean(chain_draws[, column])
+      } else {
+        row[[sub("^smooth_inv_range_", "smooth_range_km_", column)]] <-
+          1000 * mean(1 / chain_draws[, column])
+      }
     }
     row
   })
