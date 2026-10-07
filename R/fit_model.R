@@ -13,6 +13,7 @@ source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
 source("R/dynamical_model.R")
+source("R/chain_floor_modes.R")
 
 # set the start of the timeseries considered in modelling (the start of
 # non-negligible levels of resistance) - assume it's before the mass-rollout of
@@ -89,13 +90,15 @@ cell_country_lookup <- built$lookups$cell_country_lookup
 settings <- eval(str2lang(Sys.getenv("IR_CUBE_MCMC_SETTINGS",
                                      "dynamical_mcmc_settings()")))
 
-# used cached posterior means as inits
-inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built$variables,
-                             levels = built$lookups$levels,
-                             columns = colnames(x_cell_years))
+# used cached posterior means as inits: those of dynamical_inits_file, or
+# with IR_CUBE_INITS, of each of its files for a share of the chains
+inits <- dynamical_chain_inits(dynamical_inits_files(), built$variables,
+                               levels = built$lookups$levels,
+                               columns = colnames(x_cell_years),
+                               n_chains = settings$n_chains)
 
 system.time(
-  draws <- run_dynamical_mcmc(m, built$variables, inits_one, settings)
+  draws <- run_dynamical_mcmc(m, built$variables, inits, settings)
 )
 
 # check convergence
@@ -103,6 +106,9 @@ rhats <- coda::gelman.diag(draws,
                            autoburnin = FALSE,
                            multivariate = FALSE)
 summary(rhats$psrf)
+
+# the mortality-floor mode and log posterior of each chain (#37)
+chain_modes <- chain_floor_modes_safely(m, draws)
 
 # save fitted model to use for plotting and predictions
 save.image(file = "temporary/fitted_model.RData")

@@ -70,6 +70,7 @@ environment variables:
 | `CODE_REF` | the commit to run (a full commit id), downloaded from GitHub |
 | `CODE_REPO` | if not `idem-lab/ir_cube`, e.g. a fork for a PR branch |
 | `IR_CUBE_MODEL_OPTIONS` | an R expression for `dynamical_model_options()`, if not the defaults |
+| `IR_CUBE_INITS` | cached initial values under `temporary/`, comma-separated, each for an equal share of the chains (e.g. both floor modes, `R/floor_mode_inits.R`), if not `temporary/inits_refit.RDS` |
 | `OMP_NUM_THREADS`, `IR_CUBE_NO_MEMORY_WAIT` | as the job needs |
 
 `JOB` is split on spaces, so its arguments cannot contain spaces or quotes.
