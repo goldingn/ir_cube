@@ -8,13 +8,13 @@
 #   centred    the same with each basis function centred over the cells (as
 #              in the model) against the exactly centred kernel, k(x, x')
 #              less its means over x and over x' plus its mean over both
-# from half the prior's lower range up; and at the prior's lower range, for
-# the full m[1] x m[2] grid of basis functions as well as the kept ones
-# (smooth_box()).
+# at ranges from 1,000 to 16,000 km; and at the range the basis is chosen for
+# (basis_range), for the full m[1] x m[2] grid of basis functions as well as
+# the kept ones (smooth_box()).
 #
 #   Rscript R/check_latent_smooth.R ['<smooth options>']
 # e.g.
-#   Rscript R/check_latent_smooth.R 'smooth_options(kernel = "se")'
+#   Rscript R/check_latent_smooth.R 'smooth_options(kernel = "matern52")'
 #
 # Plain R; about 1.5 GB and 1 minute.
 
@@ -81,9 +81,10 @@ errors <- function(basis, omega, rho, centred) {
 
 basis <- hsgp_basis(coords, smooth)
 omega <- hsgp_frequencies(smooth$indices, smooth$half_width)
-# from half the prior's lower range, below which the basis is not meant to
-# reach
-ranges <- c(smooth$range_prior[1] / 2, smooth$range_prior[1], 2, 4, 8, 16)
+basis_range <- if (is.null(smooth$basis_range)) smooth$range_prior[1] else
+  smooth$basis_range
+ranges <- sort(unique(c(1, 1.5, 2, 4, 8, 16, basis_range,
+                        smooth$range_prior[1])))
 rows <- list()
 for (rho in ranges) {
   for (centred in c(FALSE, TRUE)) {
@@ -103,10 +104,10 @@ full$indices <- as.matrix(expand.grid(x = seq_len(smooth$m[1]),
 basis_full <- hsgp_basis(coords, full)
 omega_full <- hsgp_frequencies(full$indices, full$half_width)
 for (centred in c(FALSE, TRUE)) {
-  e <- errors(basis_full, omega_full, smooth$range_prior[1], centred)
+  e <- errors(basis_full, omega_full, basis_range, centred)
   rows[[length(rows) + 1]] <- data.frame(
-    range_km = 1000 * smooth$range_prior[1],
-    prior_quantile = smooth$range_prior[2],
+    range_km = 1000 * basis_range,
+    prior_quantile = exp(-rates$range / basis_range),
     basis = "full grid", centred = centred,
     max_error = e[["max"]], rms_error = e[["rms"]],
     max_variance_error = e[["variance"]])

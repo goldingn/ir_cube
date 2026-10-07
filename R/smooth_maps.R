@@ -4,6 +4,8 @@
 # limits of transmission without water bodies
 # (data/clean/pfpr_water_mask.tif, aggregated by 3, to about 14 km), from
 # about n_draws (500) posterior draws, evenly spaced in each usable chain.
+# With the shear (smooth_options(shear = TRUE)), u_s = v_s + b u_f, and v_s,
+# the selection smooth's own part, is mapped too, with b in the caption.
 #
 #   Rscript R/smooth_maps.R <fitted_model.RData> <label>
 #
@@ -11,7 +13,7 @@
 # weaker (u_s < 0, mapped as -u_s and labelled with the multiplier exp(u_s))
 # or the floor higher (u_f > 0), blue where selection is stronger or the floor
 # lower. The sds share one sequential ramp, with the modelled bioassay cells
-# as dots. Both smooths are 0 on average over the modelled cells. Writes
+# as dots. Every smooth is 0 on average over the modelled cells. Writes
 #   outputs/species_runs/smooth/<label>_smooths.tif  layers <smooth>_mean and
 #                                                    <smooth>_sd
 #   figures/species_runs/smooth_<label>.png
@@ -51,7 +53,12 @@ if (!smooth_on(fit$options)) {
 }
 draws_used <- even_draws(fit, n_draws, label)
 parameters <- fit_parameter_draws(fit, draws_used$index)
-kinds <- names(parameters$smooth_weights)
+weights <- smooth_weight_terms(parameters$variables, parameters$options,
+                               own = TRUE)
+kinds <- intersect(c("selection", "selection_own", "floor"), names(weights))
+shear <- if (isTRUE(fit$options$smooth$shear)) {
+  c(parameters$variables$smooth_shear)
+}
 
 # the posterior mean and sd at the centre of each aggregated cell
 grid <- terra::aggregate(rast("data/clean/pfpr_water_mask.tif"), 3,
@@ -61,7 +68,8 @@ xy <- terra::xyFromCell(grid, grid_cells)
 time <- system.time(
   values <- smooth_posterior_at(parameters,
                                 smooth_coords(xy[, 1], xy[, 2],
-                                              fit$options$smooth$crs))
+                                              fit$options$smooth$crs),
+                                weights = weights)
 )[["elapsed"]]
 report("%s: %s at %d cells from %d draws in %.0f s", label, toString(kinds),
        length(grid_cells), parameters$n_draws, time)
@@ -92,7 +100,7 @@ borders <- readRDS("data/clean/country_borders.RDS")
 cells_xy <- as_tibble(terra::xyFromCell(grid, unique(terra::cellFromXY(
   grid, cbind(fit$df$longitude, fit$df$latitude)))))
 # red where selection is weaker or the floor higher: -u_s and u_f
-signed <- c(selection = -1, floor = 1)
+signed <- c(selection = -1, selection_own = -1, floor = 1)
 for (kind in kinds) {
   layers[[paste0(kind, "_mean")]] <- signed[[kind]] *
     layers[[paste0(kind, "_mean")]]
@@ -118,22 +126,24 @@ panel <- function(layer, fill_scale, title, dots = FALSE) {
     theme_ir_maps()
 }
 mean_scale <- function(kind) {
-  labels <- if (kind == "selection") {
-    function(x) sprintf("%.2g", exp(-x))
-  } else {
+  labels <- if (kind == "floor") {
     waiver()
+  } else {
+    function(x) sprintf("%.2g", exp(-x))
   }
   scale_fill_gradientn(
     colours = rev(RColorBrewer::brewer.pal(11, "RdBu")),
     limits = c(-mean_limit, mean_limit), oob = scales::squish,
     na.value = "transparent", labels = labels,
-    name = if (kind == "selection") "multiplier\nexp(u_s)" else
-      "logit floor\nshift u_f")
+    name = switch(kind, selection = "multiplier\nexp(u_s)",
+                  selection_own = "multiplier\nexp(v_s)",
+                  floor = "logit floor\nshift u_f"))
 }
 sd_scale <- scale_fill_gradientn(
   colours = RColorBrewer::brewer.pal(9, "YlGnBu"), limits = c(0, sd_limit),
   na.value = "transparent", name = "posterior\nsd")
 titles <- c(selection = "selection, u_s: weaker (red) or stronger (blue)",
+            selection_own = "selection's own part, v_s",
             floor = "floor, u_f: higher (red) or lower (blue)")
 panels <- list()
 for (kind in kinds) {
@@ -143,9 +153,15 @@ for (kind in kinds) {
                                                 titles[[kind]]))
 }
 for (kind in kinds) {
-  panels[[length(panels) + 1]] <- panel(paste0(kind, "_sd"), sd_scale,
-                                        sprintf("%s, posterior sd", kind),
-                                        dots = TRUE)
+  panels[[length(panels) + 1]] <- panel(
+    paste0(kind, "_sd"), sd_scale,
+    sprintf("%s, posterior sd", sub("_own", ", own part", kind)), dots = TRUE)
+}
+shear_note <- if (!is.null(shear)) {
+  sprintf("; u_s = v_s + b u_f, b %.2f (95%%: %.2f to %.2f)", mean(shear),
+          quantile(shear, 0.025), quantile(shear, 0.975))
+} else {
+  ""
 }
 floor_classes <- if (identical(fit$options$smooth$floor, "class")) {
   "; u_f applies to the pyrethroids and DDT only"
@@ -157,9 +173,9 @@ p <- wrap_plots(panels, ncol = length(kinds), byrow = TRUE) +
     title = sprintf("%s: the latent smooths", label),
     caption = sprintf(paste0(
       "posterior over %d draws; each smooth averages 0 over the modelled ",
-      "bioassay cells (dots)%s;\none colour scale for both means, on the log ",
+      "bioassay cells (dots)%s%s;\none colour scale for the means, on the log ",
       "(selection) and logit (floor) scales"), parameters$n_draws,
-      floor_classes))
+      floor_classes, shear_note))
 ggsave(file.path(figure_dir, sprintf("smooth_%s.png", label)), p,
        width = 5.2 * length(kinds) + 1, height = 8.2, dpi = 150, bg = "white")
 report("saved; peak memory %.1f GB", peak_memory_gb())

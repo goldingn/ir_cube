@@ -17,7 +17,7 @@
 # plogis(floor_intercept) (floor_at_k0), one per class with floor = "class"
 # (floor NA, and a mode per class in class order); with the latent smooths
 # (V5), that where u_f is 0 (floor_at_u0), and the chain's mean sd and range
-# (in km) of each smooth, also for a model without a floor.
+# (in km) of each smooth and shear loading, also for a model without a floor.
 chain_floor_modes <- function(model, draws, n_per_chain = 60,
                               high_floor = 0.1, batch = 10) {
   floor_columns <- c(intersect(c("mortality_floor", "other_floor",
@@ -25,8 +25,8 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
                                colnames(draws[[1]])),
                      grep("^floor_intercept", colnames(draws[[1]]),
                           value = TRUE))
-  smooth_columns <- grep("^smooth_(sd|inv_range)_", colnames(draws[[1]]),
-                         value = TRUE)
+  smooth_columns <- grep("^smooth_(sd_|inv_range_|shear$)",
+                         colnames(draws[[1]]), value = TRUE)
   if (length(floor_columns) == 0 && length(smooth_columns) == 0) {
     return(NULL)
   }
@@ -57,7 +57,7 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
       row <- cbind(row, as.list(floors))
     }
     for (column in smooth_columns) {
-      if (grepl("^smooth_sd_", column)) {
+      if (!grepl("^smooth_inv_range_", column)) {
         row[[column]] <- mean(chain_draws[, column])
       } else {
         row[[sub("^smooth_inv_range_", "smooth_range_km_", column)]] <-

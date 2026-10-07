@@ -18,7 +18,8 @@
 # model with every raw weight 0 against the kdr model with the same floor
 # intercepts (by class: V4_class) and its slopes at 0, in greta and in plain
 # R: both are then the model with a constant floor per class (or one floor,
-# or none).
+# or none). With the shear, the model with its loading b at 0 is checked
+# against the same smooths without the shear, in greta and in plain R.
 #
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
 # (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
@@ -369,14 +370,18 @@ if (smooth_on(model_options)) {
                 max(u_cells[[kind]])))
   }
   stopifnot(all(abs(vapply(u_cells, mean, numeric(1))) < 1e-12))
+  shear <- isTRUE(smooth$shear)
+  if (shear) {
+    cat(sprintf("smooth shear: b %.3f\n", trace[1, "smooth_shear"]))
+  }
 
   # With every raw weight 0 the smooths are 0, and the model is the kdr model
   # with the same floor intercepts (kdr_options(floor = "class") for one per
   # class, as V4_class; TRUE for one; no floor without mortality_floor) and
   # its slopes at 0. In greta, the log density then differs by the priors:
-  # those of the smooths (the raw weights N(0, 1) at 0, and the exponential
-  # sd and inverse range with the Jacobians of their log free states) less
-  # those of the kdr slopes N(0, 1) at 0
+  # those of the smooths (the raw weights N(0, 1) at 0, the exponential sd
+  # and inverse range with the Jacobians of their log free states, and the
+  # shear loading) less those of the kdr slopes N(0, 1) at 0
   floor_on <- smooth_floor_on(model_options)
   options_base <- model_options
   options_base$smooth <- FALSE
@@ -406,6 +411,11 @@ if (smooth_on(model_options)) {
       dexp(sd, rates$sd, log = TRUE) + log(sd) +
       dexp(inv_range, rates$range, log = TRUE) + log(inv_range)
   }
+  if (shear) {
+    expected <- expected + dnorm(trace_zero[1, "smooth_shear"],
+                                 smooth_shear_prior$mean,
+                                 smooth_shear_prior$sd, log = TRUE)
+  }
   ld_difference <- log_density(built$model, free_zero) -
     log_density(built_base$model, free_base) - expected
   cat(sprintf("smooth: raw weights 0 vs the kdr model (floor %s) with slopes %s at 0, greta log density: diff %.3g\n",
@@ -429,6 +439,48 @@ if (smooth_on(model_options)) {
   cat(sprintf("smooth: raw weights 0 vs the kdr model with slopes at 0, plain R, logit: max abs diff %.3g\n",
               smooth_difference))
   stopifnot(smooth_difference < 1e-12)
+  rm(built_base)
+
+  # With the shear loading b at 0, the selection smooth is v_s alone, and the
+  # model is the one without the shear: in greta, the log density differs by
+  # b's prior at 0
+  if (shear) {
+    options_unsheared <- model_options
+    options_unsheared$smooth$shear <- FALSE
+    built_unsheared <- build(df, options_unsheared)
+    free_b0 <- free
+    free_b0[free_columns(built$model, "smooth_shear")] <- 0
+    columns_unsheared <- free_state_columns(built_unsheared$model)
+    free_unsheared <- numeric(length(unlist(
+      built_unsheared$model$dag$example_parameters(free = TRUE))))
+    for (name in names(attr(columns_unsheared, "targets"))) {
+      free_unsheared[
+        columns_unsheared[[attr(columns_unsheared, "targets")[[name]]]]] <-
+        free_b0[free_columns(built$model, name)]
+    }
+    shear_difference <- log_density(built$model, free_b0) -
+      log_density(built_unsheared$model, free_unsheared) -
+      dnorm(0, smooth_shear_prior$mean, smooth_shear_prior$sd, log = TRUE)
+    cat(sprintf("smooth shear: b 0 vs no shear, greta log density: diff %.3g\n",
+                shear_difference))
+    stopifnot(abs(shear_difference) < 1e-6)
+    # and in plain R, the predictions at every assay
+    b0 <- parameters
+    b0$variables$smooth_shear[] <- 0
+    b0$smooth_weights <- smooth_weight_terms(b0$variables, model_options)
+    unsheared <- parameters
+    unsheared$options <- built_unsheared$options
+    unsheared$smooth_weights <- smooth_weight_terms(unsheared$variables,
+                                                    unsheared$options)
+    l_b0 <- dynamical_logit(b0, df, df, x_cell_years, cell_years_index)
+    l_unsheared <- dynamical_logit(unsheared, df, df, x_cell_years,
+                                   cell_years_index)
+    shear_plain <- max(abs(clamp(l_b0) - clamp(l_unsheared)))
+    cat(sprintf("smooth shear: b 0 vs no shear, plain R, logit: max abs diff %.3g\n",
+                shear_plain))
+    stopifnot(shear_plain < 1e-12)
+    rm(built_unsheared)
+  }
   if (floor_on) {
     cat(sprintf("smooth floor (%s): floor where u_f is 0 %s\n",
                 smooth$floor_intercepts,

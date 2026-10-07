@@ -352,8 +352,9 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # sd and inverse range with the penalised-complexity priors of
   # smooth_prior_rates(): exponential, on the inverse range because in two
   # dimensions the prior of the range rho is the density of 1 / rho for an
-  # exponential 1 / rho. With the defaults, P(rho < 1,000 km) = 0.05 and
-  # P(sd > 1) = 0.05
+  # exponential 1 / rho. With the defaults, P(rho < 1,500 km) = 0.05 and
+  # P(sd > 1) = 0.05; and with the shear, its loading b ~ N(1, 0.5)
+  # (smooth_shear_prior)
   smooths <- list()
   if (smooth_on(options)) {
     rates <- smooth_prior_rates(options$smooth)
@@ -363,6 +364,10 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
                                           dim = nrow(options$smooth$indices))
       smooths[[names[["sd"]]]] <- exponential(rates$sd)
       smooths[[names[["inv_range"]]]] <- exponential(rates$range)
+    }
+    if (isTRUE(options$smooth$shear)) {
+      smooths$smooth_shear <- normal(smooth_shear_prior$mean,
+                                     smooth_shear_prior$sd)
     }
   }
 
@@ -623,7 +628,8 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
   # mortality_floor if there is one (so that cached values in either floor
   # mode, R/floor_mode_inits.R, start there), or else at 0.02 (#47). The
   # latent smooths start flat (raw weights 0), with sd 0.3 and range 3,000
-  # km (the prior means of sd and 1 / range are 0.33 and 1 / 3,000 km), and
+  # km (with the default priors, the means of sd and 1 / range are 0.33 and
+  # 1 / 4,500 km), the shear loading at its prior mean, 1, and
   # the floor where they are 0 at the cached floor too
   species_floor <- if (!is.null(cached$mortality_floor)) {
     c(cached$mortality_floor)[1]
@@ -638,7 +644,7 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
               smooth_raw_selection = 0, smooth_sd_selection = 0.3,
               smooth_inv_range_selection = 1 / 3,
               smooth_raw_floor = 0, smooth_sd_floor = 0.3,
-              smooth_inv_range_floor = 1 / 3)
+              smooth_inv_range_floor = 1 / 3, smooth_shear = 1)
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
