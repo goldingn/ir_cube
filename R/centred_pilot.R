@@ -16,8 +16,8 @@
 #     beta_class, beta_type and rho_types), with the bulk ESS per 1,000
 #     gradient evaluations and per hour. For an image, the number of leapfrog
 #     steps is taken as the mean of its range, and the hours are those of the
-#     whole run (sampling_time), if recorded. Plain R, with greta attached to
-#     read an image.
+#     whole run (sampling_time), if recorded, or given as <fit>=<hours>. Plain
+#     R, with greta attached to read an image.
 #
 # e.g. a local pilot, about 6 GB and 8 threads each:
 #   IR_CUBE_MCMC_SETTINGS='dynamical_mcmc_settings(warmup = 1000, n_samples = 1000)' \
@@ -180,6 +180,8 @@ pilot_inputs <- function(fit) {
                 diag_sd = pilot$diag_sd,
                 gradients = sum(sampling$iterations *
                                   sampling$leapfrog_steps),
+                total_gradients = sum(pilot$bursts$iterations *
+                                        pilot$bursts$leapfrog_steps),
                 n_samples = sum(sampling$iterations),
                 accept = weighted.mean(sampling$accept, sampling$iterations),
                 sampling_hours = sum(sampling$seconds) / 3600,
@@ -192,6 +194,7 @@ pilot_inputs <- function(fit) {
   accept <- sampler$accept_history
   sampling_rows <- seq(nrow(accept) - settings$n_samples + 1, nrow(accept))
   values <- as.matrix(image$draws)
+  mean_l <- (settings$Lmin + settings$Lmax) / 2
   list(label = basename(sub("/temporary/fitted_model\\.RData$", "", fit)),
        settings = settings,
        n_chains = length(image$draws),
@@ -200,7 +203,8 @@ pilot_inputs <- function(fit) {
                                   image$model_options),
        epsilon = sampler$parameters$epsilon[1],
        diag_sd = sampler$parameters$diag_sd,
-       gradients = settings$n_samples * (settings$Lmin + settings$Lmax) / 2,
+       gradients = settings$n_samples * mean_l,
+       total_gradients = (settings$warmup + settings$n_samples) * mean_l,
        n_samples = settings$n_samples,
        accept = mean(accept[sampling_rows, ]),
        sampling_hours = NA,
@@ -218,7 +222,14 @@ compare_pilots <- function(fits) {
     library(stringr)
   })
   source("R/dynamical_predictions.R")
-  inputs <- lapply(fits, pilot_inputs)
+  # a fit given as <fit>=<hours> has its run time from there
+  inputs <- lapply(strsplit(fits, "="), function(fit) {
+    input <- pilot_inputs(fit[1])
+    if (length(fit) == 2) {
+      input$total_hours <- as.numeric(fit[2])
+    }
+    input
+  })
   # the variables every fit has, with the same meaning in each
   variable_names <- function(input) {
     unique(sub("\\[.*$", "", colnames(input$values)))
@@ -252,7 +263,7 @@ compare_pilots <- function(fits) {
       step_per_sd = step_per_sd,
       trajectory_per_sd = step_per_sd * mean_l,
       accept = input$accept,
-      ms_per_gradient = 3.6e6 * input$sampling_hours / gradients,
+      ms_per_gradient = 3.6e6 * input$total_hours / input$total_gradients,
       sampling_hours = input$sampling_hours,
       total_hours = input$total_hours,
       quantities = nrow(summary),
