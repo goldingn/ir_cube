@@ -2,19 +2,22 @@
 # coverage places
 
 # load packages and functions
-# greta first, so python starts before terra and sf are attached
-source("R/greta_setup.R")
-start_greta()
 source("R/packages.R")
 source("R/functions.R")
+source("R/bioassay_subset.R")
+source("R/two_stage_predictions.R")
 
-# load the fitted model objects here, to set up predictions
-load(file = "temporary/fitted_model.RData")
+# the modelled data, as R/fit_model.R builds them
+baseline_year <- 1995
+final_data_year <- 2024
+invisible(list2env(modelled_bioassays(baseline_year, final_data_year),
+                   environment()))
+years_predict <- baseline_year:final_data_year
 
-# the covariates at the data cells, on their own scales (R/model_covariates.R)
-source("R/model_covariates.R")
+# the covariates at the data cells, on their own scales (R/model_covariates.R),
+# for the fit's selection design
 all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,
-                                 model_options$selection_columns)
+                                 two_stage_design(types[1]))
 
 # load time-varying net use data and flatten it
 nets_cube <- rast("data/clean/net_use_cube.tif")
@@ -298,193 +301,48 @@ weights_mat <- df_sub %>%
   as.matrix() %>%
   `colnames<-`(NULL)
 
-# AAARGH, this code is horrible, but best I can do for now on this plane.
+# the net use class of each cell
+net_use_classes <- c("A) Low use", "B) High use")
+cell_net_use_class <- net_use_cell_lookup %>%
+  arrange(cell_id) %>%
+  pull(net_use_class)
+stopifnot(length(cell_net_use_class) == nrow(weights_mat))
+cell_country <- data_cell_country(df)
 
-# compute a weighted average of the insecticides in low, medium, high net
-# coverage locations
+# compute the predicted susceptibility to each pyrethroid, averaged over the
+# cells in the low and high net use classes, weighted by the numbers of
+# mosquitoes tested there: draws x classes x years of the two-stage model's
+# posterior (R/two_stage_predictions.R)
+pyrethroid_draws <- lapply(setNames(nm = pyrethroids), function(type) {
+  k <- match(type, types)
+  weights <- sapply(net_use_classes, function(net_use_class) {
+    w <- weights_mat[, k] * (cell_net_use_class == net_use_class)
+    if (sum(w) > 0) w / sum(w) else w
+  })
+  setup <- two_stage_setup(type, years_predict, df)
+  two_stage_weighted_draws(setup, unique_cells, cell_country,
+                           weights)$two_stage
+})
 
-# just subset the data and repeat what happens in the overall plot
-
-low_idx <- net_use_cell_lookup %>%
-  filter(
-    net_use_class == "A) Low use"
-  ) %>%
-  pull(cell_id)
-
-# subset and renormalise weights
-weights_mat_low <- weights_mat[low_idx, ]
-weights_mat_low <- sweep(weights_mat_low,
-                         2,
-                         colSums(weights_mat_low),
-                         "/")
-
-# expand out into an array, replicating by year
-weights_array_low <- array(rep(c(weights_mat_low), n_times),
-                           dim = c(nrow(weights_mat_low), n_types, n_times))
-
-# check dimensions are the right way around
-# identical(weights_array_low[, , 1],  weights_mat_low)
-# all(weights_array_low[1, 1, ] == weights_array_low[1, 1, 1])
-
-# multiply through and sum to get average susceptibilities
-weighted_susc_array_low <- dynamic_cells$all_states[low_idx, , ] * weights_array_low
-overall_susc_low <- apply(weighted_susc_array_low, 2:3, "sum")
-pyrethroid_net_class_susc_low <- as_data(t(pyrethroid_net_class_weights[, "A) Low use"])) %*% overall_susc_low
-
-# and repeat for high
-high_idx <- net_use_cell_lookup %>%
-  filter(
-    net_use_class == "B) High use"
-  ) %>%
-  pull(cell_id)
-
-
-# subset and renormalise weights
-weights_mat_high <- weights_mat[high_idx, ]
-weights_mat_high <- sweep(weights_mat_high,
-                         2,
-                         colSums(weights_mat_high),
-                         "/")
-
-# expand out into an array, replicating by year
-weights_array_high <- array(rep(c(weights_mat_high), n_times),
-                            dim = c(nrow(weights_mat_high), n_types, n_times))
-
-# multiply through and sum to get average susceptibilities
-weighted_susc_array_high <- dynamic_cells$all_states[high_idx, , ] * weights_array_high
-overall_susc_high <- apply(weighted_susc_array_high, 2:3, "sum")
-pyrethroid_net_class_susc_high <- as_data(t(pyrethroid_net_class_weights[, "B) High use"])) %*% overall_susc_high
-
-overall_susc_index <- expand_grid(
-  type_id = seq_len(n_types),
-  time_id = seq_len(n_times)
-)
-
-overall_susc_low_vec <- overall_susc_low[as.matrix(overall_susc_index)]
-overall_susc_high_vec <- overall_susc_high[as.matrix(overall_susc_index)]
-
-
-# get posterior samples of these
-sims_net_class <- calculate(pyrethroid_net_class_susc_low,
-                            pyrethroid_net_class_susc_high,
-                            overall_susc_low_vec,
-                            overall_susc_high_vec,
-                            values = draws,
-                            nsim = 1e3)
-
-
-overall_mort_sry_low <- sims_net_class$overall_susc_low_vec[, , 1] %>%
-  t() %>%
-  as_tibble() %>%
-  bind_cols(
-    overall_susc_index,
-    .
-  ) %>%
-  pivot_longer(
-    cols = starts_with("V"),
-    names_prefix = "V",
-    names_to = "sim",
-    values_to = "susceptibility"
-  ) %>%
-  group_by(time_id, type_id) %>%
-  summarise(
-    susc_pop_mean = mean(susceptibility),
-    susc_pop_lower = quantile(susceptibility, 0.025),
-    susc_pop_upper = quantile(susceptibility, 0.975),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    year = baseline_year + time_id - 1,
-    insecticide = types[type_id],
-    .before = everything()
-  )
-
-overall_mort_sry_high <- sims_net_class$overall_susc_high_vec[, , 1] %>%
-  t() %>%
-  as_tibble() %>%
-  bind_cols(
-    overall_susc_index,
-    .
-  ) %>%
-  pivot_longer(
-    cols = starts_with("V"),
-    names_prefix = "V",
-    names_to = "sim",
-    values_to = "susceptibility"
-  ) %>%
-  group_by(time_id, type_id) %>%
-  summarise(
-    susc_pop_mean = mean(susceptibility),
-    susc_pop_lower = quantile(susceptibility, 0.025),
-    susc_pop_upper = quantile(susceptibility, 0.975),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    year = baseline_year + time_id - 1,
-    insecticide = types[type_id],
-    .before = everything()
-  )
-
-pop_mort_sry_low <- sims_net_class$pyrethroid_net_class_susc_low[, 1, ] %>%
-  t() %>%
-  as_tibble() %>%
-  mutate(
-    time_id = row_number(),
-    .before = everything()
-  ) %>%
-  pivot_longer(
-    cols = starts_with("V"),
-    names_prefix = "V",
-    names_to = "sim",
-    values_to = "susceptibility"
-  ) %>%
-  group_by(time_id) %>%
-  summarise(
-    susc_pop_mean = mean(susceptibility),
-    susc_pop_lower = quantile(susceptibility, 0.025),
-    susc_pop_upper = quantile(susceptibility, 0.975),
-  ) %>%
-  mutate(
-    year = baseline_year + time_id - 1
-  )
-
-pop_mort_sry_high <- sims_net_class$pyrethroid_net_class_susc_high[, 1, ] %>%
-  t() %>%
-  as_tibble() %>%
-  mutate(
-    time_id = row_number(),
-    .before = everything()
-  ) %>%
-  pivot_longer(
-    cols = starts_with("V"),
-    names_prefix = "V",
-    names_to = "sim",
-    values_to = "susceptibility"
-  ) %>%
-  group_by(time_id) %>%
-  summarise(
-    susc_pop_mean = mean(susceptibility),
-    susc_pop_lower = quantile(susceptibility, 0.025),
-    susc_pop_upper = quantile(susceptibility, 0.975),
-  ) %>%
-  mutate(
-    year = baseline_year + time_id - 1
-  )
-
+# combine over the pyrethroids, weighted by the numbers tested of each in each
+# class; the types' draws share their dynamical draws, so are combined draw by
+# draw. Then the posterior mean and 95% credible interval
 pop_mort_sry_net_class <- bind_rows(
-  `A) Low use` = pop_mort_sry_low,
-  `B) High use` = pop_mort_sry_high,
-  .id = "net_use_class"
+  lapply(net_use_classes, function(net_use_class) {
+    susc <- Reduce(`+`, lapply(pyrethroids, function(type) {
+      k <- match(type, types)
+      pyrethroid_net_class_weights[k, net_use_class] *
+        pyrethroid_draws[[type]][, net_use_class, ]
+    }))
+    tibble(
+      net_use_class = net_use_class,
+      year = years_predict,
+      susc_pop_mean = colMeans(susc),
+      susc_pop_lower = apply(susc, 2, quantile, 0.025),
+      susc_pop_upper = apply(susc, 2, quantile, 0.975)
+    )
+  })
 )
-
-overall_mort_sry_net_class <- bind_rows(
-  `A) Low use` = overall_mort_sry_low,
-  `B) High use` = overall_mort_sry_high,
-  .id = "net_use_class"
-)
-
-pyrethroid_mort_sry_net_class <- overall_mort_sry_net_class %>%
-  filter(insecticide %in% pyrethroids)
 
 net_class_fig <- pyrethroid_net_class_points %>%
   ggplot(
@@ -503,15 +361,6 @@ net_class_fig <- pyrethroid_net_class_points %>%
     fill = grey(0.9),
     colour = grey(0.7)
   ) +
-  # geom_ribbon(
-  #   aes(
-  #     ymax = susc_pop_upper,
-  #     ymin = susc_pop_lower,
-  #     fill = insecticide
-  #   ),
-  #   data = pyrethroid_mort_sry_net_class,
-  #   # fill = pyrethroid_blue
-  # ) +
   geom_ribbon(
     aes(
       ymax = susc_pop_upper,

@@ -58,6 +58,17 @@ subset_modelled_bioassays <- function(ir_africa,
     )
 }
 
+# The modelled bioassays and their indices (index_bioassays()), built as
+# R/fit_model.R builds them, for scripts that need the data but not the fit
+modelled_bioassays <- function(baseline_year = 1995, final_data_year = 2024) {
+  df <- subset_modelled_bioassays(
+    readRDS("data/clean/all_gambiae_complex_data.RDS"),
+    terra::rast("data/clean/raster_mask.tif"),
+    baseline_year = baseline_year,
+    final_data_year = final_data_year)
+  index_bioassays(df)
+}
+
 # The indices of the modelled bioassays `df` (subset_modelled_bioassays()), as
 # the fits and folds use them: the classes, types, regions, countries and
 # unique_cells in order of first appearance, df with their *_id columns added,

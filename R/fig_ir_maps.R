@@ -1,4 +1,4 @@
-# plot IR predictions
+# plot IR predictions of the two-stage model (R/two_stage_maps.R)
 
 # load packages and functions
 source("R/packages.R")
@@ -47,11 +47,7 @@ for (this_insecticide in insecticides_plot) {
                       insecticides_plot)
   plot_years <- c(2000, 2005, 2010, 2015, 2020, 2025, 2030)
   
-  directory <- file.path("outputs/ir_maps", this_insecticide)
-  files <- file.path(directory,
-                     sprintf("ir_%s_susceptibility.tif",
-                             plot_years))
-  this_raster <- rast(files)
+  this_raster <- rast(ir_map_files(this_insecticide, plot_years))
   names(this_raster) <- plot_years
   
   # mask by transmission limits

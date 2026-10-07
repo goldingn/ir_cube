@@ -74,10 +74,13 @@ stats <- mean_tibble %>%
   # rename some things for plotting
   mutate(
     covariate = case_when(
-      covariate == "pop" ~ "Human population",
+      # the population column carries its transform and trend, e.g.
+      # pop_enc:g_dom, and the crops their trend, e.g. rice:g_ag
+      # (selection_column_names())
+      str_detect(covariate, "^pop") ~ "Human population",
       covariate == "nets" ~ "LLIN use",
       covariate == "irs" ~ "IRS coverage",
-      .default = str_to_sentence(covariate)
+      .default = str_to_sentence(str_remove(covariate, ":g_ag$"))
     )
   )
 
@@ -156,7 +159,8 @@ overall_stats_effect_grid <- overall_stats %>%
   theme(
     axis.text.x = element_text(
       angle = 45,
-      hjust = 0)
+      hjust = 0,
+      vjust = 0)
   )
 
 # combine the different types of covariates
@@ -190,7 +194,8 @@ combined_effect_grid <- combined_stats %>%
   theme(
     axis.text.x = element_text(
       angle = 45,
-      hjust = 0)
+      hjust = 0,
+      vjust = 0)
   )
 
 effect_grid <- stats %>%
@@ -223,7 +228,8 @@ effect_grid <- stats %>%
   theme(
     axis.text.x = element_text(
       angle = 45,
-      hjust = 0)
+      hjust = 0,
+      vjust = 0)
   )
 
 # The average contribution of each covariate to the selection coefficient for
@@ -264,7 +270,8 @@ regression_grid <- stats %>%
   theme(
     axis.text.x = element_text(
       angle = 45,
-      hjust = 0)
+      hjust = 0,
+      vjust = 0)
   )
 
 # plot the combined and specific selection pressures

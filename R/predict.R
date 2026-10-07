@@ -24,6 +24,10 @@
 #   outputs/ir_maps/<type>/ir_<year>_susceptibility_sd.tif  posterior SD
 # llin_effective is the mortality of each draw weighted over the active
 # ingredients by temporary/ingredient_weights.RDS.
+#
+# These are the dynamical model's maps. The published figures show the
+# two-stage model's (R/two_stage_maps.R, in outputs/two_stage/ir_maps, the
+# same layout; ir_map_files() in R/functions.R).
 
 source("R/greta_setup.R")
 start_greta()

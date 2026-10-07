@@ -383,6 +383,17 @@ printable_country_name <- function(country) {
 }
 
 
+# The two-stage model's yearly prediction rasters (R/two_stage_maps.R), which
+# the published figures show, of an output (a modelled insecticide type, or
+# llin_effective): the posterior mean or SD of the fraction susceptible
+ir_map_files <- function(output, years,
+                         quantity = c("susceptibility", "susceptibility_sd")) {
+  quantity <- match.arg(quantity)
+  file.path("outputs/two_stage/ir_maps", output,
+            sprintf("ir_%s_%s.tif", years, quantity))
+}
+
+
 # the nine modelled insecticide types in plotting order (by class, then name),
 # and the colours the main figures use for them
 insecticides_plot_order <- c("Alpha-cypermethrin",

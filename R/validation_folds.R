@@ -22,23 +22,14 @@ source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
 
-# load bioassay data
-ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
-
-
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
 baseline_year <- 1995
 final_data_year <- 2024
 
-# the modelled subset, as in fit_model.R (R/bioassay_subset.R)
-df <- subset_modelled_bioassays(ir_africa, mask, baseline_year = baseline_year,
-                                final_data_year = final_data_year)
-
-
-# indexing for main model fitting (R/bioassay_subset.R)
-list2env(index_bioassays(df), environment())
+# the modelled subset and its indexing, as in fit_model.R (R/bioassay_subset.R)
+list2env(modelled_bioassays(baseline_year, final_data_year), environment())
 years <- baseline_year - 1 + sort(unique(df$year_id))
 
 # Define the training and test folds for: spatial extrapolation (country

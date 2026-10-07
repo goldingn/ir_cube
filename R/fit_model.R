@@ -22,24 +22,12 @@ baseline_year <- 1995
 # set the final year of data (insufficient and spatially biased data for 2025)
 final_data_year <- 2024
 
-# load the mask
-mask <- rast("data/clean/raster_mask.tif")
-
-# load bioassay data
-ir_africa <- readRDS(file = "data/clean/all_gambiae_complex_data.RDS")
-
 # the modelled subset: the insecticide types with at least 1000 unique
 # places/times, and alpha-cypermethrin (914 unique) because of its use in LLINs,
-# each at its modal concentration, in the modelled years and inside the mask
-# (R/bioassay_subset.R)
-df <- subset_modelled_bioassays(ir_africa,
-                                mask,
-                                baseline_year = baseline_year,
-                                final_data_year = final_data_year)
-
-# indices to the classes, types, regions, countries and cells, and the class
-# of each type (R/bioassay_subset.R)
-list2env(index_bioassays(df), environment())
+# each at its modal concentration, in the modelled years and inside the mask,
+# with indices to the classes, types, regions, countries and cells, and the
+# class of each type (R/bioassay_subset.R)
+list2env(modelled_bioassays(baseline_year, final_data_year), environment())
 years <- baseline_year - 1 + sort(unique(df$year_id))
 
 # the model terms (R/dynamical_model.R), or an R expression for them in

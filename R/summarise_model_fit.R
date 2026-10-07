@@ -1,4 +1,6 @@
-# summarise model
+# summarise model: the dynamical model's selection effect sizes and its
+# response to net use at three exemplar places, and the fit of the two-stage
+# model (R/two_stage_predictions.R) to the data
 
 # load packages and functions
 # greta first, so python starts before terra and sf are attached
@@ -15,6 +17,12 @@ source("R/model_covariates.R")
 all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,
                                  model_options$selection_columns)
 
+# the two-stage model's predictions, after the fit is loaded, so that the
+# current code replaces the functions saved with it
+source("R/two_stage_predictions.R")
+years_predict <- baseline_year:final_data_year
+cell_country <- data_cell_country(df)
+
 # load the mask
 mask <- rast("data/clean/raster_mask.tif")
 
@@ -23,23 +31,26 @@ effect_sizes <- summary(calculate(exp(beta_class[, 1]), values = draws))$statist
 rownames(effect_sizes) <- colnames(x_cell_years)
 round(effect_sizes, 2)
 
-# get RMSE and MAE for observed data and posterior mean within-sample predictions
-pop_susc_sim <- calculate(population_mortality_vec,
-                          values = draws,
-                          nsim = 1e3)
-pop_susc_post_mean <- colMeans(pop_susc_sim$population_mortality_vec[, , 1])
+# posterior predictive draws of the mortality of new assays at the observed
+# ones: for the two-stage model, with fresh pixel-year and pixel noise, at the
+# external per-type overdispersion; and the dynamical model's, at its own
+sims <- assay_draws(df, types)
+
+# get RMSE and MAE for observed data and posterior mean within-sample
+# predictions, of both models
 obs <- df$died / df$mosquito_number
-rmse <- sqrt(mean((pop_susc_post_mean - obs) ^ 2))
-mae <- mean(abs(pop_susc_post_mean - obs))
+error <- function(model) colMeans(sims[[model]]) - obs
+within_sample_error <- tibble(
+  model = c("two_stage", "dynamical"),
+  rmse = sapply(model, function(m) sqrt(mean(error(m) ^ 2))),
+  mae = sapply(model, function(m) mean(abs(error(m))))
+)
+within_sample_error
 
-# get posterior predictive simulations of observations
-died_sim <- betabinomial_p_rho(N = df$mosquito_number,
-                               p = population_mortality_vec,
-                               rho = rho_types[df$type_id])
-mortality_sim <- died_sim / df$mosquito_number
-
-# summarise fit to data
-died <- calculate(died_sim, values = draws, nsim = 1e3)[[1]][, , 1]
+# get posterior predictive simulations of observations, from the two-stage
+# model
+set.seed(2024)
+died <- ppd_simulate(df$mosquito_number, sims$two_stage, sims$rho_two_stage)
 
 # create a dharma object to compute randomised quantile residuals and
 # corresponding residual z scores
@@ -180,21 +191,14 @@ exemplar_cells <- all_extract %>%
     lat = y,
     long = x,
     method = 'osm',
-    full_results = TRUE
+    full_results = TRUE,
+    # place names in English, not the local language
+    custom_query = list("accept-language" = "en")
   )
 
 # find a short name for these places
 place_lookup <- exemplar_cells %>%
   mutate(
-    # drop Arabic name from a reverse-geocoded country name
-    country = case_when(
-      str_detect(country, "Djibouti") ~ "Djibouti",
-      str_detect(country, "Sénégal") ~ "Senegal",
-      str_detect(country, "Moçambique") ~ "Mozambique",
-      str_detect(country, "Cameroun") ~ "Cameroon",
-      str_detect(country, "Madagascar") ~ "Madagascar",
-      .default = country
-    ),
     precise_place = case_when(
       str_detect(address, "Dano") ~ "Dano",
       str_detect(address, "Tadjoura") ~ "Tadjoura",
@@ -237,36 +241,29 @@ pred_lookup <- data_plot %>%
 # do predictions of the effective resistance to ITNS
 ingredient_weights <- readRDS("temporary/ingredient_weights.RDS")
 
-# now do predictions for these, for deltamethrin
-ingredient_ids <- match(names(ingredient_weights), types)
+# the predicted susceptibility to each LLIN insecticide at these cells,
+# combined draw by draw with the ingredient weights: draws x cells x years.
+# These cells were chosen to show the response to net use alone, which is the
+# dynamical model's, so this figure shows the dynamical model, not the
+# two-stage model (whose correction is not driven by the covariates)
+exemplar_cell_ids <- pred_lookup$cell_id
+effective_susc <- Reduce(`+`, lapply(names(ingredient_weights), function(type) {
+  setup <- two_stage_setup(type, years_predict, df)
+  ingredient_weights[[type]] *
+    two_stage_weighted_draws(setup,
+                             unique_cells[exemplar_cell_ids],
+                             cell_country[exemplar_cell_ids],
+                             diag(length(exemplar_cell_ids)))$dynamical
+}))
 
-# compute a matrix of effective susceptibilities over these cells and years
-effective_susc <- zeros(nrow(pred_lookup), 1, n_times)
-for (i in seq_along(ingredient_weights)) {
-  ingredient_susc <- dynamic_cells$all_states[pred_lookup$cell_id,
-                                              ingredient_ids[i], ]
-  effective_susc <- effective_susc + ingredient_susc * ingredient_weights[[i]]
-}
-
-pred_index <- expand_grid(
-  cell_id = seq_len(nrow(pred_lookup)),
-  type_id = 1,
-  year_id = seq_len(n_times)
-) %>%
-  as.matrix()
-
-# subset the susceptibilities to these cells and insecitcides
-pred_vec <- effective_susc[pred_index]
-pred_vec_sims <- calculate(pred_vec, values = draws, nsim = 1e3)
-
-preds <- bind_cols(
-  pred_index,
-  post_mean = colMeans(pred_vec_sims$pred_vec[, , 1]),
-  post_lower = apply(pred_vec_sims$pred_vec[, , 1], 2, quantile, 0.025),
-  post_upper = apply(pred_vec_sims$pred_vec[, , 1], 2, quantile, 0.975),
+preds <- expand_grid(
+  year_id = seq_along(years_predict),
+  cell_id = exemplar_cell_ids
 ) %>%
   mutate(
-    cell_id = pred_lookup$cell_id[cell_id]
+    post_mean = as.vector(apply(effective_susc, 2:3, mean)),
+    post_lower = as.vector(apply(effective_susc, 2:3, quantile, 0.025)),
+    post_upper = as.vector(apply(effective_susc, 2:3, quantile, 0.975))
   )
 
 ir_plot <- data_plot %>%
@@ -334,7 +331,7 @@ locations_plot <- df %>%
   ) %>%
   group_by(cell) %>%
   filter(
-    n() >= 25,
+    n() >= 30,
     n_distinct(year_start) >= 8,
     n_distinct(insecticide_type) >= 3
   ) %>%
@@ -357,7 +354,9 @@ locations_plot <- df %>%
     lat = latitude,
     long = longitude,
     method = 'osm',
-    full_results = TRUE
+    full_results = TRUE,
+    # place names in English, not the local language
+    custom_query = list("accept-language" = "en")
   ) %>%
   mutate(
     precise_place = str_split_i(address, ",", 1),
@@ -371,6 +370,7 @@ locations_plot <- df %>%
       grepl("Pitoa", address) ~ "Pitoa",
       grepl("Houet", address) ~ "Houet",
       grepl("Dakar", address) ~ "Dakar",
+      grepl("Cotonou", address) ~ "Cotonou",
       grepl("Kéréwane", address) ~ "Kéréwane, Kolda",
       grepl("Soumousso", address) ~ "Soumousso",
       grepl("Busia", address) ~ "Busia",
@@ -386,76 +386,54 @@ locations_plot <- df %>%
     cell_id
   )
 
-# pull these out for plotting
-preds_plot_setup <- expand_grid(
-  cell_id = locations_plot$cell_id,
-  year_start = baseline_year:max(df$year_start),
-  insecticide_type = types
-) %>%
-  mutate(
-    year_id = year_start - baseline_year + 1,
-    type_id = match(insecticide_type, types)
-  )
-
-index_plot <- preds_plot_setup %>%
-  select(cell_id,
-         type_id,
-         year_id) %>%
-  as.matrix()
-
-fraction_susceptible_plot <- dynamic_cells$all_states[index_plot]
-population_mortality_plot <- fraction_susceptible_plot
-
-# simulate mortalities under binomial sampling
+# predict these with the two-stage model: the population-level susceptibility,
+# ilogit(m + omega + xi), and the mortality in new bioassays of 100 mosquitoes
+# under binomial sampling from it, and under the model's own observation
+# process: beta-binomial sampling, at the per-type overdispersion, from the
+# mortality with fresh pixel-year and pixel noise, ilogit(m + omega + xi + u +
+# p). Draws x cells x years
 sample_size_plot <- 100
-binomial_died <- binomial(sample_size_plot, population_mortality_plot)
-binomial_mortality <- binomial_died / sample_size_plot
+location_cell_ids <- locations_plot$cell_id
+preds_plot <- bind_rows(
+  lapply(insecticides_plot_small, function(type) {
+    setup <- two_stage_setup(type, years_predict, df)
+    identity <- diag(length(location_cell_ids))
+    cells <- unique_cells[location_cell_ids]
+    country <- cell_country[location_cell_ids]
+    population <- two_stage_weighted_draws(setup, cells, country,
+                                           identity)$two_stage
+    assay <- two_stage_weighted_draws(setup, cells, country, identity,
+                                      noise = TRUE)$two_stage
+    rho <- rho_for_record(tibble(insecticide_type = type), rho_lookup())
+    binomial_mortality <- array(
+      rbinom(length(population), sample_size_plot, population),
+      dim(population)) / sample_size_plot
+    betabinomial_mortality <- array(
+      rbetabinom(length(assay), sample_size_plot, assay, rho),
+      dim(assay)) / sample_size_plot
+    # a quantile over the draws, for every cell and year
+    quantiles <- function(x, prob) as.vector(apply(x, 2:3, quantile, prob))
 
-# simulate mortalities under betabinomial sampling
-betabinomial_died <- betabinomial_p_rho(
-  N = sample_size_plot,
-  p = population_mortality_plot,
-  rho = rho_types[index_plot[, "type_id"]]
-)
-betabinomial_mortality <- betabinomial_died / sample_size_plot
-
-sims <- calculate(population_mortality_plot,
-                  binomial_mortality,
-                  betabinomial_mortality,
-                  values = draws,
-                  nsim = 2000)
-
-# posterior mean mortality rate, and intervals for the population value
-# (posterior uncertainty), and posterior predictive intervals (posterior
-# uncertainty and sampling error) for observed mortality from binomial sampling,
-# and from betabinomial sampling
-pop_mort_mean <- colMeans(sims$population_mortality_plot[, , 1])
-pop_mort_ci <- apply(sims$population_mortality_plot[, , 1],
-                     2,
-                     quantile,
-                     c(0.025, 0.975))
-binomial_mort_ci <- apply(sims$binomial_mortality[, , 1],
-                          2,
-                          quantile,
-                          c(0.025, 0.975))
-betabinomial_mort_ci <- apply(sims$betabinomial_mortality[, , 1],
-                              2,
-                              quantile,
-                              c(0.025, 0.975))
-
-preds_plot <- preds_plot_setup %>%
-  mutate(
-    Susceptibility = pop_mort_mean,
-    pop_lower = pop_mort_ci[1, ],
-    pop_upper = pop_mort_ci[2, ],
-    binomial_lower = binomial_mort_ci[1, ],
-    binomial_upper = binomial_mort_ci[2, ],
-    betabinomial_lower = betabinomial_mort_ci[1, ],
-    betabinomial_upper = betabinomial_mort_ci[2, ],
-  ) %>%
-  filter(
-    insecticide_type %in% insecticides_plot_small
-  ) %>%
+    # posterior mean mortality rate, and intervals for the population value
+    # (posterior uncertainty), and posterior predictive intervals (posterior
+    # uncertainty and sampling error) for observed mortality from binomial
+    # sampling, and from the model's observation process
+    expand_grid(
+      year_start = years_predict,
+      cell_id = location_cell_ids
+    ) %>%
+      mutate(
+        insecticide_type = type,
+        Susceptibility = as.vector(apply(population, 2:3, mean)),
+        pop_lower = quantiles(population, 0.025),
+        pop_upper = quantiles(population, 0.975),
+        binomial_lower = quantiles(binomial_mortality, 0.025),
+        binomial_upper = quantiles(binomial_mortality, 0.975),
+        betabinomial_lower = quantiles(betabinomial_mortality, 0.025),
+        betabinomial_upper = quantiles(betabinomial_mortality, 0.975)
+      )
+  })
+) %>%
   left_join(
     locations_plot,
     by = "cell_id"
@@ -548,6 +526,8 @@ preds_plot %>%
     n.breaks = 6
   ) +
   facet_grid(insecticide_type ~ place) +
+  # decades, so the labels of neighbouring panels don't run together
+  scale_x_continuous(breaks = c(2000, 2010, 2020)) +
   guides(
     size = guide_legend(title = "No. tested")
   ) +
@@ -567,6 +547,6 @@ ggsave("figures/fit_subset.png",
        width = 18,
        height = 7)
 
-# these are the only sites with at least 25 pyrethroid bioassay datapoints,
+# these are the only sites with at least 30 pyrethroid bioassay datapoints,
 # spanning at least 8 years, and with data for all three major pyrethroids
 
