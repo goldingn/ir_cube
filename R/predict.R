@@ -126,7 +126,9 @@ report("%i cells: %i without a country and %i in a country outside the lookup (b
 chunks <- split(seq_len(n_cells), ceiling(seq_len(n_cells) / chunk_size))
 
 # the standardised kdr at every cell, with the kdr covariate (#47; NULL
-# without it)
+# without it). The basis of the latent smooths (V5) is made for each chunk
+# (prediction_basis()): at every cell it would be 1.48 million x the basis
+# functions
 cell_kdr <- prediction_kdr(options, cells)
 
 # the arabiensis share of each map (#47): r(x) for the whole complex, and with
@@ -163,13 +165,15 @@ predict_output <- function(output) {
     if (length(ok) == 0) next
     p <- list()
     x_chunk <- map_x(covariates, ok, length(years_predict))
+    basis_chunk <- prediction_basis(options, cells[ok])
     for (type in names(weights)) {
       k <- match(type, types)
       trajectories <- dynamical_trajectories(
         parameters, k, matrix(logit_init[, cell_country_index[ok], k], n_draws),
         x_chunk, seq_along(years_predict),
         x_init = covariates$init[ok, , drop = FALSE],
-        kdr = if (!is.null(cell_kdr)) cell_kdr[ok, , drop = FALSE])
+        kdr = if (!is.null(cell_kdr)) cell_kdr[ok, , drop = FALSE],
+        basis = basis_chunk)
       for (mix in names(mix_share)) {
         share <- mix_share[[mix]]
         if (length(share) > 1) share <- share[ok]
@@ -187,7 +191,7 @@ predict_output <- function(output) {
         sd_out[[mix]][ok, j] <- col_sds(p[[mix]][[j]])
       }
     }
-    rm(p, x_chunk)
+    rm(p, x_chunk, basis_chunk)
   }
 
   # a fresh raster handle in this process

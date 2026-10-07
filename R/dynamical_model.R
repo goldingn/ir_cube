@@ -14,6 +14,7 @@ source("R/greta_setup.R")
 source("R/model_covariates.R")
 source("R/species.R")
 source("R/kdr_covariate.R")
+source("R/latent_smooth.R")
 source("R/windowed_hmc.R")
 
 
@@ -47,6 +48,13 @@ source("R/windowed_hmc.R")
 #                     kdr_options() (R/kdr_covariate.R) for the map of total
 #                     kdr as a covariate of the strength of selection and the
 #                     fitness cost, with or without the species model (#47)
+#   smooth            FALSE (the default) for no latent smooths;
+#                     smooth_options() (R/latent_smooth.R) for latent spatial
+#                     smooths of the strength of selection and of the
+#                     mortality floor, in place of the kdr covariate (V5,
+#                     #47). Not with the species model or the kdr covariate;
+#                     with mortality_floor = TRUE, the floor is per class by
+#                     default (smooth_options(floor_intercepts = ))
 #   centred           which hierarchy levels are sampled centred
 #                     (centred_options()); by default the data-informed levels
 #                     (centred_options_data_informed(); #48). The same model
@@ -59,6 +67,7 @@ dynamical_model_options <- function(mortality_floor = FALSE,
                                     reversion = "estimated",
                                     species = FALSE,
                                     kdr = FALSE,
+                                    smooth = FALSE,
                                     centred = centred_options_data_informed()) {
   list(mortality_floor = mortality_floor,
        floor_prior = floor_prior,
@@ -67,6 +76,7 @@ dynamical_model_options <- function(mortality_floor = FALSE,
        reversion = reversion,
        species = species,
        kdr = kdr,
+       smooth = smooth,
        centred = centred)
 }
 
@@ -159,6 +169,16 @@ check_dynamical_model_options <- function(options) {
       (!isTRUE(options$mortality_floor) || species_on(options))) {
     stop("the kdr-dependent floor (kdr_options(floor = )) replaces the ",
          "constant floor: it needs mortality_floor = TRUE and no species model")
+  }
+  check_smooth_options(options$smooth)
+  if (smooth_on(options) && (species_on(options) || kdr_on(options))) {
+    stop("the latent smooths (smooth_options()) replace the kdr covariate: ",
+         "leave kdr and species FALSE")
+  }
+  if (smooth_on(options) && !isFALSE(options$smooth$floor) &&
+      !isTRUE(options$mortality_floor)) {
+    stop("the smooth of the floor (smooth_options(floor = )) needs ",
+         "mortality_floor = TRUE")
   }
   invisible(options)
 }
@@ -335,15 +355,23 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # has the normal prior with the mean and variance of the logit of a
   # Beta(floor_prior) variable, digamma(a) - digamma(b) and trigamma(a) +
   # trigamma(b) (for Beta(1, 4), N(-1.83, 1.39^2)); the slope N(0, 1)
-  if (!isFALSE(kdr_floor(options))) {
+  floor_intercept <- function(by_class) {
     prior <- logit_beta_moments(options$floor_prior)
+    if (by_class) normal(prior$mean, prior$sd, dim = n_classes) else
+      normal(prior$mean, prior$sd)
+  }
+  if (!isFALSE(kdr_floor(options))) {
     floor <- list(
-      floor_intercept = if (isTRUE(kdr_floor(options))) {
-        normal(prior$mean, prior$sd)
-      } else {
-        normal(prior$mean, prior$sd, dim = n_classes)
-      },
+      floor_intercept = floor_intercept(identical(kdr_floor(options), "class")),
       floor_kdr = normal(0, 1))
+  }
+  # The floor of the latent smooths (V5, #47), in its place too:
+  # plogis(floor_intercept + u_f(x)), the intercept per class or one for all
+  # (smooth_options(floor_intercepts = )), with the same prior; the
+  # intercept is the floor where u_f is 0, its mean over the modelled cells
+  if (smooth_floor_on(options)) {
+    floor <- list(floor_intercept = floor_intercept(
+      identical(options$smooth$floor_intercepts, "class")))
   }
 
   # Coefficients of the standardised initial-state covariates on the logit
@@ -436,7 +464,27 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     slopes
   }
 
-  out <- c(variables, rho, floor, init_covariates, reversion, species, kdr)
+  # The latent smooths (V5, #47; R/latent_smooth.R), each with standard
+  # normal raw weights of its basis functions (non-centred), and its marginal
+  # sd and inverse range with the penalised-complexity priors of
+  # smooth_prior_rates(): exponential, on the inverse range because in two
+  # dimensions the prior of the range rho is the density of 1 / rho for an
+  # exponential 1 / rho. With the defaults, P(rho < 1,000 km) = 0.05 and
+  # P(sd > 1) = 0.05
+  smooths <- list()
+  if (smooth_on(options)) {
+    rates <- smooth_prior_rates(options$smooth)
+    for (kind in smooth_kinds(options)) {
+      names <- smooth_variable_names(kind)
+      smooths[[names[["raw"]]]] <- normal(0, 1,
+                                          dim = nrow(options$smooth$indices))
+      smooths[[names[["sd"]]]] <- exponential(rates$sd)
+      smooths[[names[["inv_range"]]]] <- exponential(rates$range)
+    }
+  }
+
+  out <- c(variables, rho, floor, init_covariates, reversion, species, kdr,
+           smooths)
   attr(out, "init_country_level") <- init_country_level
   out
 }
@@ -529,9 +577,11 @@ init_covariate_shift <- function(init_coef, options) {
 # of the other members of the complex and of arabiensis (NULL for none); the
 # other terms are shared by both species. With the kdr covariate, also its
 # slopes (kdr_slope_names, outer_mortality()), and with the kdr-dependent
-# floor, floor_intercept and floor_kdr. logit_init_country is the
-# initial state without covariates, i.e. at a cell whose covariates are all 0
-# (the mean).
+# floor, floor_intercept and floor_kdr. With the latent smooths (V5),
+# smooth_weights, a list of the weights of each smooth's basis functions
+# (smooth_weight_terms()), and with a floor, floor_intercept.
+# logit_init_country is the initial state without covariates, i.e. at a cell
+# whose covariates are all 0 (the mean).
 #
 # `v` is a named list of either greta arrays or plain R arrays for a single
 # posterior draw (dimensions as in dynamical_variables(), vectors as vectors or
@@ -599,6 +649,10 @@ dynamical_terms <- function(v, classes_index, types,
   if (kdr_on(options)) {
     terms <- c(terms, v[intersect(c(kdr_slope_names, "floor_intercept",
                                     "floor_kdr"), names(v))])
+  }
+  if (smooth_on(options)) {
+    terms$smooth_weights <- smooth_weight_terms(v, options)
+    terms$floor_intercept <- v$floor_intercept
   }
   terms
 }
@@ -758,7 +812,10 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
   # multipliers start at no difference between the species, and both species'
   # floors, and the kdr-dependent floor at the mean kdr, at the cached
   # mortality_floor if there is one (so that cached values in either floor
-  # mode, R/floor_mode_inits.R, start there), or else at 0.02 (#47)
+  # mode, R/floor_mode_inits.R, start there), or else at 0.02 (#47). The
+  # latent smooths start flat (raw weights 0), with sd 0.3 and range 3,000
+  # km (the prior means of sd and 1 / range are 0.33 and 1 / 3,000 km), and
+  # the floor where they are 0 at the cached floor too
   species_floor <- if (!is.null(cached$mortality_floor)) {
     c(cached$mortality_floor)[1]
   } else {
@@ -768,7 +825,11 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
               gamma_selection = 0, gamma_cost = 0,
               other_floor = species_floor, arabiensis_floor = species_floor,
               setNames(rep(0, length(kdr_slope_names)), kdr_slope_names),
-              floor_intercept = qlogis(species_floor), floor_kdr = 0)
+              floor_intercept = qlogis(species_floor), floor_kdr = 0,
+              smooth_raw_selection = 0, smooth_sd_selection = 0.3,
+              smooth_inv_range_selection = 1 / 3,
+              smooth_raw_floor = 0, smooth_sd_floor = 0.3,
+              smooth_inv_range_floor = 1 / 3)
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
@@ -981,8 +1042,8 @@ dynamical_chain_inits <- function(files, variables, levels, columns,
 
 # The floors in the columns of `x` (named), on the floor's scale: as they are
 # for mortality_floor, other_floor and arabiensis_floor, and plogis() of the
-# kdr-dependent floor's intercepts (floor_intercept, the floor at the mean
-# kdr; #47)
+# intercepts of the kdr-dependent floor or the floor of the latent smooths
+# (floor_intercept, the floor at the mean kdr, or where u_f is 0; #47)
 floor_values <- function(x) {
   intercept <- grepl("^floor_intercept", colnames(x))
   x[, intercept] <- plogis(x[, intercept])
@@ -1032,7 +1093,8 @@ floored_mortality <- function(q, floor) {
 # is the mixture at the arabiensis fraction r(x) of each cell ("complex", the
 # default), or the mortality of "arabiensis" or "other" alone. With the kdr
 # covariate (options$kdr), mortality is computed by outer_mortality() too, at
-# each cell's standardised kdr.
+# each cell's standardised kdr, and with the latent smooths (options$smooth,
+# V5), with each cell's smooths.
 build_dynamical_model <- function(train_df,
                                   df,
                                   x_cell_years,
@@ -1068,9 +1130,9 @@ build_dynamical_model <- function(train_df,
 
   lookups <- dynamical_lookups(df)
   species <- species_on(options)
-  # the outer form (outer_mortality()) for the species model or the kdr
-  # covariate, and the closed-form op otherwise
-  outer <- species || kdr_on(options)
+  # the outer form (outer_mortality()) for the species model, the kdr
+  # covariate or the latent smooths, and the closed-form op otherwise
+  outer <- species || kdr_on(options) || smooth_on(options)
   # the mask cell of each cell_id
   cells <- df$cell[match(seq_len(n_unique_cells), df$cell_id)]
   # the standardised kdr at each cell_id (NULL without it), standardised over
@@ -1085,9 +1147,35 @@ build_dynamical_model <- function(train_df,
   if (identical(kdr_floor(options), "class")) {
     options$kdr$floor_classes <- lookups$levels$classes %in% kdr_floor_classes
   }
-  # the kdr-dependent floor at rows with cell_id `cell` and type_id `type`, or
-  # NULL without it
+  # the basis of the latent smooths (V5), set up for these cells (all of them,
+  # whatever the fold) and recorded in the options for the plain-R
+  # predictions, and the centred basis at each cell_id (NULL without them)
+  if (smooth_on(options)) {
+    options$smooth <- smooth_box(options$smooth, cells,
+                                 lookups$levels$classes)
+  }
+  basis_cells <- prediction_basis(options, cells)
+  # the latent smooth `kind` at rows with cell_id `cell` and class_id `class`
+  # (0 where the class has none), or NULL without it; smooth_cells, each
+  # smooth at every cell_id, is made with the terms below
+  row_smooth <- function(kind, cell, class) {
+    if (!kind %in% smooth_kinds(options)) {
+      return(NULL)
+    }
+    u <- smooth_cells[[kind]][cell]
+    if (isTRUE(options$smooth[[kind]])) u else
+      u * smooth_class_weight(options, kind, class)
+  }
+  # the floor at rows with cell_id `cell` and type_id `type`: the
+  # kdr-dependent floor, or the floor of the latent smooths, or NULL without
+  # either
   row_floor <- function(cell, type) {
+    if (smooth_floor_on(options)) {
+      class <- classes_index[type]
+      return(smooth_floor_value(
+        terms$floor_intercept[smooth_intercept_index(options, class)],
+        row_smooth("floor", cell, class)))
+    }
     if (isFALSE(kdr_floor(options))) {
       return(NULL)
     }
@@ -1135,6 +1223,10 @@ build_dynamical_model <- function(train_df,
     classes_index = classes_index,
     types = types,
     options = options)
+  # each latent smooth at every cell_id, n_unique_cells x 1
+  smooth_cells <- lapply(terms$smooth_weights, function(weights) {
+    basis_product(basis_cells, weights)
+  })
 
   # predicted mortality (the fraction susceptible) at the (cell_id, type_id,
   # year_id) of `rows`, computing the states only for the cell-type pairs there
@@ -1149,7 +1241,10 @@ build_dynamical_model <- function(train_df,
                            n_times, types, x_init,
                            row_pair = pair_index, row_year = rows$year_id,
                            row_kdr = kdr_cells[rows$cell_id, , drop = FALSE],
-                           row_floor = row_floor(rows$cell_id, rows$type_id))
+                           row_floor = row_floor(rows$cell_id, rows$type_id),
+                           row_selection = row_smooth(
+                             "selection", rows$cell_id,
+                             classes_index[rows$type_id]))
       if (!species) {
         return(p)
       }
@@ -1181,13 +1276,15 @@ build_dynamical_model <- function(train_df,
     n_pairs <- nrow(pairs)
     row_pair <- rep(seq_len(n_pairs), n_times)
     row_cell <- pairs$cell_id[row_pair]
+    row_type <- pairs$type_id[row_pair]
     p <- outer_mortality(terms, x_cell_years, pairs$cell_id, pairs$type_id,
                          lookups$cell_country_lookup, n_times, types,
                          x_init, row_pair = row_pair,
                          row_year = rep(seq_len(n_times), each = n_pairs),
                          row_kdr = kdr_cells[row_cell, , drop = FALSE],
-                         row_floor = row_floor(row_cell,
-                                               pairs$type_id[row_pair]))
+                         row_floor = row_floor(row_cell, row_type),
+                         row_selection = row_smooth(
+                           "selection", row_cell, classes_index[row_type]))
     if (species) {
       p <- switch(species_mix,
                   arabiensis = p$arabiensis,
@@ -1394,6 +1491,29 @@ closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
          dim = c(length(pair_cell), n_times))))
 }
 
+# The product basis %*% weights of a data matrix `basis` (n x m) and a greta
+# array `weights` (m x 1), as an n x 1 greta array, by one greta op. greta's
+# %*% would copy the data matrix to every chain's slice of the batch at every
+# evaluation of the density (for the latent smooths, 3,290 x 539 per chain);
+# the einsum of tf_basis_product() broadcasts it instead
+basis_product <- function(basis, weights) {
+  op_env <- new.env(parent = globalenv())
+  op_env$tf_basis_product <- tf_basis_product
+  greta:::op("basis_product", weights,
+             operation_args = list(basis = basis),
+             tf_operation = "tf_basis_product",
+             tf_function_env = op_env,
+             dim = c(nrow(basis), 1L))
+}
+
+# The TensorFlow side of basis_product(): weights (B, m, 1), basis an R
+# matrix (n, m); returns (B, n, 1)
+tf_basis_product <- function(weights, basis) {
+  tf <- tensorflow::tf
+  basis <- tf$constant(basis, dtype = weights$dtype)
+  tf$einsum("nm,bmk->bnk", basis, weights)
+}
+
 # The covariates and initial state of the cell-type pairs (pair_cell,
 # pair_type), for closed_form_states() and outer_mortality(): x_pairs,
 # J x n_times x n_covs, and logit_init, logit q_0 of each pair (a J x 1 greta
@@ -1422,13 +1542,15 @@ pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
   list(x_pairs = x_pairs, logit_init = logit_init)
 }
 
-# Predicted bioassay mortality by the outer form (#47), for the species model
-# or the kdr covariate, at pair row_pair (of the cell-type pairs pair_cell,
-# pair_type) and year index row_year of each row: with the species model, a
-# list of two greta arrays, `other` (the other members of the complex) and
-# `arabiensis`, and otherwise one, each with one element per row. row_kdr is
-# the standardised kdr at each row's cell, rows x kdr_bands() (NULL without the
-# kdr covariate). Other arguments as closed_form_states().
+# Predicted bioassay mortality by the outer form (#47), for the species model,
+# the kdr covariate or the latent smooths, at pair row_pair (of the cell-type
+# pairs pair_cell, pair_type) and year index row_year of each row: with the
+# species model, a list of two greta arrays, `other` (the other members of the
+# complex) and `arabiensis`, and otherwise one, each with one element per row.
+# row_kdr is the standardised kdr at each row's cell, rows x kdr_bands() (NULL
+# without the kdr covariate), and row_selection the latent smooth of
+# selection at each row (NULL without it). Other arguments as
+# closed_form_states().
 #
 # Each trajectory multiplies the cumulative log fitness C_t and the reversion
 # of the closed form by its own factors:
@@ -1443,14 +1565,18 @@ pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
 # only these few operations at each row; where x' exp(beta) is small,
 # exp(s) log(1 + x' exp(beta)) is close to log(1 + exp(s) x' exp(beta)), a
 # multiplier on the selection effects. With every log multiplier 0 this is
-# the closed form. Each species has its own mortality floor, other_floor and
-# arabiensis_floor (none without species_options(floors = TRUE)); one
-# trajectory has mortality_floor, or row_floor, the kdr-dependent floor at each
-# row (kdr_floor_value()), if given.
+# the closed form. With the latent smooths (V5), the log multiplier of the
+# one trajectory's cumulative log fitness is the smooth of selection u_s(x)
+# at the row, row_selection. Each species has its own mortality floor,
+# other_floor and arabiensis_floor (none without species_options(floors =
+# TRUE)); one trajectory has mortality_floor, or row_floor, the kdr-dependent
+# floor (kdr_floor_value()) or that of the latent smooths
+# (smooth_floor_value()) at each row, if given.
 outer_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
                             cell_country_lookup, n_times, types,
                             x_init = NULL, row_pair, row_year,
-                            row_kdr = NULL, row_floor = NULL) {
+                            row_kdr = NULL, row_floor = NULL,
+                            row_selection = NULL) {
   inputs <- pair_inputs(terms, x_cell_years, pair_cell, pair_type,
                         cell_country_lookup, n_times, types, x_init)
 
@@ -1483,7 +1609,8 @@ outer_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
     logit_q <- outer_logit(
       rows,
       log_selection = outer_log_multiplier(
-        gamma_selection, terms[[paste0("delta_selection", suffix)]], k),
+        gamma_selection, terms[[paste0("delta_selection", suffix)]], k,
+        row_selection),
       log_cost = outer_log_multiplier(
         gamma_cost, terms[[paste0("delta_cost", suffix)]], k))
     floored_mortality(ilogit(logit_q), floor)
@@ -1523,14 +1650,13 @@ outer_logit <- function(rows, log_selection = NULL, log_cost = NULL) {
 
 # A trajectory's log multiplier: its species offset gamma (NULL for none) plus
 # the kdr slope delta times its kdr k (both NULL without the kdr covariate),
-# or NULL if there is neither. For greta arrays (k one per row) or plain R
-# (gamma and delta one per draw, k one per cell, giving draws x cells)
-outer_log_multiplier <- function(gamma, delta, k) {
+# plus the latent smooth (NULL without it), or NULL if there is none. For
+# greta arrays (k and smooth one per row) or plain R (gamma and delta one per
+# draw, k one per cell, smooth draws x cells, giving draws x cells)
+outer_log_multiplier <- function(gamma, delta, k, smooth = NULL) {
   kdr <- if (!is.null(delta)) {
     if (inherits(delta, "greta_array")) delta * k else outer(delta, k)
   }
-  if (is.null(gamma)) {
-    return(kdr)
-  }
-  if (is.null(kdr)) gamma else gamma + kdr
+  out <- if (is.null(gamma)) kdr else if (is.null(kdr)) gamma else gamma + kdr
+  if (is.null(smooth)) out else if (is.null(out)) smooth else out + smooth
 }

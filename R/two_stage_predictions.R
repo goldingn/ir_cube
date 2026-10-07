@@ -96,7 +96,9 @@ two_stage_cells <- function(setup, cells, country,
 }
 
 # The rows `rows` of `cells` (two_stage_cells()), with their covariates as the
-# cells x years x n_covs array dynamical_logit_cells() takes
+# cells x years x n_covs array dynamical_logit_cells() takes, and with the
+# latent smooths (V5), their centred basis at the cells (prediction_basis();
+# NULL without them), made for each chunk
 two_stage_chunk <- function(setup, cells, rows = seq_along(cells$cells)) {
   list(cells = cells$cells[rows],
        country = cells$country[rows],
@@ -105,7 +107,8 @@ two_stage_chunk <- function(setup, cells, rows = seq_along(cells$cells)) {
        x_init = cells$covariates$init[rows, , drop = FALSE],
        coords = cells$coords[rows, , drop = FALSE],
        share = cells$share[rows],
-       kdr = cells$kdr[rows, , drop = FALSE])
+       kdr = cells$kdr[rows, , drop = FALSE],
+       basis = prediction_basis(setup$options, cells$cells[rows]))
 }
 
 # The correction omega + xi at the cells of `chunk` (two_stage_chunk()) for
@@ -146,7 +149,7 @@ two_stage_logit_batch <- function(setup, b, chunk, noise = FALSE) {
     setup$parameters[[b]], setup$k,
     matrix(setup$logit_init[draws, chunk$country, setup$k], length(draws)),
     chunk$x, year_index, x_init = chunk$x_init, share = chunk$share,
-    kdr = chunk$kdr)
+    kdr = chunk$kdr, basis = chunk$basis)
   correction <- project_cells(setup$fit, setup$fields[[b]], chunk,
                               setup$years, noise = noise)
   out <- list(dynamical = list(), two_stage = list())
