@@ -26,6 +26,14 @@
 #                     default) for the pyrethroids and DDT only, TRUE for
 #                     every class, FALSE for none. Needs mortality_floor =
 #                     TRUE
+#   shear             FALSE (the default), or TRUE for a selection smooth that
+#                     shares the floor's: u_s(x) = v_s(x) + b u_f(x), v_s and
+#                     u_f independent smooths and b (smooth_shear) one
+#                     estimated loading, N(1, 0.5) a priori, before the
+#                     class weighting of u_s. Absorbs the positive trade-off
+#                     between the log selection multiplier and the logit
+#                     floor, so that v_s and u_f are nearly uncorrelated in
+#                     the posterior. Needs both smooths
 #   floor_intercepts  "class" (the default) for one floor_intercept per
 #                     insecticide class, "one" for one for all. With
 #                     mortality_floor = TRUE the floor is plogis(
@@ -33,14 +41,16 @@
 #                     mortality_floor, with or without u_f; floor_intercept is
 #                     the logit floor where u_f is 0, which is u_f's mean
 #                     over the modelled cells
-#   kernel            "matern52" (the default; Matern, smoothness 5/2) or
-#                     "se" (squared exponential)
+#   kernel            "se" (the default; squared exponential) or "matern52"
+#                     (Matern, smoothness 5/2)
 #   c                 the box's half-widths as multiples of the half-extents
 #                     of the modelled bioassay cells; widened where needed to
 #                     cover every cell of the mask (smooth_box())
 #   m                 the number of basis functions per dimension (x, y), or
 #                     NULL (the default) for the rule of Riutort-Mayol et al.
-#                     at the prior's lower range (smooth_box())
+#                     at range basis_range (smooth_box())
+#   basis_range       the shortest range, in 1,000 km, the rule sets m for,
+#                     or NULL for the prior's lower range, range_prior[1]
 #   range_prior       the penalised-complexity prior of each smooth's range
 #                     rho (Fuglstad et al. 2019): P(rho < range_prior[1]) =
 #                     range_prior[2], rho in 1,000 km
@@ -53,18 +63,22 @@
 # smooth applies to
 smooth_options <- function(selection = TRUE,
                            floor = "class",
+                           shear = FALSE,
                            floor_intercepts = "class",
-                           kernel = "matern52",
-                           c = 1.5,
+                           kernel = "se",
+                           c = 2,
                            m = NULL,
-                           range_prior = c(1, 0.05),
+                           basis_range = 1,
+                           range_prior = c(1.5, 0.05),
                            sd_prior = c(1, 0.05)) {
   list(selection = selection,
        floor = floor,
+       shear = shear,
        floor_intercepts = floor_intercepts,
        kernel = kernel,
        c = c,
        m = m,
+       basis_range = basis_range,
        range_prior = range_prior,
        sd_prior = sd_prior)
 }
@@ -113,15 +127,22 @@ check_smooth_options <- function(smooth) {
   is_kind <- function(x) isFALSE(x) || isTRUE(x) || identical(x, "class")
   stopifnot(
     is.list(smooth),
-    all(setdiff(names(smooth_options()), "m") %in% names(smooth)),
+    all(setdiff(names(smooth_options()), c("m", "basis_range", "shear")) %in%
+          names(smooth)),
     all(names(smooth) %in% c(names(smooth_options()), smooth_basis_elements)),
     is_kind(smooth$selection), is_kind(smooth$floor),
     !isFALSE(smooth$selection) || !isFALSE(smooth$floor),
+    is.null(smooth$shear) || isFALSE(smooth$shear) || isTRUE(smooth$shear),
+    !isTRUE(smooth$shear) ||
+      (!isFALSE(smooth$selection) && !isFALSE(smooth$floor)),
     smooth$floor_intercepts %in% c("class", "one"),
     smooth$kernel %in% names(hsgp_m_factor),
     is.numeric(smooth$c), length(smooth$c) == 1, smooth$c > 1,
     is.null(smooth$m) || (is.numeric(smooth$m) && length(smooth$m) == 2 &&
                             all(smooth$m >= 1)),
+    is.null(smooth$basis_range) || (is.numeric(smooth$basis_range) &&
+                                      length(smooth$basis_range) == 1 &&
+                                      smooth$basis_range > 0),
     is.numeric(smooth$range_prior), length(smooth$range_prior) == 2,
     all(smooth$range_prior > 0), smooth$range_prior[2] < 1,
     is.numeric(smooth$sd_prior), length(smooth$sd_prior) == 2,
@@ -184,8 +205,9 @@ smooth_mask_range <- function(crs = smooth_crs) {
 # dimension c times their half-extent, or more where the mask reaches beyond
 # that, so that every mask cell can be predicted to. Unless given, m is
 # hsgp_m_factor[kernel] L / ell_min per dimension, rounded up, for ell_min the
-# lengthscale at the prior's lower range (rho = 2 ell: the Matern's
-# correlation is about 0.13 at rho, and the squared exponential's 0.135). Of
+# lengthscale at range basis_range, by default the prior's lower range (rho
+# = 2 ell: the Matern's correlation is about 0.13 at rho, and the squared
+# exponential's 0.135). Of
 # the m[1] x m[2] products of the one-dimensional eigenfunctions, only those
 # with frequency up to the lower of the two dimensions' highest, omega_max =
 # min_d pi m_d / (2 L_d), are kept (by the rule, about pi hsgp_m_factor /
@@ -193,13 +215,13 @@ smooth_mask_range <- function(crs = smooth_crs) {
 # corners beyond omega_max have less power than the frequencies just beyond
 # the grid along each axis, which the rule already leaves out. The basis
 # functions are ordered by frequency. A saved basis is kept, so a rebuilt fit
-# has its own. With the defaults (c = 1.5, 1.64 in y to cover the mask; m =
-# (29, 25), 539 of 725 kept), the covariance the basis implies at the
-# modelled cells, centred, is within 2.4% of sd^2 of the Matern's for ranges
-# of 1,000-2,000 km, but 21% at 500 km, where the basis is too coarse, and
-# 18% at 4,000 km and 39% at 8,000 km, where the box is too narrow; c = 2
-# (857 kept) gives 3.3% at 4,000 km and 20% at 8,000 km
-# (R/check_latent_smooth.R).
+# has its own. With the defaults (squared exponential, c = 2, m = (25, 20)
+# for ranges down to 1,000 km, 363 of 500 kept), the covariance the basis
+# implies at the modelled cells, centred, is within 2.4% of sd^2 of the
+# kernel's for ranges of 1,000-4,000 km (0.02% at 1,500 km), but 27% at
+# 8,000 km and 22% at 16,000 km, where the box is too narrow for the range.
+# m set at the prior's lower range, 1,500 km ((17, 14), 164 kept), would
+# give 19% at 1,000 km (R/check_latent_smooth.R).
 smooth_box <- function(smooth, cells, classes) {
   smooth$term_classes <- classes %in% smooth_classes
   if (!is.null(smooth$indices)) {
@@ -215,7 +237,9 @@ smooth_box <- function(smooth, cells, classes) {
                 abs(mask_range[2, ] - smooth$origin))
   smooth$half_width <- pmax(smooth$c * (upper - lower) / 2, reach)
   if (is.null(smooth$m)) {
-    ell_min <- smooth$range_prior[1] / 2
+    basis_range <- if (is.null(smooth$basis_range)) smooth$range_prior[1] else
+      smooth$basis_range
+    ell_min <- basis_range / 2
     smooth$m <- ceiling(hsgp_m_factor[[smooth$kernel]] * smooth$half_width /
                           ell_min)
   }
@@ -313,9 +337,18 @@ smooth_variable_names <- function(kind) {
   setNames(paste0("smooth_", parts, "_", kind), parts)
 }
 
+# The prior of the shear loading b (smooth_options(shear = TRUE)): N(1, 0.5),
+# as list(mean, sd). The block screen of #47 found the log selection
+# multiplier rising with the logit floor at about 0.8 per unit, across
+# blocks and within them
+smooth_shear_prior <- list(mean = 1, sd = 0.5)
+
 # The weights of each smooth of a model with `options`, from its variables
-# `v` (greta arrays, or draws x dim arrays in plain R), as a named list
-smooth_weight_terms <- function(v, options) {
+# `v` (greta arrays, or draws x dim arrays in plain R), as a named list. With
+# the shear, the selection smooth u_s = v_s + b u_f shares the basis, so its
+# weights are those of v_s plus b times the floor's; with `own`, also
+# selection_own, those of v_s alone (for the maps and checks)
+smooth_weight_terms <- function(v, options, own = FALSE) {
   out <- list()
   for (kind in smooth_kinds(options)) {
     names <- smooth_variable_names(kind)
@@ -328,6 +361,12 @@ smooth_weight_terms <- function(v, options) {
       inv_range <- c(inv_range)
     }
     out[[kind]] <- smooth_weights(raw, sd, inv_range, options$smooth)
+  }
+  if (smooth_on(options) && isTRUE(options$smooth$shear)) {
+    shear <- v$smooth_shear
+    if (!inherits(shear, "greta_array")) shear <- c(shear)
+    if (own) out$selection_own <- out$selection
+    out$selection <- out$selection + shear * out$floor
   }
   out
 }
@@ -365,18 +404,23 @@ smooth_floor_value <- function(intercept, u = NULL) {
 # The posterior mean and sd of each latent smooth of a fit at projected
 # coordinates `coords` (points x 2, in 1,000 km; smooth_coords()), from its
 # parameters (dynamical_parameter_draws(), R/dynamical_predictions.R), as a
-# list named by smooth of points x 2 matrices, columns mean and sd; the basis
-# is made `chunk` points at a time
-smooth_posterior_at <- function(parameters, coords, chunk = 5000) {
+# list named by smooth of points x 2 matrices, columns mean and sd: u_s
+# ("selection"), u_f ("floor"), and with the shear v_s ("selection_own"),
+# from `weights` (draws x basis functions each); the basis is made `chunk`
+# points at a time
+smooth_posterior_at <- function(parameters, coords, chunk = 5000,
+                                weights = smooth_weight_terms(
+                                  parameters$variables, parameters$options,
+                                  own = TRUE)) {
   smooth <- parameters$options$smooth
-  out <- lapply(parameters$smooth_weights, function(weights) {
+  out <- lapply(weights, function(w) {
     matrix(NA_real_, nrow(coords), 2, dimnames = list(NULL, c("mean", "sd")))
   })
   for (rows in split(seq_len(nrow(coords)),
                      ceiling(seq_len(nrow(coords)) / chunk))) {
     basis <- smooth_basis_at(smooth, coords[rows, , drop = FALSE])
     for (kind in names(out)) {
-      u <- parameters$smooth_weights[[kind]] %*% t(basis)
+      u <- weights[[kind]] %*% t(basis)
       mean <- colMeans(u)
       out[[kind]][rows, "mean"] <- mean
       out[[kind]][rows, "sd"] <- sqrt(colSums(sweep(u, 2, mean) ^ 2) /
