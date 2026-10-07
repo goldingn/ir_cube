@@ -16,7 +16,8 @@
 #   figures/species_runs/new_parameters.png   posteriors of the new
 #                                             parameters by fit (usable
 #                                             chains): exp(gamma_*),
-#                                             exp(delta_*), the floors
+#                                             exp(delta_*), the floors, the
+#                                             latent smooths' sd and range
 # and, for the fits R/species_misfit.R has been run on,
 #   outputs/species_runs/misfit_regions.csv   their region tables together
 #   outputs/species_runs/loo_compare.csv      loo::loo_compare() of their
@@ -81,14 +82,17 @@ print(as.data.frame(select(fit_rows, -file, -options)), digits = 4)
 
 # the new parameters: medians, 50% and 95% intervals, by fit
 new <- parameters %>%
-  filter(group %in% c("multiplier", "floor"),
+  filter(group %in% c("multiplier", "floor", "smooth"),
          !grepl("^floor_intercept", parameter)) %>%
   mutate(label = factor(label, levels = rev(names(fits))))
 if (nrow(new) > 0) {
+  # no effect, 1, for the multipliers (an empty layer breaks the facets)
+  multipliers <- distinct(filter(new, group == "multiplier"), parameter)
   p <- ggplot(new, aes(y = label)) +
-    geom_vline(aes(xintercept = 1), colour = "grey60", linetype = 2,
-               data = distinct(filter(new, group == "multiplier"),
-                               parameter)) +
+    (if (nrow(multipliers) > 0) {
+      geom_vline(aes(xintercept = 1), colour = "grey60", linetype = 2,
+                 data = multipliers)
+    }) +
     geom_linerange(aes(xmin = q2.5, xmax = q97.5), linewidth = 0.4) +
     geom_linerange(aes(xmin = q25, xmax = q75), linewidth = 1.4) +
     geom_point(aes(x = q50), size = 2) +

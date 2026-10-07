@@ -9,8 +9,9 @@
 source("R/two_stage_helpers.R")
 
 # The floors of a fit: mortality_floor, or the species model's other_floor and
-# arabiensis_floor, or the kdr-dependent floor's intercepts (floor_intercept,
-# one or one per class: the logit floor at the mean kdr; #47). The scripts
+# arabiensis_floor, or the intercepts of the kdr-dependent floor or the floor
+# of the latent smooths (floor_intercept, one or one per class: the logit
+# floor at the mean kdr, or where u_f is 0; #47). The scripts
 # treat an intercept as its floor, plogis(floor_intercept) (floor_values(),
 # R/dynamical_model.R), whose free state is the same, qlogis(floor)
 floor_names <- c("mortality_floor", "other_floor", "arabiensis_floor")
@@ -18,8 +19,8 @@ floor_names <- c("mortality_floor", "other_floor", "arabiensis_floor")
 # A fit's saved options, completed for the current code. Options added since
 # the fit take the values that reproduce it: floor_prior (#47) the prior of
 # the floor before #47, Beta(1, 49), unless `floor_prior` gives another (the
-# fits before d2dee17, 2 October 2026, used Beta(1, 9)); species and kdr off;
-# with kdr, no kdr-dependent floor.
+# fits before d2dee17, 2 October 2026, used Beta(1, 9)); species, kdr and the
+# latent smooths off; with kdr, no kdr-dependent floor.
 # Settings of older code that the current code no longer has are dropped if
 # their values are what the current code does, and stop the script otherwise.
 complete_model_options <- function(options, floor_prior = c(1, 49)) {
@@ -46,6 +47,7 @@ complete_model_options <- function(options, floor_prior = c(1, 49)) {
   if (is.null(out$floor_prior)) out$floor_prior <- floor_prior
   if (is.null(out$species)) out$species <- FALSE
   if (is.null(out$kdr)) out$kdr <- FALSE
+  if (is.null(out$smooth)) out$smooth <- FALSE
   # kdr options saved before the kdr-dependent floor have none
   if (is.list(out$kdr) && is.null(out$kdr$floor)) out$kdr$floor <- FALSE
   out$selection_columns <- complete_selection_design(design)

@@ -196,9 +196,10 @@ smooth_mask_range <- function(crs = smooth_crs) {
 # has its own. With the defaults (c = 1.5, 1.64 in y to cover the mask; m =
 # (29, 25), 539 of 725 kept), the covariance the basis implies at the
 # modelled cells, centred, is within 2.4% of sd^2 of the Matern's for ranges
-# of 1,000-2,000 km, but 18% at 4,000 km and 39% at 8,000 km, where the box is
-# too narrow for the range; c = 2 (857 kept) gives 3.3% at 4,000 km and 20%
-# at 8,000 km (R/check_latent_smooth.R).
+# of 1,000-2,000 km, but 21% at 500 km, where the basis is too coarse, and
+# 18% at 4,000 km and 39% at 8,000 km, where the box is too narrow; c = 2
+# (857 kept) gives 3.3% at 4,000 km and 20% at 8,000 km
+# (R/check_latent_smooth.R).
 smooth_box <- function(smooth, cells, classes) {
   smooth$term_classes <- classes %in% smooth_classes
   if (!is.null(smooth$indices)) {
