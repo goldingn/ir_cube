@@ -77,7 +77,9 @@ init_covariate_matrix <- function(cells, design = selection_design(),
 #                "raw": pop_scaled_cube.tif, population per cell min-max
 #                scaled; "log": pop_log_scaled_cube.tif, log population
 #                min-max scaled (R/prep_rasters.R)
-#   pop_d_half   the density at which "encounter" and "saturating" are 0.5
+#   pop_d_half   the density at which "encounter" and "saturating" are 0.5;
+#                270, where the encounter covariate is most spread over the
+#                modelled bioassays (#37; R/pop_d_half_spread.R)
 #   init_pop     the transform of the initial-state population covariate
 #                (#19), one of those of pop
 #   hinges       named list of knots, e.g. list(nets = c(0.18, 0.35)): hinge
@@ -105,7 +107,7 @@ init_covariate_matrix <- function(cells, design = selection_design(),
 # the refit are selection_design_untrended().
 selection_design <- function(pop = c("encounter", "saturating", "raw",
                                      "log"),
-                             pop_d_half = 50,
+                             pop_d_half = 270,
                              init_pop = pop,
                              hinges = list(),
                              trend_pop = "linear_0_1",

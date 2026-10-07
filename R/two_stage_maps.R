@@ -125,10 +125,13 @@ if (step == "prepare") {
     identical(fit_env$countries, countries),
     identical(fit_env$regions, regions),
     identical(fit_env$unique_cells, unique_cells),
-    identical(fit_env$classes_index, classes_index),
-    isTRUE(all.equal(fit_env$x_cell_years, x_cell_years)),
-    isTRUE(all.equal(fit_env$cell_years_index, cell_years_index))
+    identical(fit_env$classes_index, classes_index)
   )
+  # the fit's own design matrix, not one built from the default options
+  # (R/validation_covariates.R); the check of the grid's covariates below
+  # confirms that the current rasters reproduce it
+  x_cell_years <- fit_env$x_cell_years
+  cell_years_index <- fit_env$cell_years_index
   fold <- list(draws = fit_env$draws, options = fit_env$model_options,
                x_cells_init = fit_env$x_cells_init)
   rm(fit_env)
