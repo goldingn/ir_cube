@@ -8,8 +8,8 @@
 # outputs/species_runs/pods.json, the create-pod body of each
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
-# default, species_runs); for the sets "wb" and "v5r" (wb_runs, v5r_runs,
-# below), jobs_<set>.csv and pods_<set>.json. The fits:
+# default, species_runs); for the sets "wb", "v5r" and "v5i" (wb_runs,
+# v5r_runs, v5i_runs, below), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
 #   sp_v1         V1: the species model, no floors
@@ -185,8 +185,35 @@ v5r_runs <- data.frame(
   job = v5r_runs$job,
   row.names = NULL)
 
+# The set "v5i" (v5i_runs): V5r with the beta-binomial likelihood and the
+# hierarchy of regions and countries of the initial state replaced by a
+# third smooth, of the logit relative initial state, with a loading per type
+# (smooth_options(init = TRUE), R/latent_smooth.R; the same kernel, basis
+# and fixed range, the field's sd fixed at 1 and each loading with the PC
+# prior of a smooth's sd), within the same limits init_frac_min and with the
+# initial-state covariates; the full fit and the temporal forecasting folds
+# from 2014 and 2018:
+#   v5i_bb_full, v5i_bb_fc2014, v5i_bb_fc2018
+# Every chain starts from the low-floor initial values, as V5r's, the field
+# flat and each loading at 0.3 (dynamical_inits()). With the default sampler
+# of #48. V5i's gradient took 1.00 times V5r's (bb) and 1.02 times the
+# default model's (4 chains, 8 threads, 9 October 2026): about 49 ms on the
+# default pod, and for 3,500 iterations of 45 leapfrog steps about 2.1 h, so
+# about 2.4-2.6 h and $0.70 a pod with setup, predictions and saving.
+v5i_options <- sub("sd_prior = c(1, 0.05))",
+                   "sd_prior = c(1, 0.05), init = TRUE)",
+                   v5r_options("beta_binomial"), fixed = TRUE)
+v5i_runs <- data.frame(
+  name = sprintf("v5i_bb_%s", v5r_fits$fit),
+  label = sprintf("V5i_bb_%s", v5r_fits$fit),
+  options = v5i_options,
+  inits = "temporary/inits_floor_low.RDS",
+  job = v5r_fits$job,
+  row.names = NULL)
+
 # the sets of fits, by name
-run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs)
+run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
+                 v5i = v5i_runs)
 
 # One row per pod job, with its environment (docker/README.md): the full fit,
 # or the fold in the runs' column job, if they have one
