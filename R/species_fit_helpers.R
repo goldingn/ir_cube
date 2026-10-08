@@ -107,15 +107,38 @@ chain_floor_mode <- function(draws, high_floor = 0.1) {
   }, character(1))
 }
 
+# The chains USE_CHAINS names for fit `label` (e.g. "V5=1,2;V5_shear=1,2,3"),
+# to leave out chains in a minor mode of the posterior (a lower log
+# posterior) that are not stuck; NULL if it names none for `label`
+named_chains <- function(label) {
+  value <- Sys.getenv("USE_CHAINS")
+  if (!nzchar(value) || !nzchar(label)) return(NULL)
+  for (entry in strsplit(strsplit(value, ";", fixed = TRUE)[[1]], "=",
+                         fixed = TRUE)) {
+    if (length(entry) == 2 && trimws(entry[1]) == label) {
+      return(as.integer(strsplit(entry[2], ",", fixed = TRUE)[[1]]))
+    }
+  }
+  NULL
+}
+
 # The chains of `draws` to use: all but those stuck (stuck_chains(),
-# R/dynamical_predictions.R), reported
+# R/dynamical_predictions.R), and of those only the chains USE_CHAINS names
+# for `label` (named_chains()), if it names any, reported
 usable_chains <- function(draws, label = "") {
   stuck <- stuck_chains(draws)
   if (length(stuck) > 0) {
     report("%s: chain(s) %s stuck (fewer than half their draws distinct), left out",
            label, toString(stuck))
   }
-  setdiff(seq_along(draws), stuck)
+  usable <- setdiff(seq_along(draws), stuck)
+  named <- named_chains(label)
+  if (!is.null(named)) {
+    stopifnot(all(named %in% seq_along(draws)))
+    usable <- intersect(usable, named)
+    report("%s: chains %s only (USE_CHAINS)", label, toString(usable))
+  }
+  usable
 }
 
 # The fit's greta model, rebuilt with its options, data and covariates

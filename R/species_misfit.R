@@ -136,7 +136,10 @@ stopifnot(all(is.finite(loglik)))
 rm(logit, p)
 invisible(gc())
 saveRDS(loglik, file.path(output_dir, sprintf("%s_loglik.rds", label)))
-r_eff <- loo::relative_eff(exp(loglik), chain_id = draw_chain_id)
+# relative_eff() needs the chains numbered 1, 2, ..., whichever are used
+r_eff <- loo::relative_eff(exp(loglik),
+                           chain_id = match(draw_chain_id,
+                                            unique(draw_chain_id)))
 loo_fit <- loo::loo(loglik, r_eff = r_eff)
 saveRDS(loo_fit, file.path(output_dir, sprintf("%s_loo.rds", label)))
 cat(sprintf("\n%s: elpd_loo %.1f (se %.1f), p_loo %.1f, over %d bioassays, %d draws\n",

@@ -122,7 +122,7 @@ key_array <- function(chains) {
 # chains ----------------------------------------------------------------------------
 
 detected_stuck <- stuck_chains(fit$draws)
-usable <- setdiff(seq_len(n_chains), detected_stuck)
+usable <- usable_chains(fit$draws, label)
 floors <- fit_floor_names(fit$draws)
 chains <- tibble(
   label = label,
