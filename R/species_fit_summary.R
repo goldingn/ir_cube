@@ -4,8 +4,10 @@
 #   Rscript R/species_fit_summary.R <fitted_model.RData> <label>
 #
 # For the key parameters: beta_overall, beta_class (overall plus the class
-# deviation, per covariate and class), sigma_overall, sigma_class, rho per
-# type, the reversion rates, and those of #47 (gamma_*, delta_*, the floors,
+# deviation, per covariate and class, by the model's own transforms,
+# dynamical_terms(), whichever levels are centred, #48), sigma_overall,
+# sigma_class, rho per type (with the weighted binomial likelihood the fixed
+# replicate rho, constant), the reversion rates, and those of #47 (gamma_*, delta_*, the floors,
 # the latent smooths' sd and range, and shear loading),
 # the posterior mean, sd and quantiles, R-hat and bulk and tail ESS
 # (posterior::summarise_draws()), over the usable chains (all but those
@@ -58,24 +60,26 @@ key_parameters <- function(chain) {
   beta_overall <- matrix(p("beta_overall"), n)
   sigma_overall <- matrix(p("sigma_overall"), n)
   sigma_class <- matrix(p("sigma_class"), n)
-  beta_class_raw <- p("beta_class_raw")
+  # the class effects and rho per type, by dynamical_terms(): from the
+  # standard normal deviations of the non-centred levels and the effects
+  # themselves of the centred ones (#48); with the weighted binomial
+  # likelihood, rho is the fixed replicate rho
+  variables <- lapply(setNames(nm = unique(sub("\\[.*$", "", colnames(m)))),
+                      extract_parameter, draws_matrix = m)
+  terms <- dynamical_terms_draws(variables, fit$classes_index, fit$types,
+                                 terms = c("beta_class", "rho_types"),
+                                 options = fit$options)
   for (j in seq_along(covariates)) {
     out[[sprintf("beta_overall[%s]", covariates[j])]] <- beta_overall[, j]
     out[[sprintf("sigma_overall[%s]", covariates[j])]] <- sigma_overall[, j]
     out[[sprintf("sigma_class[%s]", covariates[j])]] <- sigma_class[, j]
     for (c in seq_along(fit$classes)) {
       out[[sprintf("beta_class[%s,%s]", covariates[j], fit$classes[c])]] <-
-        beta_overall[, j] + sigma_overall[, j] * beta_class_raw[, j, c]
+        terms$beta_class[, j, c]
     }
   }
-  # rho per type, as dynamical_terms()
-  rho_class_raw <- matrix(p("rho_class_raw"), n)
-  rho_type_raw <- matrix(p("rho_type_raw"), n)
   for (k in seq_along(fit$types)) {
-    out[[sprintf("rho[%s]", fit$types[k])]] <- plogis(
-      c(p("rho_mu")) + c(p("rho_sigma_class")) *
-        rho_class_raw[, fit$classes_index[k]] +
-        c(p("rho_sigma_type")) * rho_type_raw[, k])
+    out[[sprintf("rho[%s]", fit$types[k])]] <- terms$rho_types[, k, 1]
   }
   if (any(grepl("^reversion_rate", colnames(m)))) {
     reversion <- matrix(p("reversion_rate"), n)
@@ -203,7 +207,7 @@ fit_row <- tibble(
   min_ess_bulk = min(parameters$ess_bulk, na.rm = TRUE),
   min_ess_tail = min(parameters$ess_tail, na.rm = TRUE),
   options = paste(deparse(fit$saved_options[setdiff(
-    names(fit$saved_options), c("selection_columns", "init_covariate_centre"))]),
+    names(fit$saved_options), c("selection_columns", dynamical_built_options))]),
     collapse = ""))
 
 saveRDS(list(parameters = parameters, parameters_by_mode = parameters_by_mode,

@@ -20,14 +20,16 @@ floor_names <- c("mortality_floor", "other_floor", "arabiensis_floor")
 # the fit take the values that reproduce it: floor_prior (#47) the prior of
 # the floor before #47, Beta(1, 49), unless `floor_prior` gives another (the
 # fits before d2dee17, 2 October 2026, used Beta(1, 9)); species, kdr and the
-# latent smooths off; with kdr, no kdr-dependent floor.
+# latent smooths off; with kdr, no kdr-dependent floor; the beta-binomial
+# likelihood; and no centred levels (centred_options(), #48), as the
+# hierarchy was sampled before the centred option.
 # Settings of older code that the current code no longer has are dropped if
 # their values are what the current code does, and stop the script otherwise.
 complete_model_options <- function(options, floor_prior = c(1, 49)) {
   defaults <- dynamical_model_options()
   equivalent <- list(rho = "type", init_centred = "country")
   for (name in setdiff(names(options),
-                       c(names(defaults), "init_covariate_centre"))) {
+                       c(names(defaults), dynamical_built_options))) {
     if (!identical(options[[name]], equivalent[[name]])) {
       stop("the fit's option ", name, " = ", deparse(options[[name]]),
            " is not in the current model")
@@ -43,11 +45,13 @@ complete_model_options <- function(options, floor_prior = c(1, 49)) {
     }
   }
   out <- options[intersect(names(options),
-                           c(names(defaults), "init_covariate_centre"))]
+                           c(names(defaults), dynamical_built_options))]
   if (is.null(out$floor_prior)) out$floor_prior <- floor_prior
   if (is.null(out$species)) out$species <- FALSE
   if (is.null(out$kdr)) out$kdr <- FALSE
   if (is.null(out$smooth)) out$smooth <- FALSE
+  if (is.null(out$likelihood)) out$likelihood <- "beta_binomial"
+  if (is.null(out$centred)) out$centred <- centred_options()
   # kdr options saved before the kdr-dependent floor have none
   if (is.list(out$kdr) && is.null(out$kdr$floor)) out$kdr$floor <- FALSE
   out$selection_columns <- complete_selection_design(design)

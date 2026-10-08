@@ -146,7 +146,9 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #                        effects are added (dynamical_logit_cells())
 #   init_coef            draws x n_init_covs x n_types, the coefficients of
 #                        the initial-state covariates (NULL for none)
-#   rho_types            draws x n_types, the observation overdispersion
+#   rho_types            draws x n_types, the observation overdispersion;
+#                        with the weighted binomial likelihood (#47), the
+#                        fixed replicate rho in every draw (fixed_rho_types())
 #   mortality_floor      draws (NULL for none)
 #   kappa_type           draws x n_types, the reversion kappa (<= 0; NULL for
 #                        none, see reversion_kappa())

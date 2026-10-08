@@ -15,6 +15,7 @@ source("R/model_covariates.R")
 source("R/species.R")
 source("R/kdr_covariate.R")
 source("R/latent_smooth.R")
+source("R/weighted_binomial.R")
 source("R/windowed_hmc.R")
 
 
@@ -55,6 +56,14 @@ source("R/windowed_hmc.R")
 #                     #47). Not with the species model or the kdr covariate;
 #                     with mortality_floor = TRUE, the floor is per class by
 #                     default (smooth_options(floor_intercepts = ))
+#   likelihood        the likelihood of the bioassays: "beta_binomial" (the
+#                     default), with the overdispersion rho per type
+#                     estimated, nested in class; or "weighted_binomial"
+#                     (#47; R/weighted_binomial.R), the binomial log
+#                     likelihood of each bioassay weighted by its design
+#                     effect 1 / (1 + (n - 1) rho), with rho per type fixed at
+#                     the replicate-bioassay estimates (replicate_rho()), and
+#                     no overdispersion parameters
 #   centred           which hierarchy levels are sampled centred
 #                     (centred_options()); by default the data-informed levels
 #                     (centred_options_data_informed(); #48). The same model
@@ -68,6 +77,7 @@ dynamical_model_options <- function(mortality_floor = FALSE,
                                     species = FALSE,
                                     kdr = FALSE,
                                     smooth = FALSE,
+                                    likelihood = "beta_binomial",
                                     centred = centred_options_data_informed()) {
   list(mortality_floor = mortality_floor,
        floor_prior = floor_prior,
@@ -77,6 +87,7 @@ dynamical_model_options <- function(mortality_floor = FALSE,
        species = species,
        kdr = kdr,
        smooth = smooth,
+       likelihood = likelihood,
        centred = centred)
 }
 
@@ -102,7 +113,8 @@ dynamical_model_options <- function(mortality_floor = FALSE,
 #              one column must stay non-centred.
 #   rho_type   TRUE to centre the type level of the overdispersion,
 #              logit rho_type ~ N(logit rho_class, rho_sigma_type); the class
-#              level stays non-centred
+#              level stays non-centred. Ignored with the weighted binomial
+#              likelihood, which has no overdispersion parameters
 centred_options <- function(selection = NULL, rho_type = FALSE) {
   list(selection = selection,
        rho_type = rho_type)
@@ -130,8 +142,9 @@ check_dynamical_model_options <- function(options) {
   reversion <- options$reversion
   init_covariates <- options$init_covariates
   stopifnot(
-    # init_covariate_centre is set by build_dynamical_model()
-    setequal(setdiff(names(options), "init_covariate_centre"),
+    # build_dynamical_model() sets init_covariate_centre, and replicate_rho
+    # with the weighted binomial likelihood
+    setequal(setdiff(names(options), dynamical_built_options),
              names(dynamical_model_options())),
     is.null(options$init_covariate_centre) ||
       identical(colnames(options$init_covariate_centre), init_covariates),
@@ -145,6 +158,10 @@ check_dynamical_model_options <- function(options) {
                init_covariate_names(options$selection_columns))))
   # errors on a design selection_design() does not build
   complete_selection_design(options$selection_columns)
+  if (!(is.character(options$likelihood) && length(options$likelihood) == 1 &&
+        options$likelihood %in% dynamical_likelihoods)) {
+    stop("likelihood must be one of ", toString(dynamical_likelihoods))
+  }
   centred <- options$centred
   columns <- selection_column_names(options$selection_columns)
   stopifnot(
@@ -191,9 +208,28 @@ centred_selection_rows <- function(options) {
   columns %in% options$centred$selection
 }
 
-# Whether the type level of the overdispersion is centred
+# Whether the type level of the overdispersion is centred: never with the
+# weighted binomial likelihood, which has no overdispersion parameters
 centred_rho_type <- function(options) {
-  isTRUE(options$centred$rho_type)
+  isTRUE(options$centred$rho_type) && rho_estimated(options)
+}
+
+# The options build_dynamical_model() adds, for the plain-R predictions
+dynamical_built_options <- c("init_covariate_centre", "replicate_rho")
+
+# The likelihoods of the bioassays (dynamical_model_options(likelihood = ))
+dynamical_likelihoods <- c("beta_binomial", "weighted_binomial")
+
+# A model's likelihood: options saved before it was an option have the
+# beta-binomial
+model_likelihood <- function(options) {
+  if (is.null(options$likelihood)) "beta_binomial" else options$likelihood
+}
+
+# Whether the model estimates the overdispersion rho (the beta-binomial), or
+# fixes it at the replicate-bioassay estimates (the weighted binomial)
+rho_estimated <- function(options) {
+  model_likelihood(options) == "beta_binomial"
 }
 
 
@@ -319,21 +355,26 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # (0.15); rho here also absorbs misfit of the model, and the class-level rho
   # of the fits before the refit reached posterior means of 0.24-0.38 despite
   # a half-normal prior with sd 0.025, so no stronger prior is put on it.
-  rho <- list(
-    rho_mu = normal(qlogis(0.15), 1),
-    rho_sigma_class = normal(0, 0.5, truncation = c(0, Inf)),
-    rho_sigma_type = normal(0, 0.5, truncation = c(0, Inf)),
-    rho_class_raw = normal(0, 1, dim = n_classes)
-  )
-  # The type level, non-centred, or centred (centred_options()): logit rho of
-  # each type itself, with the prior the non-centred form implies,
-  #   logit rho_type ~ N(logit rho_class, rho_sigma_type)
-  if (centred_rho_type(options)) {
-    logit_rho_class <- logit_rho_classes(rho)
-    rho$logit_rho_type <- normal(logit_rho_class[classes_index],
-                                 rho$rho_sigma_type)
-  } else {
-    rho$rho_type_raw <- normal(0, 1, dim = n_types)
+  # With the weighted binomial likelihood rho is fixed (replicate_rho()), and
+  # there are none of these variables.
+  rho <- NULL
+  if (rho_estimated(options)) {
+    rho <- list(
+      rho_mu = normal(qlogis(0.15), 1),
+      rho_sigma_class = normal(0, 0.5, truncation = c(0, Inf)),
+      rho_sigma_type = normal(0, 0.5, truncation = c(0, Inf)),
+      rho_class_raw = normal(0, 1, dim = n_classes)
+    )
+    # The type level, non-centred, or centred (centred_options()): logit rho
+    # of each type itself, with the prior the non-centred form implies,
+    #   logit rho_type ~ N(logit rho_class, rho_sigma_type)
+    if (centred_rho_type(options)) {
+      logit_rho_class <- logit_rho_classes(rho)
+      rho$logit_rho_type <- normal(logit_rho_class[classes_index],
+                                   rho$rho_sigma_type)
+    } else {
+      rho$rho_type_raw <- normal(0, 1, dim = n_types)
+    }
   }
 
   # Floor on bioassay mortality (#14): predicted mortality f + (1 - f) q_t,
@@ -568,6 +609,8 @@ init_covariate_shift <- function(init_coef, options) {
 #   logit_init_country  n_countries x n_types, logit of the initial fraction
 #                       susceptible q_0 in each country
 #   rho_types           n_types, the observation overdispersion of each type
+#                       (with the weighted binomial likelihood the fixed
+#                       replicate rho, a plain vector; fixed_rho_types())
 #   mortality_floor     the floor on bioassay mortality, or NULL for none
 #   logit_init_relative n_countries x n_types, the logit relative initial state
 #                       (above init_frac_min) of each country, to which the
@@ -627,15 +670,20 @@ dynamical_terms <- function(v, classes_index, types,
     matrix(init_min, nrow(logit_init_relative), length(types), byrow = TRUE))
 
   # observation overdispersion per type, its type level non-centred or
-  # centred (centred_options())
-  if (centred_rho_type(options)) {
-    logit_rho_type <- v$logit_rho_type
+  # centred (centred_options()); or with the weighted binomial likelihood,
+  # fixed: the replicate rho, as plain R even in greta
+  if (!rho_estimated(options)) {
+    rho_types <- fixed_rho_types(options, types)
   } else {
-    logit_rho_class <- logit_rho_classes(v)
-    logit_rho_type <- logit_rho_class[classes_index] +
-      v$rho_sigma_type * v$rho_type_raw
+    if (centred_rho_type(options)) {
+      logit_rho_type <- v$logit_rho_type
+    } else {
+      logit_rho_class <- logit_rho_classes(v)
+      logit_rho_type <- logit_rho_class[classes_index] +
+        v$rho_sigma_type * v$rho_type_raw
+    }
+    rho_types <- inv_logit(logit_rho_type)
   }
-  rho_types <- inv_logit(logit_rho_type)
 
   terms <- list(beta_type = beta_type,
                 logit_init_country = logit_init_country,
@@ -660,6 +708,18 @@ dynamical_terms <- function(v, classes_index, types,
     terms$floor_intercept <- v$floor_intercept
   }
   terms
+}
+
+# The fixed rho of each of `types` with the weighted binomial likelihood, as
+# a plain vector: that build_dynamical_model() recorded in the options, or if
+# it has not, the replicate rho (replicate_rho(), R/weighted_binomial.R)
+fixed_rho_types <- function(options, types) {
+  rho <- options$replicate_rho
+  if (is.null(rho)) {
+    rho <- replicate_rho(types)
+  }
+  stopifnot(all(types %in% names(rho)))
+  unname(rho[types])
 }
 
 # One draw of the variables in plain R (`v`, a named list of arrays) with
@@ -753,6 +813,10 @@ floored_logit <- function(l, a) {
 # non-centred model; for a model with centred levels (`options`, the model's,
 # as build_dynamical_model() returns them, and `classes_index`), they are
 # moved to the centred variables at the same point (centre_variables()).
+# Cached variables the model does not have are left out: e.g. the
+# overdispersion parameters of every cached file (inits_refit.RDS,
+# inits_floor_low.RDS, inits_floor_high.RDS) for a model with the weighted
+# binomial likelihood, which has none.
 dynamical_inits <- function(cached, variables, levels, columns = NULL,
                             options = NULL, classes_index = NULL) {
   cached_levels <- attr(cached, "levels")
@@ -1209,6 +1273,12 @@ build_dynamical_model <- function(train_df,
     colnames(centre) <- colnames(x_cells)
     options$init_covariate_centre <- centre
   }
+  # with the weighted binomial likelihood, the fixed rho of each type,
+  # recorded in the options for the plain-R predictions
+  options$replicate_rho <- NULL
+  if (!rho_estimated(options)) {
+    options$replicate_rho <- replicate_rho(types)
+  }
 
   variables <- dynamical_variables(n_covs = n_covs,
                                    n_classes = n_classes,
@@ -1235,8 +1305,12 @@ build_dynamical_model <- function(train_df,
   })
 
   # predicted mortality (the fraction susceptible) at the (cell_id, type_id,
-  # year_id) of `rows`, computing the states only for the cell-type pairs there
-  mortality <- function(rows) {
+  # year_id) of `rows`, computing the states only for the cell-type pairs
+  # there; with scale "log", as list(log_p, log_not_p), log mortality and
+  # log(1 - mortality) computed from the logit (floored_log_probs(),
+  # mixture_log_probs()), for the weighted binomial likelihood
+  mortality <- function(rows, scale = c("probability", "log")) {
+    scale <- match.arg(scale)
     pairs <- distinct(tibble(cell_id = as.integer(rows$cell_id),
                              type_id = as.integer(rows$type_id)))
     pair_index <- match(paste(rows$cell_id, rows$type_id),
@@ -1250,18 +1324,26 @@ build_dynamical_model <- function(train_df,
                            row_floor = row_floor(rows$cell_id, rows$type_id),
                            row_selection = row_smooth(
                              "selection", rows$cell_id,
-                             classes_index[rows$type_id]))
+                             classes_index[rows$type_id]),
+                           scale = scale)
       if (!species) {
         return(p)
       }
       share <- arabiensis_share(rows, options)
+      if (scale == "log") {
+        return(mixture_log_probs(share, p$arabiensis, p$other))
+      }
       return(share * p$arabiensis + (1 - share) * p$other)
     }
     states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
                                  pairs$type_id, lookups$cell_country_lookup,
-                                 n_times, types, x_init)
-    floored_mortality(states[cbind(pair_index, rows$year_id)],
-                      terms$mortality_floor)
+                                 n_times, types, x_init,
+                                 logit = scale == "log")
+    rows_states <- states[cbind(pair_index, rows$year_id)]
+    if (scale == "log") {
+      return(floored_log_probs(rows_states, terms$mortality_floor))
+    }
+    floored_mortality(rows_states, terms$mortality_floor)
   }
 
   # the predicted mortality at every cell, type and year, as n_unique_cells x
@@ -1304,13 +1386,29 @@ build_dynamical_model <- function(train_df,
     p
   }
 
-  # likelihood
-  population_mortality_vec <- mortality(train_df)
-  rho <- terms$rho_types[train_df$type_id]
-  distribution(train_df$died) <- betabinomial_p_rho(
-    N = train_df$mosquito_number,
-    p = population_mortality_vec,
-    rho = rho)
+  # likelihood: the beta-binomial with the estimated rho, or the weighted
+  # binomial (R/weighted_binomial.R) with each bioassay's design-effect
+  # weight at the fixed replicate rho. population_mortality_vec, the
+  # predicted mortality at each bioassay, is then exp(log p): one
+  # computation of the states serves both
+  if (rho_estimated(options)) {
+    population_mortality_vec <- mortality(train_df)
+    rho <- terms$rho_types[train_df$type_id]
+    distribution(train_df$died) <- betabinomial_p_rho(
+      N = train_df$mosquito_number,
+      p = population_mortality_vec,
+      rho = rho)
+  } else {
+    log_probs <- mortality(train_df, scale = "log")
+    population_mortality_vec <- exp(log_probs$log_p)
+    weight <- design_effect_weight(train_df$mosquito_number,
+                                   terms$rho_types[train_df$type_id])
+    distribution(train_df$died) <- weighted_binomial(
+      size = train_df$mosquito_number,
+      log_p = log_probs$log_p,
+      log_not_p = log_probs$log_not_p,
+      weight = weight)
+  }
 
   # model() takes the target names from its call, so it is called with the
   # variables' names as symbols
@@ -1389,9 +1487,11 @@ logit_init_relative_rows <- function(terms, country, type, x_init = NULL) {
 #   kappa_type           (B, n_types, 1) reversion kappa per type (optional)
 #   x_pairs              (J, n_times, n_covs) covariates of each pair's cell
 #   pair_type            (J) 0-based type of each pair
-# Returns (B, J, n_times): the fraction susceptible for each pair and year.
+#   logit                TRUE to return the logit of the fraction susceptible
+# Returns (B, J, n_times): the fraction susceptible for each pair and year, or
+# its logit.
 tf_closed_form_states <- function(beta_type, logit_init, kappa_type = NULL,
-                                  x_pairs, pair_type) {
+                                  x_pairs, pair_type, logit = FALSE) {
   tf <- tensorflow::tf
   dtype <- beta_type$dtype
   # reshaped to a vector, since reticulate passes a length-one R vector as a
@@ -1418,7 +1518,7 @@ tf_closed_form_states <- function(beta_type, logit_init, kappa_type = NULL,
     logit_q <- logit_q - tf$gather(kappa_type, pair_type, axis = 1L) * years
   }
 
-  tf$sigmoid(logit_q)
+  if (logit) logit_q else tf$sigmoid(logit_q)
 }
 
 # The species model (#47): the cumulative log fitness of each pair and year,
@@ -1463,10 +1563,11 @@ tf_log_fitness <- function(shifted) {
 # dynamical_terms(); `x_cell_years` has one row per (cell, year), cell-major;
 # each cell takes the initial state of country cell_country_lookup[cell], plus
 # the effects of its initial-state covariates, row `cell` of x_init (NULL for
-# none).
+# none). With logit = TRUE, the logit of the fraction susceptible, for the
+# weighted binomial likelihood (floored_log_probs()).
 closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
                                cell_country_lookup, n_times, types,
-                               x_init = NULL) {
+                               x_init = NULL, logit = FALSE) {
   inputs <- pair_inputs(terms, x_cell_years, pair_cell, pair_type,
                         cell_country_lookup, n_times, types, x_init)
   x_pairs <- inputs$x_pairs
@@ -1491,7 +1592,8 @@ closed_form_states <- function(terms, x_cell_years, pair_cell, pair_type,
     kappa,
     list(operation_args = list(
            x_pairs = x_pairs,
-           pair_type = as.integer(pair_type - 1)),
+           pair_type = as.integer(pair_type - 1),
+           logit = logit),
          tf_operation = "tf_closed_form_states",
          tf_function_env = op_env,
          dim = c(length(pair_cell), n_times))))
@@ -1577,12 +1679,16 @@ pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
 # other_floor and arabiensis_floor (none without species_options(floors =
 # TRUE)); one trajectory has mortality_floor, or row_floor, the kdr-dependent
 # floor (kdr_floor_value()) or that of the latent smooths
-# (smooth_floor_value()) at each row, if given.
+# (smooth_floor_value()) at each row, if given. With scale "log", each
+# trajectory is the list(log_p, log_not_p) of floored_log_probs(), log
+# mortality and log(1 - mortality), for the weighted binomial likelihood.
 outer_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
                             cell_country_lookup, n_times, types,
                             x_init = NULL, row_pair, row_year,
                             row_kdr = NULL, row_floor = NULL,
-                            row_selection = NULL) {
+                            row_selection = NULL,
+                            scale = c("probability", "log")) {
+  scale <- match.arg(scale)
   inputs <- pair_inputs(terms, x_cell_years, pair_cell, pair_type,
                         cell_country_lookup, n_times, types, x_init)
 
@@ -1619,6 +1725,9 @@ outer_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
         row_selection),
       log_cost = outer_log_multiplier(
         gamma_cost, terms[[paste0("delta_cost", suffix)]], k))
+    if (scale == "log") {
+      return(floored_log_probs(logit_q, floor))
+    }
     floored_mortality(ilogit(logit_q), floor)
   }
   if (is.null(terms$gamma_selection)) {

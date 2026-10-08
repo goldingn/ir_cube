@@ -19,7 +19,11 @@
 # R/species_fit_helpers.R; with USE_CHAINS, as R/species_misfit.R used for
 # V5), the predicted mortality p_i at every bioassay (dynamical_logit(),
 # R/dynamical_predictions.R, as R/species_misfit.R: with the species model,
-# the mixture at the bioassay's arabiensis share) and the draw's rho per type.
+# the mixture at the bioassay's arabiensis share) and the draw's rho per type:
+# for a fit with the weighted binomial likelihood (#47), which has no rho
+# and is not a model of the data, the fixed replicate rho
+# (fixed_rho_types(), R/dynamical_model.R), so that its replicates are from
+# the beta-binomial at the replicate rho, the noise of repeated bioassays.
 # Cached in outputs/species_runs/regions/ppc_draws_<label>.rds (recomputed
 # when the fit is newer). Per draw, one replicate of every bioassay from the
 # model's likelihood (betabinomial_p_rho(), R/functions.R, rho the intra-class
@@ -172,6 +176,8 @@ fit_draws <- function(label, file) {
   )[["elapsed"]]
   report("%s: predictions at %d LLIN-pyrethroid bioassays x %d draws in %.0f s",
          label, ncol(logit), nrow(logit), time)
+  # the fit's rho, or with the weighted binomial, the replicate rho in every
+  # draw (dynamical_parameter_draws())
   rho <- parameters$rho_types
   colnames(rho) <- fit$types
   out <- list(bioassays = as.data.frame(df[llin, c("cell", "year_start",

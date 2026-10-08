@@ -68,8 +68,11 @@ fit_fold <- function(train_df,
   # nsim, which keeps the MCMC order (nsim resamples), so their effective
   # sample size can be measured.
   population_mortality_vec_test <- built$mortality(test_df)
-  # the overdispersion of each insecticide type
+  # the overdispersion of each insecticide type: a greta array, or with the
+  # weighted binomial likelihood (#47) the fixed replicate rho, plain R,
+  # repeated for every draw below
   rho_types <- built$terms$rho_types
+  rho_fixed <- !inherits(rho_types, "greta_array")
 
   # Optionally, predictions at a second set of cell-years: the forecasting
   # experiment is scored on the change in mortality between the window before
@@ -77,18 +80,26 @@ fit_fold <- function(train_df,
   report("computing predictions at %d held-out assays%s", nrow(test_df),
          if (is.null(before_df)) "" else
            sprintf(" and %d before-window records", nrow(before_df)))
-  prediction_draws <- calculate(
-    population_mortality_vec_test = population_mortality_vec_test,
-    rho_types = rho_types,
-    values = draws
-  )
+  prediction_draws <- if (rho_fixed) {
+    calculate(
+      population_mortality_vec_test = population_mortality_vec_test,
+      values = draws
+    )
+  } else {
+    calculate(
+      population_mortality_vec_test = population_mortality_vec_test,
+      rho_types = rho_types,
+      values = draws
+    )
+  }
 
   # effective sample size of the quantities the validation metrics actually
   # consume, rather than of the raw model parameters
   ess_prediction <- coda::effectiveSize(prediction_draws)
   ess_p <- ess_prediction[grep("population_mortality_vec_test\\[",
                                names(ess_prediction))]
-  ess_rho <- ess_prediction[grep("rho_types", names(ess_prediction))]
+  ess_rho <- if (rho_fixed) NA_real_ else
+    ess_prediction[grep("rho_types", names(ess_prediction))]
 
   report("prediction ESS: p median %.0f min %.0f | rho median %.0f min %.0f",
          median(ess_p, na.rm = TRUE), min(ess_p, na.rm = TRUE),
@@ -100,7 +111,13 @@ fit_fold <- function(train_df,
                     colnames(prediction_matrix))
   rho_columns <- grep("rho_types", colnames(prediction_matrix))
   p_draws <- prediction_matrix[, p_columns, drop = FALSE]
-  rho_type_draws <- prediction_matrix[, rho_columns, drop = FALSE]
+  rho_type_draws <- if (rho_fixed) {
+    matrix(rho_types, nrow(p_draws), length(rho_types), byrow = TRUE,
+           dimnames = list(NULL, sprintf("rho_types[%d,1]",
+                                         seq_along(rho_types))))
+  } else {
+    prediction_matrix[, rho_columns, drop = FALSE]
+  }
   rm(prediction_matrix, prediction_draws)
   invisible(gc())
 

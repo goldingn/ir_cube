@@ -9,7 +9,10 @@
 #   - mapping a point to the other coordinates and back returns it.
 # At three points: a random free state of each model, and the cached initial
 # values (dynamical_inits()). Run R/check_dynamical_model.R with the centred
-# options too, for the greta and plain-R predictions.
+# options too, for the greta and plain-R predictions. With the weighted
+# binomial likelihood there is no overdispersion to centre, so only the
+# selection effects are (centred_rho_type()), and the cached initial values'
+# overdispersion parameters are left out (dynamical_inits()).
 #
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_centred_model.R \
 #     [seed] [sd] [threads]
@@ -104,15 +107,21 @@ log_jacobian <- function(values) {
   out
 }
 
-# predicted mortality at every assay and rho per type, by calculate()
+# predicted mortality at every assay and rho per type, by calculate() (rho
+# only when it is a parameter: with the weighted binomial likelihood it is
+# fixed, and the same in both models)
 predictions <- function(built, free) {
   trace <- built$model$dag$trace_values(matrix(free, nrow = 1))
   values <- greta:::as_greta_mcmc_list(
     coda::mcmc.list(coda::mcmc(trace)),
     list(raw_draws = coda::mcmc.list(coda::mcmc(matrix(free, nrow = 1))),
          model = built$model))
-  out <- calculate(p = built$population_mortality_vec,
-                   rho = built$terms$rho_types, values = values)
+  out <- if (rho_estimated(built$options)) {
+    calculate(p = built$population_mortality_vec,
+              rho = built$terms$rho_types, values = values)
+  } else {
+    calculate(p = built$population_mortality_vec, values = values)
+  }
   c(as.matrix(out))
 }
 
