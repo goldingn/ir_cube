@@ -22,6 +22,13 @@
 #            latent-kdr), against the empirical logit of its total kdr, log((y
 #            + 0.5) / (2n - y + 0.5)) for y the 995F and 995S alleles of 2n:
 #            correlation and R^2, for all samples and by species group
+#   pairs    at the modelled cells, the correlation between u_s and u_f (and
+#            v_s and u_f, and u_s and v_s, with the shear): per draw, as
+#            posterior mean and 95% interval, and of the posterior means
+#   spread   how much each smooth varies over the modelled cells: the sd,
+#            range and central 95% of its posterior mean, and the mean over
+#            draws of its sd over the cells; for u_s also as the multiplier
+#            exp(u_s)
 # Writes outputs/species_runs/smooth/<label>_validation.csv and
 # figures/species_runs/smooth_validation_<label>.png. Plain R; about 3 GB
 # and 1 minute.
@@ -110,6 +117,54 @@ cat(sprintf("\n%s: posterior mean smooths at %d modelled cells, on the standardi
 print(as.data.frame(layers), digits = 3)
 
 
+# the smooths' correlations, and how much each varies, over the cells -----------
+
+cell_basis <- smooth_basis_at(parameters$options$smooth,
+                              smooth_cell_coords(cells, crs))
+cell_draws <- lapply(weights[kinds], function(w) w %*% t(cell_basis))
+for (kind in kinds) {
+  # the draws give the posterior means of smooth_posterior_at()
+  stopifnot(max(abs(colMeans(cell_draws[[kind]]) - cell_data[[kind]])) < 1e-8)
+}
+smooth_pairs <- Filter(function(pair) all(pair %in% kinds),
+                       list(c("selection", "floor"),
+                            c("selection_own", "floor"),
+                            c("selection", "selection_own")))
+pairs <- bind_rows(lapply(smooth_pairs, function(pair) {
+  per_draw <- vapply(seq_len(nrow(cell_draws[[pair[1]]])), function(d) {
+    cor(cell_draws[[pair[1]]][d, ], cell_draws[[pair[2]]][d, ])
+  }, numeric(1))
+  tibble(label = label, smooth = paste(pair, collapse = " ~ "),
+         n = length(cells),
+         correlation_of_means = cor(cell_data[[pair[1]]],
+                                    cell_data[[pair[2]]]),
+         mean = mean(per_draw), q2.5 = quantile(per_draw, 0.025),
+         q97.5 = quantile(per_draw, 0.975))
+}))
+cat(sprintf("\n%s: correlations between the smooths over the %d modelled cells (per draw: mean, 95%%; and of the posterior means)\n",
+            label, length(cells)))
+print(as.data.frame(pairs), digits = 3)
+spread <- bind_rows(lapply(kinds, function(kind) {
+  u <- cell_data[[kind]]
+  tibble(label = label, smooth = kind, n = length(u),
+         sd_of_mean = sd(u), min_of_mean = min(u), max_of_mean = max(u),
+         q2.5_of_mean = quantile(u, 0.025), q97.5_of_mean = quantile(u, 0.975),
+         mean_sd_per_draw = mean(apply(cell_draws[[kind]], 1, sd)))
+}))
+cat(sprintf("\n%s: spread of each smooth over the %d modelled cells\n", label,
+            length(cells)))
+print(as.data.frame(spread), digits = 3)
+for (kind in intersect(c("selection", "selection_own"), kinds)) {
+  row <- spread[spread$smooth == kind, ]
+  cat(sprintf(paste0("%s, %s: posterior mean sd %.2f over the cells; ",
+                     "multiplier exp() %.2f to %.2f (central 95%% of cells ",
+                     "%.2f to %.2f)\n"),
+              label, kind, row$sd_of_mean, exp(row$min_of_mean),
+              exp(row$max_of_mean), exp(row$q2.5_of_mean),
+              exp(row$q97.5_of_mean)))
+}
+
+
 # the kdr records ----------------------------------------------------------------
 
 alleles <- read.csv("data/clean/kdr_records.csv") %>%
@@ -158,6 +213,8 @@ print(as.data.frame(records), digits = 3)
 
 write.csv(bind_rows(layers %>% mutate(check = "layers", .before = 1),
                     records %>% mutate(check = "records", .before = 1),
+                    pairs %>% mutate(check = "pairs", .before = 1),
+                    spread %>% mutate(check = "spread", .before = 1),
                     if (!is.null(shear)) {
                       mutate(shear, check = "shear", .before = 1)
                     }),
