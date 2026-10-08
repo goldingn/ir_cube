@@ -55,7 +55,13 @@ source("R/windowed_hmc.R")
 #                     mortality floor, in place of the kdr covariate (V5,
 #                     #47). Not with the species model or the kdr covariate;
 #                     with mortality_floor = TRUE, the floor is per class by
-#                     default (smooth_options(floor_intercepts = ))
+#                     default (smooth_options(floor_intercepts = )). With
+#                     smooth_options(init = TRUE), a third smooth, of the
+#                     initial state, with a loading per type, replaces the
+#                     hierarchy of regions and countries (no init_region_*,
+#                     init_country_* or init_country_level variables); the
+#                     limits init_frac_min and the initial-state covariates
+#                     stay
 #   likelihood        the likelihood of the bioassays: "beta_binomial" (the
 #                     default), with the overdispersion rho per type
 #                     estimated, nested in class; or "weighted_binomial"
@@ -307,23 +313,30 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   centred <- centred_selection_rows(options)
   stopifnot(length(centred) == n_covs)
   n_noncentred <- sum(!centred)
+  # the hierarchy of regions and countries of the initial state, or in its
+  # place the smooth of the initial state (smooth_options(init = TRUE))
+  hierarchy <- !smooth_init_on(options)
 
-  variables <- list(
+  variables <- c(
     # initial fractions susceptible: a prior logit-mean per type, and IID
     # deviations by region and by country within region
-    init_region_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
-    init_country_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
-    init_region_raw = normal(0, 1, dim = c(n_regions, n_types)),
-    # hierarchical regression coefficients: overall -> class -> type, with
-    # the standard normal deviations of the non-centred rows at each level
-    # (all rows unless some are centred, below)
-    beta_overall = normal(0, 1, dim = n_covs),
-    beta_class_raw = normal(0, 1, dim = c(n_noncentred, n_classes)),
-    beta_type_raw = normal(0, 1, dim = c(n_noncentred, n_types)),
-    sigma_overall = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
-    sigma_class = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
-    logit_init_mean = normal(qlogis(init$relative_prior), 1, dim = n_types)
-  )
+    if (hierarchy) {
+      list(
+        init_region_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
+        init_country_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
+        init_region_raw = normal(0, 1, dim = c(n_regions, n_types)))
+    },
+    list(
+      # hierarchical regression coefficients: overall -> class -> type, with
+      # the standard normal deviations of the non-centred rows at each level
+      # (all rows unless some are centred, below)
+      beta_overall = normal(0, 1, dim = n_covs),
+      beta_class_raw = normal(0, 1, dim = c(n_noncentred, n_classes)),
+      beta_type_raw = normal(0, 1, dim = c(n_noncentred, n_types)),
+      sigma_overall = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
+      sigma_class = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
+      logit_init_mean = normal(qlogis(init$relative_prior), 1, dim = n_types)
+    ))
 
   # The centred rows of the selection effects (centred_options()): the class
   # and type effects themselves, beta_class_centred (n_centred x n_classes)
@@ -457,16 +470,19 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # pins their initial states: non-centred, those of every country in a region
   # then move together against their region's and logit_init_mean, a ridge
   # HMC mixes along slowly. Centring the regions too puts them in a funnel
-  # with init_region_sd, which 5 regions barely identify.
-  stopifnot(length(country_region_index) == n_countries)
-  prior <- country_level_prior(c(variables, init_covariates),
-                               country_region_index, options)
+  # with init_region_sd, which 5 regions barely identify. With the smooth of
+  # the initial state there are no country levels, and `countries` is moot.
   init_country_level <- NULL
-  if (countries == "centred") {
-    variables$init_country_level <- normal(prior$mean, prior$sd)
-  } else {
-    variables$init_country_raw <- normal(0, 1, dim = c(n_countries, n_types))
-    init_country_level <- prior$mean + prior$sd * variables$init_country_raw
+  if (hierarchy) {
+    stopifnot(length(country_region_index) == n_countries)
+    prior <- country_level_prior(c(variables, init_covariates),
+                                 country_region_index, options)
+    if (countries == "centred") {
+      variables$init_country_level <- normal(prior$mean, prior$sd)
+    } else {
+      variables$init_country_raw <- normal(0, 1, dim = c(n_countries, n_types))
+      init_country_level <- prior$mean + prior$sd * variables$init_country_raw
+    }
   }
 
   # The species model (#47): log multipliers on arabiensis's log fitness from
@@ -513,7 +529,10 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # exponential 1 / rho. With the defaults, P(rho < 1,500 km) = 0.05 and
   # P(sd > 1) = 0.05; and with the shear, its loading b ~ N(1, 0.5)
   # (smooth_shear_prior). With a fixed range (smooth_options(range = )),
-  # there is no inverse range variable
+  # there is no inverse range variable. The smooth of the initial state
+  # (smooth_options(init = TRUE)) has its sd fixed at 1, and in its place a
+  # loading lambda >= 0 per type, each with the sd's prior, so each type's
+  # sd of the field
   smooths <- list()
   if (smooth_on(options)) {
     rates <- smooth_prior_rates(options$smooth)
@@ -521,7 +540,11 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
       names <- smooth_variable_names(kind)
       smooths[[names[["raw"]]]] <- normal(0, 1,
                                           dim = nrow(options$smooth$indices))
-      smooths[[names[["sd"]]]] <- exponential(rates$sd)
+      if (kind == "init") {
+        smooths[[names[["loading"]]]] <- exponential(rates$sd, dim = n_types)
+      } else {
+        smooths[[names[["sd"]]]] <- exponential(rates$sd)
+      }
       if (!smooth_range_fixed(options$smooth)) {
         smooths[[names[["inv_range"]]]] <- exponential(rates$range)
       }
@@ -630,9 +653,12 @@ init_covariate_shift <- function(init_coef, options) {
 # slopes (kdr_slope_names, outer_mortality()), and with the kdr-dependent
 # floor, floor_intercept and floor_kdr. With the latent smooths (V5),
 # smooth_weights, a list of the weights of each smooth's basis functions
-# (smooth_weight_terms()), and with a floor, floor_intercept.
+# (smooth_weight_terms()), with a floor, floor_intercept, and with the smooth
+# of the initial state, init_loading, its loadings per type
+# (smooth_init_loadings()); logit_init_relative is then the same in every
+# country (init_field_level()), and a cell adds lambda u_init(x).
 # logit_init_country is the initial state without covariates, i.e. at a cell
-# whose covariates are all 0 (the mean).
+# whose covariates are all 0 (the mean), and without u_init.
 #
 # `v` is a named list of either greta arrays or plain R arrays for a single
 # posterior draw (dimensions as in dynamical_variables(), vectors as vectors or
@@ -662,10 +688,16 @@ dynamical_terms <- function(v, classes_index, types,
 
   # initial state: the logit relative position above init_frac_min of each
   # country (#25), its level less the initial-state covariates' effect at the
-  # country's mean covariates
+  # country's mean covariates; or with the smooth of the initial state, the
+  # same in every country, logit_init_mean less the covariates' effect at
+  # their mean over the modelled cells (init_field_level())
   shift <- init_covariate_shift(v$init_coef, options)
-  logit_init_relative <- if (is.null(shift)) v$init_country_level else
-    v$init_country_level - shift
+  level <- if (smooth_init_on(options)) {
+    init_field_level(v$logit_init_mean, options)
+  } else {
+    v$init_country_level
+  }
+  logit_init_relative <- if (is.null(shift)) level else level - shift
 
   init_min <- init_frac_constants(types)$min
   logit_init_country <- floored_logit(
@@ -709,8 +741,29 @@ dynamical_terms <- function(v, classes_index, types,
   if (smooth_on(options)) {
     terms$smooth_weights <- smooth_weight_terms(v, options)
     terms$floor_intercept <- v$floor_intercept
+    terms$init_loading <- smooth_init_loadings(v, options)
   }
   terms
+}
+
+# The logit relative initial state of each country at covariates 0 before
+# the smooth of the initial state (smooth_options(init = TRUE)), as
+# n_countries x n_types: logit_init_mean of each type, the same in every
+# country, the number of countries that of the rows of
+# options$init_covariate_centre (build_dynamical_model()). One row per
+# country, as with the hierarchy, so that the predictions index it by country
+# either way; a cell adds lambda u_init(x) and its covariates' effects. For
+# greta arrays or plain R
+init_field_level <- function(logit_init_mean, options) {
+  n_countries <- nrow(options$init_covariate_centre)
+  stopifnot(!is.null(n_countries))
+  if (inherits(logit_init_mean, "greta_array")) {
+    zero <- zeros(n_countries, length(logit_init_mean))
+  } else {
+    logit_init_mean <- c(logit_init_mean)
+    zero <- matrix(0, n_countries, length(logit_init_mean))
+  }
+  sweep(zero, 2, logit_init_mean, FUN = "+")
 }
 
 # The fixed rho of each of `types` with the weighted binomial likelihood, as
@@ -889,7 +942,10 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
   # km (with the default priors, the means of sd and 1 / range are 0.33 and
   # 1 / 4,500 km; a fixed range is no variable, so has no start), the shear
   # loading at its prior mean, 1, and the floor where they are 0 at the
-  # cached floor too
+  # cached floor too; the smooth of the initial state flat too, with every
+  # type's loading 0.3 (its sd of the field), and logit_init_mean at the
+  # cached value (the mean of the regions' levels in the model with the
+  # hierarchy, whose region and country variables are left out)
   species_floor <- if (!is.null(cached$mortality_floor)) {
     c(cached$mortality_floor)[1]
   } else {
@@ -903,7 +959,9 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
               smooth_raw_selection = 0, smooth_sd_selection = 0.3,
               smooth_inv_range_selection = 1 / 3,
               smooth_raw_floor = 0, smooth_sd_floor = 0.3,
-              smooth_inv_range_floor = 1 / 3, smooth_shear = 1)
+              smooth_inv_range_floor = 1 / 3, smooth_shear = 1,
+              smooth_raw_init = 0, smooth_loading_init = 0.3,
+              smooth_inv_range_init = 1 / 3)
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
@@ -1168,7 +1226,8 @@ floored_mortality <- function(q, floor) {
 # default), or the mortality of "arabiensis" or "other" alone. With the kdr
 # covariate (options$kdr), mortality is computed by outer_mortality() too, at
 # each cell's standardised kdr, and with the latent smooths (options$smooth,
-# V5), with each cell's smooths.
+# V5), with each cell's smooths; with the smooth of the initial state, each
+# cell-type pair's initial state is shifted by lambda[type] u_init(x).
 build_dynamical_model <- function(train_df,
                                   df,
                                   x_cell_years,
@@ -1261,21 +1320,40 @@ build_dynamical_model <- function(train_df,
     }
     kdr_floor_value(terms$floor_intercept[class], terms$floor_kdr, k)
   }
+  # the smooth of the initial state at cell-type pairs with cell_ids `cell`
+  # and type_ids `type`, lambda[type] u_init(cell), or NULL without it
+  pair_init <- function(cell, type) {
+    if (!smooth_init_on(options)) {
+      return(NULL)
+    }
+    terms$init_loading[type] * smooth_cells$init[cell]
+  }
   x_init <- select_init_covariates(x_cells_init, options, n_unique_cells)
   # the centred country levels are at each country's mean initial-state
   # covariates over its modelled cells (all of them, whatever the fold; the
   # overall mean for a country with none), recorded in the options for the
-  # plain-R predictions
+  # plain-R predictions. With the smooth of the initial state there are no
+  # country levels, and the covariates are centred at their mean over all
+  # the modelled cells, the same in every row (one per country, which also
+  # gives init_field_level() the number of countries; no columns without
+  # covariates): one centre, as a centre per country would put steps at the
+  # borders into the initial state
   options$init_covariate_centre <- NULL
   if (!is.null(x_init)) {
     x_cells <- x_init[seq_len(n_unique_cells), , drop = FALSE]
-    centre <- t(vapply(seq_len(n_countries), function(country) {
-      rows <- lookups$cell_country_lookup == country
-      if (any(rows)) colMeans(x_cells[rows, , drop = FALSE]) else
-        colMeans(x_cells)
-    }, numeric(ncol(x_cells))))
+    centre <- if (smooth_init_on(options)) {
+      matrix(colMeans(x_cells), n_countries, ncol(x_cells), byrow = TRUE)
+    } else {
+      t(vapply(seq_len(n_countries), function(country) {
+        rows <- lookups$cell_country_lookup == country
+        if (any(rows)) colMeans(x_cells[rows, , drop = FALSE]) else
+          colMeans(x_cells)
+      }, numeric(ncol(x_cells))))
+    }
     colnames(centre) <- colnames(x_cells)
     options$init_covariate_centre <- centre
+  } else if (smooth_init_on(options)) {
+    options$init_covariate_centre <- matrix(0, n_countries, 0)
   }
   # with the weighted binomial likelihood, the fixed rho of each type,
   # recorded in the options for the plain-R predictions
@@ -1329,6 +1407,8 @@ build_dynamical_model <- function(train_df,
                            row_selection = row_smooth(
                              "selection", rows$cell_id,
                              classes_index[rows$type_id]),
+                           pair_init = pair_init(pairs$cell_id,
+                                                 pairs$type_id),
                            scale = scale)
       if (!species) {
         return(p)
@@ -1376,7 +1456,8 @@ build_dynamical_model <- function(train_df,
                          row_kdr = kdr_cells[row_cell, , drop = FALSE],
                          row_floor = row_floor(row_cell, row_type),
                          row_selection = row_smooth(
-                           "selection", row_cell, classes_index[row_type]))
+                           "selection", row_cell, classes_index[row_type]),
+                         pair_init = pair_init(pairs$cell_id, pairs$type_id))
     if (species) {
       p <- switch(species_mix,
                   arabiensis = p$arabiensis,
@@ -1450,7 +1531,8 @@ select_init_covariates <- function(x_cells_init, options, n_cells = NULL) {
 # The logit relative initial state (above init_frac_min) of rows with countries
 # `country` and types `type`, and covariates x_init (rows x covariates, NULL
 # for none), from dynamical_terms(): the country's value plus the covariate
-# effects of the type. For greta arrays (a column vector) or one draw in plain
+# effects of the type (without the smooth of the initial state, which
+# pair_inputs() adds). For greta arrays (a column vector) or one draw in plain
 # R.
 logit_init_relative_rows <- function(terms, country, type, x_init = NULL) {
   n_countries <- nrow(terms$logit_init_relative)
@@ -1629,9 +1711,12 @@ tf_basis_product <- function(weights, basis) {
 # The covariates and initial state of the cell-type pairs (pair_cell,
 # pair_type), for closed_form_states() and outer_mortality(): x_pairs,
 # J x n_times x n_covs, and logit_init, logit q_0 of each pair (a J x 1 greta
-# array). Arguments as closed_form_states().
+# array). pair_init is the smooth of the initial state at each pair, lambda
+# u_init (a J x 1 greta array; NULL without it), added to the logit relative
+# initial state. Other arguments as closed_form_states().
 pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
-                        cell_country_lookup, n_times, types, x_init = NULL) {
+                        cell_country_lookup, n_times, types, x_init = NULL,
+                        pair_init = NULL) {
   n_covs <- ncol(x_cell_years)
   stopifnot(nrow(x_cell_years) %% n_times == 0,
             length(pair_cell) == length(pair_type))
@@ -1648,6 +1733,9 @@ pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
   l <- logit_init_relative_rows(
     terms, pair_country, pair_type,
     if (!is.null(x_init)) x_init[pair_cell, , drop = FALSE])
+  if (!is.null(pair_init)) {
+    l <- l + pair_init
+  }
   logit_init <- floored_logit(
     l, init_frac_constants(types)$min[pair_type])
 
@@ -1661,8 +1749,9 @@ pair_inputs <- function(terms, x_cell_years, pair_cell, pair_type,
 # complex) and `arabiensis`, and otherwise one, each with one element per row.
 # row_kdr is the standardised kdr at each row's cell, rows x kdr_bands() (NULL
 # without the kdr covariate), and row_selection the latent smooth of
-# selection at each row (NULL without it). Other arguments as
-# closed_form_states().
+# selection at each row (NULL without it); pair_init the smooth of the
+# initial state at each pair (pair_inputs(); NULL without it). Other
+# arguments as closed_form_states().
 #
 # Each trajectory multiplies the cumulative log fitness C_t and the reversion
 # of the closed form by its own factors:
@@ -1690,11 +1779,12 @@ outer_mortality <- function(terms, x_cell_years, pair_cell, pair_type,
                             cell_country_lookup, n_times, types,
                             x_init = NULL, row_pair, row_year,
                             row_kdr = NULL, row_floor = NULL,
-                            row_selection = NULL,
+                            row_selection = NULL, pair_init = NULL,
                             scale = c("probability", "log")) {
   scale <- match.arg(scale)
   inputs <- pair_inputs(terms, x_cell_years, pair_cell, pair_type,
-                        cell_country_lookup, n_times, types, x_init)
+                        cell_country_lookup, n_times, types, x_init,
+                        pair_init)
 
   # the TensorFlow function and the helpers it calls, found in this small
   # environment, which is saved with the node (see closed_form_states())

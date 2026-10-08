@@ -21,8 +21,10 @@
 # one species). With the kdr covariate (#47), each trajectory's cumulative log
 # fitness and reversion are multiplied by its factors at the cell's kdr, by
 # the same outer form, and with the latent smooths (V5), the cumulative log
-# fitness by exp(u_s(x)) and the floor shifted by u_f(x) at the cell, from the
-# basis at the cell (prediction_basis(), R/latent_smooth.R).
+# fitness by exp(u_s(x)) and the floor shifted by u_f(x) at the cell, and
+# with the smooth of the initial state, the logit relative initial state by
+# lambda[type] u_init(x), from the basis at the cell (prediction_basis(),
+# R/latent_smooth.R).
 
 source("R/dynamical_model.R")
 # thin_draws() and max_draws
@@ -143,7 +145,9 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   logit_init_relative  draws x n_countries x n_types, the logit relative
 #                        initial state (above init_frac_min) of each fitted
 #                        country, to which a cell's initial-state covariate
-#                        effects are added (dynamical_logit_cells())
+#                        effects are added (dynamical_logit_cells()); with the
+#                        smooth of the initial state, the same in every
+#                        country, and a cell adds lambda u_init(x) too
 #   init_coef            draws x n_init_covs x n_types, the coefficients of
 #                        the initial-state covariates (NULL for none)
 #   rho_types            draws x n_types, the observation overdispersion;
@@ -165,6 +169,9 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   smooth_weights       the weights of the latent smooths' basis functions
 #                        (V5; smooth_weight_terms()), a list of draws x basis
 #                        functions, named by smooth, empty without them
+#   init_loading         draws x n_types, the loadings lambda of the smooth of
+#                        the initial state (smooth_options(init = TRUE); NULL
+#                        without it)
 #   init_min             n_types, init_frac_min
 #   x_cells_init         the fit's initial-state covariates, one row per
 #                        cell_id (NULL for none)
@@ -226,6 +233,9 @@ dynamical_parameter_draws <- function(fold,
        },
        floor_kdr = if (!is.null(v$floor_kdr)) c(v$floor_kdr),
        smooth_weights = smooth_weight_terms(v, options),
+       init_loading = if (smooth_init_on(options)) {
+         matrix(smooth_init_loadings(v, options), n_draws)
+       },
        init_min = init_frac_constants(types)$min,
        x_cells_init = select_init_covariates(fold$x_cells_init, options),
        variables = v,
@@ -246,7 +256,8 @@ subset_draws <- function(parameters, draws) {
   for (name in c("effect_type", "logit_init_relative", "init_coef",
                  "rho_types", "mortality_floor", "kappa_type",
                  "gamma_selection", "gamma_cost", "other_floor",
-                 "arabiensis_floor", "floor_intercept", "floor_kdr")) {
+                 "arabiensis_floor", "floor_intercept", "floor_kdr",
+                 "init_loading")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
   parameters$kdr_slopes <- lapply(parameters$kdr_slopes, rows)
@@ -290,7 +301,8 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
 #               (prediction_kdr())
 #   basis       with the latent smooths (V5) only, and needed there: their
 #               centred basis at each cell, cells x basis functions
-#               (prediction_basis())
+#               (prediction_basis()); with the smooth of the initial state,
+#               lambda[k] u_init(x) is added to logit_init
 # Returns a list named by years_keep of draws x cells logit mortality.
 dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
                                   x_init = NULL, share = NULL, kdr = NULL,
@@ -332,8 +344,6 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
   n_draws <- parameters$n_draws
   stopifnot(ncol(logit_init) == n_cells, nrow(logit_init) == n_draws,
             max(years_keep) <= dim(x)[2])
-
-  logit_init <- cell_logit_init(parameters, k, logit_init, x_init)
 
   effect <- matrix(parameters$effect_type[, , k], nrow = n_draws)
   kappa <- parameters$kappa_type[, k]
@@ -388,7 +398,12 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
           , smooth_intercept_index(parameters$options, class)],
         smooth$floor)
     }
+    # the smooth of the initial state, at type k's loading (one per draw)
+    if (!is.null(smooth$init)) {
+      logit_init <- logit_init + parameters$init_loading[, k] * smooth$init
+    }
   }
+  logit_init <- cell_logit_init(parameters, k, logit_init, x_init)
   # logit mortality of one trajectory of the outer form, from `rows`
   # (outer_logit()), with species offsets gamma (NULL for none), the kdr of
   # `band` and the slopes named with `suffix` (kdr_slope_names), and `floor`

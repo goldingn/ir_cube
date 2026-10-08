@@ -1,6 +1,8 @@
 # The latent spatial smooths of the dynamical model (V5, #47): two static
 # surfaces fitted inside the model in place of the kdr covariate, u_s(x)
-# scaling the strength of selection and u_f(x) shifting the mortality floor.
+# scaling the strength of selection and u_f(x) shifting the mortality floor,
+# and optionally a third, u_init(x), of the initial state, in place of its
+# hierarchy of regions and countries (smooth_options(init = TRUE)).
 # Each is a low-rank Hilbert-space approximate Gaussian process (HSGP; Solin
 # and Sarkka 2020, Riutort-Mayol et al. 2022) on a box around the modelled
 # bioassay cells, in the Albers equal-area projection of Africa of the
@@ -67,6 +69,25 @@
 #                     range
 #   sd_prior          and of its marginal sd: P(sd > sd_prior[1]) =
 #                     sd_prior[2]
+#   init              FALSE (the default), or TRUE for a smooth u_init(x) of
+#                     the logit relative initial state (the position between
+#                     init_frac_min and 1; init_frac_constants(),
+#                     R/dynamical_model.R) in place of the hierarchy of
+#                     regions and countries, with a loading lambda >= 0 per
+#                     insecticide type:
+#                       logit_init_relative(x, type) = logit_init_mean[type] +
+#                         lambda[type] u_init(x) + the type's initial-state
+#                         covariate effects at x
+#                     u_init is one field shared by every type, with the
+#                     other smooths' kernel, basis and range, but its marginal
+#                     sd fixed at 1: the loadings carry the scale, each with
+#                     the prior of a smooth's sd (sd_prior), so each is its
+#                     type's sd of the field, and a type whose initial states
+#                     do not follow the shared pattern shrinks towards 0.
+#                     Positive loadings leave no sign-flip modes. The
+#                     covariates are centred at their mean over the modelled
+#                     cells (build_dynamical_model()), so logit_init_mean is
+#                     the mean logit relative initial state over them
 # build_dynamical_model() adds the basis (smooth_box()): the projection, the
 # box's origin and half-widths, m, the frequency indices of the basis
 # functions and their means over the modelled cells (which centre them); and
@@ -82,7 +103,8 @@ smooth_options <- function(selection = TRUE,
                            range = NULL,
                            basis_range = if (is.null(range)) 1 else range,
                            range_prior = c(1.5, 0.05),
-                           sd_prior = c(1, 0.05)) {
+                           sd_prior = c(1, 0.05),
+                           init = FALSE) {
   list(selection = selection,
        floor = floor,
        shear = shear,
@@ -93,7 +115,8 @@ smooth_options <- function(selection = TRUE,
        range = range,
        basis_range = basis_range,
        range_prior = range_prior,
-       sd_prior = sd_prior)
+       sd_prior = sd_prior,
+       init = init)
 }
 
 # whether the smooths' range is fixed (smooth_options(range = )). Options
@@ -136,13 +159,21 @@ smooth_on <- function(options) {
   !is.null(options$smooth) && !isFALSE(options$smooth)
 }
 
-# the smooths a model with `options` has, of "selection" and "floor"
+# the smooths a model with `options` has, of "selection", "floor" and "init"
 smooth_kinds <- function(options) {
   if (!smooth_on(options)) {
     return(character(0))
   }
-  c("selection", "floor")[c(!isFALSE(options$smooth$selection),
-                            !isFALSE(options$smooth$floor))]
+  c("selection", "floor", "init")[c(!isFALSE(options$smooth$selection),
+                                    !isFALSE(options$smooth$floor),
+                                    smooth_init_on(options))]
+}
+
+# whether a model's options have the smooth of the initial state, u_init(x),
+# in place of the hierarchy of regions and countries (smooth_options(init =
+# TRUE)). Options saved before it have no init element, and do not
+smooth_init_on <- function(options) {
+  smooth_on(options) && isTRUE(options$smooth[["init"]])
 }
 
 # whether a model's options have the floor of the smooth model,
@@ -159,10 +190,14 @@ check_smooth_options <- function(smooth) {
   stopifnot(
     is.list(smooth),
     all(setdiff(names(smooth_options()),
-                c("m", "range", "basis_range", "shear")) %in% names(smooth)),
+                c("m", "range", "basis_range", "shear", "init")) %in%
+          names(smooth)),
     all(names(smooth) %in% c(names(smooth_options()), smooth_basis_elements)),
     is_kind(smooth$selection), is_kind(smooth$floor),
-    !isFALSE(smooth$selection) || !isFALSE(smooth$floor),
+    is.null(smooth[["init"]]) || isFALSE(smooth[["init"]]) ||
+      isTRUE(smooth[["init"]]),
+    !isFALSE(smooth$selection) || !isFALSE(smooth$floor) ||
+      isTRUE(smooth[["init"]]),
     is.null(smooth$shear) || isFALSE(smooth$shear) || isTRUE(smooth$shear),
     !isTRUE(smooth$shear) ||
       (!isFALSE(smooth$selection) && !isFALSE(smooth$floor)),
@@ -362,15 +397,34 @@ smooth_sqrt_spectral <- function(omega, sd, inv_range, kernel) {
 # and inv_range one per draw)
 smooth_weights <- function(raw, sd, inv_range, smooth) {
   omega <- hsgp_frequencies(smooth$indices, smooth$half_width)
-  raw * smooth_sqrt_spectral(omega, sd, inv_range, smooth$kernel)
+  spectral <- smooth_sqrt_spectral(omega, sd, inv_range, smooth$kernel)
+  # with sd and range both fixed (u_init at a fixed range), the spectral
+  # weights are constants, one per frequency
+  if (inherits(raw, "greta_array") && !inherits(spectral, "greta_array")) {
+    spectral <- c(spectral)
+  }
+  raw * spectral
 }
 
 # The names of a smooth's variables (dynamical_variables()): its raw
-# weights, sd and inverse range. With a fixed range (smooth_range_fixed()),
-# the model has no inverse range variable
+# weights, sd and inverse range, and its loadings per type. With a fixed range
+# (smooth_range_fixed()), the model has no inverse range variable; the smooth
+# of the initial state ("init") has loadings and no sd (its sd is fixed at 1,
+# smooth_sd()), and the others an sd and no loadings
 smooth_variable_names <- function(kind) {
-  parts <- c("raw", "sd", "inv_range")
+  parts <- c("raw", "sd", "inv_range", "loading")
   setNames(paste0("smooth_", parts, "_", kind), parts)
+}
+
+# The marginal sd of the smooth `kind` of a model, from its variables `v`:
+# the variable (a greta array, or one per draw in plain R), or for the smooth
+# of the initial state, 1, its loadings per type carrying the scale
+# (smooth_options(init = ))
+smooth_sd <- function(v, kind) {
+  if (kind == "init") {
+    return(1)
+  }
+  v[[smooth_variable_names(kind)[["sd"]]]]
 }
 
 # The inverse range of the smooth `kind` of a model with `options`, from its
@@ -390,8 +444,9 @@ smooth_range_km <- function(v, options, kind) {
   get <- function(name) if (is.matrix(v)) v[, name] else c(v[[name]])
   names <- smooth_variable_names(kind)
   if (smooth_range_fixed(options$smooth)) {
-    return(rep(1000 * options$smooth[["range"]],
-               length(get(names[["sd"]]))))
+    n_draws <- if (is.matrix(v)) nrow(v) else
+      length(v[[names[["raw"]]]]) / nrow(options$smooth$indices)
+    return(rep(1000 * options$smooth[["range"]], n_draws))
   }
   1000 / get(names[["inv_range"]])
 }
@@ -406,18 +461,21 @@ smooth_shear_prior <- list(mean = 1, sd = 0.5)
 # `v` (greta arrays, or draws x dim arrays in plain R), as a named list. With
 # the shear, the selection smooth u_s = v_s + b u_f shares the basis, so its
 # weights are those of v_s plus b times the floor's; with `own`, also
-# selection_own, those of v_s alone (for the maps and checks)
+# selection_own, those of v_s alone (for the maps and checks). The weights of
+# the smooth of the initial state are those of u_init, at sd 1, before the
+# loadings of the types (smooth_init_loadings())
 smooth_weight_terms <- function(v, options, own = FALSE) {
   out <- list()
   for (kind in smooth_kinds(options)) {
     names <- smooth_variable_names(kind)
     raw <- v[[names[["raw"]]]]
-    sd <- v[[names[["sd"]]]]
+    sd <- smooth_sd(v, kind)
     inv_range <- smooth_inv_range(v, options, kind)
     if (!inherits(raw, "greta_array")) {
-      raw <- matrix(raw, nrow = length(c(sd)))
-      sd <- c(sd)
-      inv_range <- rep_len(c(inv_range), length(sd))
+      n_draws <- length(raw) / nrow(options$smooth$indices)
+      raw <- matrix(raw, nrow = n_draws)
+      sd <- rep_len(c(sd), n_draws)
+      inv_range <- rep_len(c(inv_range), n_draws)
     }
     out[[kind]] <- smooth_weights(raw, sd, inv_range, options$smooth)
   }
@@ -428,6 +486,18 @@ smooth_weight_terms <- function(v, options, own = FALSE) {
     out$selection <- out$selection + shear * out$floor
   }
   out
+}
+
+
+# The loadings lambda of the smooth of the initial state on each type
+# (smooth_options(init = TRUE)), from the variables `v`: a greta array, one
+# per type, or in plain R, draws x types (a vector for one draw); NULL
+# without the smooth
+smooth_init_loadings <- function(v, options) {
+  if (!smooth_init_on(options)) {
+    return(NULL)
+  }
+  v[[smooth_variable_names("init")[["loading"]]]]
 }
 
 
@@ -464,7 +534,8 @@ smooth_floor_value <- function(intercept, u = NULL) {
 # coordinates `coords` (points x 2, in 1,000 km; smooth_coords()), from its
 # parameters (dynamical_parameter_draws(), R/dynamical_predictions.R), as a
 # list named by smooth of points x 2 matrices, columns mean and sd: u_s
-# ("selection"), u_f ("floor"), and with the shear v_s ("selection_own"),
+# ("selection"), u_f ("floor"), with the shear v_s ("selection_own"), and
+# u_init ("init", at sd 1, before the types' loadings),
 # from `weights` (draws x basis functions each); the basis is made `chunk`
 # points at a time
 smooth_posterior_at <- function(parameters, coords, chunk = 5000,

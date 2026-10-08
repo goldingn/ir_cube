@@ -46,7 +46,11 @@ map_x <- function(covariates, rows, n_years) {
 # level plus init_country_sd times its deviation, and a new region's level
 # logit_init_mean plus init_region_sd times its deviation. The region of a country
 # is the UNSD one, as in predict.R; the fit took each country's region from
-# its first record, and the two must agree for every country with data
+# its first record, and the two must agree for every country with data. With
+# the smooth of the initial state (smooth_options(init = TRUE)) there are no
+# countries in the model: every country takes the one level of the fit
+# (init_field_level()), with no random draws, and each cell adds lambda
+# u_init(x) from the basis (dynamical_logit_cells())
 map_logit_init <- function(parameters, countries, regions, df,
                            lookup = country_region_lookup()) {
   all_countries <- unique(lookup$country_name)
@@ -62,6 +66,15 @@ map_logit_init <- function(parameters, countries, regions, df,
   v <- parameters$variables
   n_draws <- parameters$n_draws
   n_types <- length(parameters$types)
+  if (smooth_init_on(parameters$options)) {
+    level <- parameters$logit_init_relative[, 1, , drop = FALSE]
+    stopifnot(all(parameters$logit_init_relative ==
+                    level[, rep(1, dim(parameters$logit_init_relative)[2]), ,
+                          drop = FALSE]))
+    logit_init <- level[, rep(1, length(all_countries)), , drop = FALSE]
+    dimnames(logit_init) <- list(NULL, all_countries, parameters$types)
+    return(logit_init)
+  }
   stopifnot(dim(v$init_region_raw)[2] == length(regions))
   fresh <- function(n) array(rnorm(n_draws * n * n_types),
                              c(n_draws, n, n_types))

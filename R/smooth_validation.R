@@ -6,7 +6,8 @@
 # From about n_draws (500) posterior draws, evenly spaced in each usable
 # chain, the posterior mean of each smooth (u_s, the log multiplier of
 # selection; u_f, the shift of the logit floor; with the shear, also v_s,
-# the own part of u_s = v_s + b u_f, and b, reported):
+# the own part of u_s = v_s + b u_f, and b, reported; with the smooth of the
+# initial state, u_init, at sd 1, before the types' loadings):
 #   layers   at each modelled bioassay cell (each once), regressed on the
 #            marker layers, each standardised over the cells: logit total kdr
 #            (995F + 995S) in 2015 of the whole complex
@@ -23,7 +24,8 @@
 #            + 0.5) / (2n - y + 0.5)) for y the 995F and 995S alleles of 2n:
 #            correlation and R^2, for all samples and by species group
 #   pairs    at the modelled cells, the correlation between u_s and u_f (and
-#            v_s and u_f, and u_s and v_s, with the shear): per draw, as
+#            v_s and u_f, and u_s and v_s, with the shear; and u_init with
+#            u_s and u_f): per draw, as
 #            posterior mean and 95% interval, and of the posterior means
 #   spread   how much each smooth varies over the modelled cells: the sd,
 #            range and central 95% of its posterior mean, and the mean over
@@ -65,7 +67,8 @@ draws_used <- even_draws(fit, n_draws, label)
 parameters <- fit_parameter_draws(fit, draws_used$index)
 weights <- smooth_weight_terms(parameters$variables, parameters$options,
                                own = TRUE)
-kinds <- intersect(c("selection", "selection_own", "floor"), names(weights))
+kinds <- intersect(c("selection", "selection_own", "floor", "init"),
+                   names(weights))
 shear <- if (isTRUE(fit$options$smooth$shear)) {
   b <- c(parameters$variables$smooth_shear)
   tibble(label = label, smooth = "shear b", n = length(b), mean = mean(b),
@@ -129,7 +132,9 @@ for (kind in kinds) {
 smooth_pairs <- Filter(function(pair) all(pair %in% kinds),
                        list(c("selection", "floor"),
                             c("selection_own", "floor"),
-                            c("selection", "selection_own")))
+                            c("selection", "selection_own"),
+                            c("selection", "init"),
+                            c("floor", "init")))
 pairs <- bind_rows(lapply(smooth_pairs, function(pair) {
   per_draw <- vapply(seq_len(nrow(cell_draws[[pair[1]]])), function(d) {
     cor(cell_draws[[pair[1]]][d, ], cell_draws[[pair[2]]][d, ])
@@ -245,7 +250,9 @@ p <- ggplot(points, aes(x, u)) +
                        label),
        caption = paste("u_s (selection): log multiplier of the cumulative log",
                        "fitness; u_f (floor): shift of the logit floor;",
-                       "v_s (selection_own): u_s less b u_f, with the shear")) +
+                       "v_s (selection_own): u_s less b u_f, with the shear;",
+                       "u_init (init): the smooth of the logit relative",
+                       "initial state, at sd 1")) +
   theme_bw(base_size = 9)
 ggsave(file.path(figure_dir, sprintf("smooth_validation_%s.png", label)), p,
        width = 10, height = 2.4 + 2.6 * length(kinds), dpi = 150)
