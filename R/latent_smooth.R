@@ -49,11 +49,22 @@
 #   m                 the number of basis functions per dimension (x, y), or
 #                     NULL (the default) for the rule of Riutort-Mayol et al.
 #                     at range basis_range (smooth_box())
-#   basis_range       the shortest range, in 1,000 km, the rule sets m for,
-#                     or NULL for the prior's lower range, range_prior[1]
+#   range             the range rho of both smooths, in 1,000 km, fixed; or
+#                     NULL (the default) to estimate each smooth's with
+#                     range_prior. A fixed range leaves no range variable in
+#                     the model: the spectral weights use it as a constant.
+#                     V5r fixes it at 1.5: the spatial correlation range of
+#                     recent pyrethroid mortality is 1,230 km [840, 1,800],
+#                     and of block plateaus 1,500 km [1,100, 2,000]
+#                     (R/plateau_range.R)
+#   basis_range       the shortest range, in 1,000 km, the rule sets m for:
+#                     by default 1 (1,000 km), or the fixed range if there is
+#                     one; NULL for the fixed range, or else the prior's lower
+#                     range, range_prior[1] (smooth_basis_range())
 #   range_prior       the penalised-complexity prior of each smooth's range
 #                     rho (Fuglstad et al. 2019): P(rho < range_prior[1]) =
-#                     range_prior[2], rho in 1,000 km
+#                     range_prior[2], rho in 1,000 km; unused with a fixed
+#                     range
 #   sd_prior          and of its marginal sd: P(sd > sd_prior[1]) =
 #                     sd_prior[2]
 # build_dynamical_model() adds the basis (smooth_box()): the projection, the
@@ -68,7 +79,8 @@ smooth_options <- function(selection = TRUE,
                            kernel = "se",
                            c = 2,
                            m = NULL,
-                           basis_range = 1,
+                           range = NULL,
+                           basis_range = if (is.null(range)) 1 else range,
                            range_prior = c(1.5, 0.05),
                            sd_prior = c(1, 0.05)) {
   list(selection = selection,
@@ -78,9 +90,28 @@ smooth_options <- function(selection = TRUE,
        kernel = kernel,
        c = c,
        m = m,
+       range = range,
        basis_range = basis_range,
        range_prior = range_prior,
        sd_prior = sd_prior)
+}
+
+# whether the smooths' range is fixed (smooth_options(range = )). Options
+# saved before the option have no range element, and estimate it. Read as
+# smooth[["range"]]: smooth$range would match range_prior partially
+smooth_range_fixed <- function(smooth) {
+  is.list(smooth) && !is.null(smooth[["range"]])
+}
+
+# The range the basis rule sets m for, in 1,000 km (smooth_box()):
+# basis_range, or if it is NULL the fixed range, or else the prior's lower
+# range
+smooth_basis_range <- function(smooth) {
+  if (!is.null(smooth$basis_range)) {
+    return(smooth$basis_range)
+  }
+  if (smooth_range_fixed(smooth)) smooth[["range"]] else
+    smooth$range_prior[1]
 }
 
 # the insecticide classes with the smooth terms where a smooth is "class":
@@ -127,8 +158,8 @@ check_smooth_options <- function(smooth) {
   is_kind <- function(x) isFALSE(x) || isTRUE(x) || identical(x, "class")
   stopifnot(
     is.list(smooth),
-    all(setdiff(names(smooth_options()), c("m", "basis_range", "shear")) %in%
-          names(smooth)),
+    all(setdiff(names(smooth_options()),
+                c("m", "range", "basis_range", "shear")) %in% names(smooth)),
     all(names(smooth) %in% c(names(smooth_options()), smooth_basis_elements)),
     is_kind(smooth$selection), is_kind(smooth$floor),
     !isFALSE(smooth$selection) || !isFALSE(smooth$floor),
@@ -140,6 +171,10 @@ check_smooth_options <- function(smooth) {
     is.numeric(smooth$c), length(smooth$c) == 1, smooth$c > 1,
     is.null(smooth$m) || (is.numeric(smooth$m) && length(smooth$m) == 2 &&
                             all(smooth$m >= 1)),
+    !smooth_range_fixed(smooth) || (is.numeric(smooth[["range"]]) &&
+                                      length(smooth[["range"]]) == 1 &&
+                                      is.finite(smooth[["range"]]) &&
+                                      smooth[["range"]] > 0),
     is.null(smooth$basis_range) || (is.numeric(smooth$basis_range) &&
                                       length(smooth$basis_range) == 1 &&
                                       smooth$basis_range > 0),
@@ -205,9 +240,9 @@ smooth_mask_range <- function(crs = smooth_crs) {
 # dimension c times their half-extent, or more where the mask reaches beyond
 # that, so that every mask cell can be predicted to. Unless given, m is
 # hsgp_m_factor[kernel] L / ell_min per dimension, rounded up, for ell_min the
-# lengthscale at range basis_range, by default the prior's lower range (rho
-# = 2 ell: the Matern's correlation is about 0.13 at rho, and the squared
-# exponential's 0.135). Of
+# lengthscale at range smooth_basis_range(): basis_range, by default 1,000 km,
+# or the fixed range (rho = 2 ell: the Matern's correlation is about 0.13 at
+# rho, and the squared exponential's 0.135). Of
 # the m[1] x m[2] products of the one-dimensional eigenfunctions, only those
 # with frequency up to the lower of the two dimensions' highest, omega_max =
 # min_d pi m_d / (2 L_d), are kept (by the rule, about pi hsgp_m_factor /
@@ -220,8 +255,9 @@ smooth_mask_range <- function(crs = smooth_crs) {
 # implies at the modelled cells, centred, is within 2.4% of sd^2 of the
 # kernel's for ranges of 1,000-4,000 km (0.02% at 1,500 km), but 27% at
 # 8,000 km and 22% at 16,000 km, where the box is too narrow for the range.
-# m set at the prior's lower range, 1,500 km ((17, 14), 164 kept), would
-# give 19% at 1,000 km (R/check_latent_smooth.R).
+# m set at 1,500 km ((17, 14), 164 of 238 kept), as for the fixed range of
+# V5r, is within 2.3% at 1,500 km (0.8% with all 238), but 19% at 1,000 km
+# (R/check_latent_smooth.R).
 smooth_box <- function(smooth, cells, classes) {
   smooth$term_classes <- classes %in% smooth_classes
   if (!is.null(smooth$indices)) {
@@ -237,9 +273,7 @@ smooth_box <- function(smooth, cells, classes) {
                 abs(mask_range[2, ] - smooth$origin))
   smooth$half_width <- pmax(smooth$c * (upper - lower) / 2, reach)
   if (is.null(smooth$m)) {
-    basis_range <- if (is.null(smooth$basis_range)) smooth$range_prior[1] else
-      smooth$basis_range
-    ell_min <- basis_range / 2
+    ell_min <- smooth_basis_range(smooth) / 2
     smooth$m <- ceiling(hsgp_m_factor[[smooth$kernel]] * smooth$half_width /
                           ell_min)
   }
@@ -309,12 +343,13 @@ prediction_basis <- function(options, cells) {
 # R/check_latent_smooth.R checks the covariance they imply):
 #   Matern 5/2  S(w) = sd^2 10 pi 5^(5/2) ell^2 (5 + ell^2 w^2)^(-7/2)
 #   SE          S(w) = sd^2 2 pi ell^2 exp(-ell^2 w^2 / 2)
-# For greta arrays (sd and inv_range scalars, giving one per frequency) or
-# plain R (sd and inv_range one per draw, giving draws x frequencies)
+# For greta arrays (sd a scalar, inv_range a scalar greta array or, for a
+# fixed range, a number, giving one per frequency) or plain R (sd and
+# inv_range one per draw, giving draws x frequencies)
 smooth_sqrt_spectral <- function(omega, sd, inv_range, kernel) {
   ell <- 1 / (2 * inv_range)
-  scaled <- if (inherits(ell, "greta_array")) ell ^ 2 * omega ^ 2 else
-    outer(ell ^ 2, omega ^ 2)
+  greta <- inherits(ell, "greta_array") || inherits(sd, "greta_array")
+  scaled <- if (greta) ell ^ 2 * omega ^ 2 else outer(ell ^ 2, omega ^ 2)
   shape <- switch(kernel,
                   matern52 = sqrt(10 * pi) * 5 ^ (5 / 4) * (5 + scaled) ^ (-7 / 4),
                   se = sqrt(2 * pi) * exp(-scaled / 4))
@@ -331,10 +366,34 @@ smooth_weights <- function(raw, sd, inv_range, smooth) {
 }
 
 # The names of a smooth's variables (dynamical_variables()): its raw
-# weights, sd and inverse range
+# weights, sd and inverse range. With a fixed range (smooth_range_fixed()),
+# the model has no inverse range variable
 smooth_variable_names <- function(kind) {
   parts <- c("raw", "sd", "inv_range")
   setNames(paste0("smooth_", parts, "_", kind), parts)
+}
+
+# The inverse range of the smooth `kind` of a model with `options`, from its
+# variables `v`: the variable (a greta array, or one per draw in plain R), or
+# with a fixed range, the number 1 / range
+smooth_inv_range <- function(v, options, kind) {
+  if (smooth_range_fixed(options$smooth)) {
+    return(1 / options$smooth[["range"]])
+  }
+  v[[smooth_variable_names(kind)[["inv_range"]]]]
+}
+
+# The range in km of the smooth `kind` of a fit with `options`, per draw, from
+# its variables `v` (a list of draws x dim arrays, or a draws matrix with a
+# column per variable): estimated, or the fixed range repeated
+smooth_range_km <- function(v, options, kind) {
+  get <- function(name) if (is.matrix(v)) v[, name] else c(v[[name]])
+  names <- smooth_variable_names(kind)
+  if (smooth_range_fixed(options$smooth)) {
+    return(rep(1000 * options$smooth[["range"]],
+               length(get(names[["sd"]]))))
+  }
+  1000 / get(names[["inv_range"]])
 }
 
 # The prior of the shear loading b (smooth_options(shear = TRUE)): N(1, 0.5),
@@ -354,11 +413,11 @@ smooth_weight_terms <- function(v, options, own = FALSE) {
     names <- smooth_variable_names(kind)
     raw <- v[[names[["raw"]]]]
     sd <- v[[names[["sd"]]]]
-    inv_range <- v[[names[["inv_range"]]]]
+    inv_range <- smooth_inv_range(v, options, kind)
     if (!inherits(raw, "greta_array")) {
       raw <- matrix(raw, nrow = length(c(sd)))
       sd <- c(sd)
-      inv_range <- c(inv_range)
+      inv_range <- rep_len(c(inv_range), length(sd))
     }
     out[[kind]] <- smooth_weights(raw, sd, inv_range, options$smooth)
   }

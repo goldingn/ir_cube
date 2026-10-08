@@ -59,7 +59,7 @@ for (label in names(files)) {
       hyper[[length(hyper) + 1]] <- tibble(
         fit = label, chain = chain, smooth = kind,
         sd = m[, names[["sd"]]],
-        range_km = 1000 / m[, names[["inv_range"]]])
+        range_km = smooth_range_km(m, fit$options, kind))
     }
   }
   n_cells <- max(fit$df$cell_id)

@@ -512,7 +512,8 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # dimensions the prior of the range rho is the density of 1 / rho for an
   # exponential 1 / rho. With the defaults, P(rho < 1,500 km) = 0.05 and
   # P(sd > 1) = 0.05; and with the shear, its loading b ~ N(1, 0.5)
-  # (smooth_shear_prior)
+  # (smooth_shear_prior). With a fixed range (smooth_options(range = )),
+  # there is no inverse range variable
   smooths <- list()
   if (smooth_on(options)) {
     rates <- smooth_prior_rates(options$smooth)
@@ -521,7 +522,9 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
       smooths[[names[["raw"]]]] <- normal(0, 1,
                                           dim = nrow(options$smooth$indices))
       smooths[[names[["sd"]]]] <- exponential(rates$sd)
-      smooths[[names[["inv_range"]]]] <- exponential(rates$range)
+      if (!smooth_range_fixed(options$smooth)) {
+        smooths[[names[["inv_range"]]]] <- exponential(rates$range)
+      }
     }
     if (isTRUE(options$smooth$shear)) {
       smooths$smooth_shear <- normal(smooth_shear_prior$mean,
@@ -884,8 +887,9 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
   # mode, R/floor_mode_inits.R, start there), or else at 0.02 (#47). The
   # latent smooths start flat (raw weights 0), with sd 0.3 and range 3,000
   # km (with the default priors, the means of sd and 1 / range are 0.33 and
-  # 1 / 4,500 km), the shear loading at its prior mean, 1, and
-  # the floor where they are 0 at the cached floor too
+  # 1 / 4,500 km; a fixed range is no variable, so has no start), the shear
+  # loading at its prior mean, 1, and the floor where they are 0 at the
+  # cached floor too
   species_floor <- if (!is.null(cached$mortality_floor)) {
     c(cached$mortality_floor)[1]
   } else {

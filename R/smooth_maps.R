@@ -163,6 +163,19 @@ shear_note <- if (!is.null(shear)) {
 } else {
   ""
 }
+# the smooths' range: fixed, or the posterior median of each
+range_note <- if (smooth_range_fixed(fit$options$smooth)) {
+  sprintf("; range fixed at %s km",
+          format(1000 * fit$options$smooth[["range"]], big.mark = ","))
+} else {
+  sprintf("; range (posterior median) %s",
+          paste(sprintf("%s %s km", smooth_kinds(fit$options),
+                        vapply(smooth_kinds(fit$options), function(kind) {
+                          format(round(median(smooth_range_km(
+                            parameters$variables, fit$options, kind))),
+                            big.mark = ",")
+                        }, "")), collapse = ", "))
+}
 floor_classes <- if (identical(fit$options$smooth$floor, "class")) {
   "; u_f applies to the pyrethroids and DDT only"
 } else {
@@ -173,9 +186,9 @@ p <- wrap_plots(panels, ncol = length(kinds), byrow = TRUE) +
     title = sprintf("%s: the latent smooths", label),
     caption = sprintf(paste0(
       "posterior over %d draws; each smooth averages 0 over the modelled ",
-      "bioassay cells (dots)%s%s;\none colour scale for the means, on the log ",
-      "(selection) and logit (floor) scales"), parameters$n_draws,
-      floor_classes, shear_note))
+      "bioassay cells (dots)%s%s%s;\none colour scale for the means, on the ",
+      "log (selection) and logit (floor) scales"), parameters$n_draws,
+      floor_classes, shear_note, range_note))
 ggsave(file.path(figure_dir, sprintf("smooth_%s.png", label)), p,
        width = 5.2 * length(kinds) + 1, height = 8.2, dpi = 150, bg = "white")
 report("saved; peak memory %.1f GB", peak_memory_gb())

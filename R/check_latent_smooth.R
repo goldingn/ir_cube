@@ -8,13 +8,14 @@
 #   centred    the same with each basis function centred over the cells (as
 #              in the model) against the exactly centred kernel, k(x, x')
 #              less its means over x and over x' plus its mean over both
-# at ranges from 1,000 to 16,000 km; and at the range the basis is chosen for
-# (basis_range), for the full m[1] x m[2] grid of basis functions as well as
-# the kept ones (smooth_box()).
+# at ranges from 1,000 to 16,000 km, and the fixed range if there is one; and
+# at the range the basis is chosen for (smooth_basis_range()), for the full
+# m[1] x m[2] grid of basis functions as well as the kept ones (smooth_box()).
 #
 #   Rscript R/check_latent_smooth.R ['<smooth options>']
 # e.g.
 #   Rscript R/check_latent_smooth.R 'smooth_options(kernel = "matern52")'
+#   Rscript R/check_latent_smooth.R 'smooth_options(range = 1.5)'
 #
 # Plain R; about 1.5 GB and 1 minute.
 
@@ -46,6 +47,13 @@ cat(sprintf("box: origin (%.0f, %.0f) km, half-widths (%.0f, %.0f) km; the cells
 cat(sprintf("kernel %s, m = (%d, %d): %d basis functions kept of %d\n",
             smooth$kernel, smooth$m[1], smooth$m[2], nrow(smooth$indices),
             prod(smooth$m)))
+basis_range <- smooth_basis_range(smooth)
+cat(sprintf("basis range %.0f km; range %s\n", 1000 * basis_range,
+            if (smooth_range_fixed(smooth)) {
+              sprintf("fixed at %.0f km", 1000 * smooth[["range"]])
+            } else {
+              "estimated"
+            }))
 cat(sprintf("priors: 1 / range ~ Exponential(%.3f), sd ~ Exponential(%.3f) (range in 1,000 km)\n",
             rates$range, rates$sd))
 
@@ -81,10 +89,8 @@ errors <- function(basis, omega, rho, centred) {
 
 basis <- hsgp_basis(coords, smooth)
 omega <- hsgp_frequencies(smooth$indices, smooth$half_width)
-basis_range <- if (is.null(smooth$basis_range)) smooth$range_prior[1] else
-  smooth$basis_range
 ranges <- sort(unique(c(1, 1.5, 2, 4, 8, 16, basis_range,
-                        smooth$range_prior[1])))
+                        smooth$range_prior[1], smooth[["range"]])))
 rows <- list()
 for (rho in ranges) {
   for (centred in c(FALSE, TRUE)) {

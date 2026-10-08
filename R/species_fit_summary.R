@@ -47,6 +47,10 @@ fit <- load_fit(file)
 n_chains <- length(fit$draws)
 report("%s: %s, %d chains x %d draws, %d parameters", label, file, n_chains,
        nrow(fit$draws[[1]]), ncol(fit$draws[[1]]))
+if (smooth_on(fit$options) && smooth_range_fixed(fit$options$smooth)) {
+  report("%s: the smooths' range is fixed at %.0f km", label,
+         1000 * fit$options$smooth[["range"]])
+}
 
 
 # the key parameters, per chain ---------------------------------------------------
@@ -105,7 +109,8 @@ key_parameters <- function(chain) {
         plogis(m[, name])
     }
   }
-  # the latent smooths' sd, range in km, and shear loading b
+  # the latent smooths' sd, range in km (none when it is fixed, which is no
+  # variable), and shear loading b
   for (name in grep("^smooth_(sd_|shear$)", colnames(m), value = TRUE)) {
     out[[name]] <- m[, name]
   }

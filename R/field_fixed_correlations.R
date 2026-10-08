@@ -112,12 +112,15 @@ for (label in names(files)) {
     }
   }
 
-  # the smooths' hyperparameters and floor intercepts
+  # the smooths' hyperparameters (a fixed range has no draws to correlate)
+  # and floor intercepts
   for (kind in smooth_kinds(fit$options)) {
     names <- smooth_variable_names(kind)
     out[[paste0("log_sd_", kind)]] <- log(c(v[[names[["sd"]]]]))
-    out[[paste0("log_range_", kind)]] <-
-      log(1000 / c(v[[names[["inv_range"]]]]))
+    if (!smooth_range_fixed(fit$options$smooth)) {
+      out[[paste0("log_range_", kind)]] <-
+        log(smooth_range_km(v, fit$options, kind))
+    }
   }
   intercepts <- matrix(v$floor_intercept, nrow(out))
   for (class in seq_len(ncol(intercepts))) {

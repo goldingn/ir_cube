@@ -390,9 +390,10 @@ if (smooth_on(model_options)) {
     c(w %*% t(basis_cells))
   })
   for (kind in kinds) {
-    cat(sprintf("smooth %s: sd %.3f, range %.0f km; at the cells, mean %.2g, range %.3f to %.3f\n",
+    cat(sprintf("smooth %s: sd %.3f, range %.0f km%s; at the cells, mean %.2g, range %.3f to %.3f\n",
                 kind, trace[1, paste0("smooth_sd_", kind)],
-                1000 / trace[1, paste0("smooth_inv_range_", kind)],
+                smooth_range_km(trace, model_options, kind),
+                if (smooth_range_fixed(smooth)) " (fixed)" else "",
                 mean(u_cells[[kind]]), min(u_cells[[kind]]),
                 max(u_cells[[kind]])))
   }
@@ -407,8 +408,9 @@ if (smooth_on(model_options)) {
   # class, as V4_class; TRUE for one; no floor without mortality_floor) and
   # its slopes at 0. In greta, the log density then differs by the priors:
   # those of the smooths (the raw weights N(0, 1) at 0, the exponential sd
-  # and inverse range with the Jacobians of their log free states, and the
-  # shear loading) less those of the kdr slopes N(0, 1) at 0
+  # and inverse range (unless the range is fixed) with the Jacobians of their
+  # log free states, and the shear loading) less those of the kdr slopes N(0,
+  # 1) at 0
   floor_on <- smooth_floor_on(model_options)
   options_base <- model_options
   options_base$smooth <- FALSE
@@ -433,10 +435,13 @@ if (smooth_on(model_options)) {
   expected <- -length(base_slopes) * dnorm(0, log = TRUE)
   for (kind in kinds) {
     sd <- trace_zero[1, paste0("smooth_sd_", kind)]
-    inv_range <- trace_zero[1, paste0("smooth_inv_range_", kind)]
     expected <- expected + nrow(smooth$indices) * dnorm(0, log = TRUE) +
-      dexp(sd, rates$sd, log = TRUE) + log(sd) +
-      dexp(inv_range, rates$range, log = TRUE) + log(inv_range)
+      dexp(sd, rates$sd, log = TRUE) + log(sd)
+    if (!smooth_range_fixed(smooth)) {
+      inv_range <- trace_zero[1, paste0("smooth_inv_range_", kind)]
+      expected <- expected + dexp(inv_range, rates$range, log = TRUE) +
+        log(inv_range)
+    }
   }
   if (shear) {
     expected <- expected + dnorm(trace_zero[1, "smooth_shear"],
@@ -507,6 +512,52 @@ if (smooth_on(model_options)) {
                 shear_plain))
     stopifnot(shear_plain < 1e-12)
     rm(built_unsheared)
+  }
+
+  # With a fixed range, the model is the one with the range estimated, on
+  # the same basis, at an inverse range of 1 / range: in greta, the log
+  # density differs by the inverse range's prior and the Jacobian of its log
+  # free state; in plain R, the weights of the smooths are the same
+  if (smooth_range_fixed(smooth)) {
+    options_estimated <- model_options
+    options_estimated$smooth[["range"]] <- NULL
+    built_estimated <- build(df, options_estimated)
+    stopifnot(identical(built_estimated$options$smooth$indices,
+                        smooth$indices))
+    columns_estimated <- free_state_columns(built_estimated$model)
+    targets_estimated <- attr(columns_estimated, "targets")
+    free_estimated <- numeric(length(unlist(
+      built_estimated$model$dag$example_parameters(free = TRUE))))
+    inv_range_names <- vapply(kinds, function(kind) {
+      smooth_variable_names(kind)[["inv_range"]]
+    }, "")
+    for (name in setdiff(names(targets_estimated), inv_range_names)) {
+      free_estimated[columns_estimated[[targets_estimated[[name]]]]] <-
+        free[free_columns(built$model, name)]
+    }
+    inv_range <- 1 / smooth[["range"]]
+    free_estimated[unlist(columns_estimated[
+      unlist(targets_estimated[inv_range_names])])] <- log(inv_range)
+    range_prior <- length(kinds) *
+      (dexp(inv_range, rates$range, log = TRUE) + log(inv_range))
+    range_difference <- log_density(built$model, free) -
+      log_density(built_estimated$model, free_estimated) + range_prior
+    cat(sprintf("smooth range: fixed at %.0f km vs estimated at it, greta log density: diff %.3g\n",
+                1000 * smooth[["range"]], range_difference))
+    stopifnot(abs(range_difference) < 1e-6)
+    trace_estimated <- built_estimated$model$dag$trace_values(
+      matrix(free_estimated, nrow = 1))
+    v_estimated <- lapply(
+      setNames(nm = unique(sub("\\[.*$", "", colnames(trace_estimated)))),
+      extract_parameter, draws_matrix = trace_estimated)
+    weights_estimated <- smooth_weight_terms(v_estimated,
+                                             built_estimated$options)
+    weights_plain <- max(abs(unlist(weights_estimated) -
+                               unlist(parameters$smooth_weights)))
+    cat(sprintf("smooth range: fixed vs estimated at it, plain R, weights: max abs diff %.3g\n",
+                weights_plain))
+    stopifnot(weights_plain < 1e-12)
+    rm(built_estimated)
   }
   if (floor_on) {
     cat(sprintf("smooth floor (%s): floor where u_f is 0 %s\n",
