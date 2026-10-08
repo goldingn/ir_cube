@@ -1,12 +1,14 @@
 # The fits of the species model (#47) and its reference, full data only. Run
 # on RunPod (docker/README.md), one fit per pod.
 #
-#   Rscript R/species_runs.R [code ref]
+#   Rscript R/species_runs.R [code ref] [set]
 #
 # writes outputs/species_runs/jobs.csv, one row per fit, and
 # outputs/species_runs/pods.json, the create-pod body of each
 # (species_run_pod_body()), for the commit to run (a full commit
-# id; default: HEAD, which must be on GitHub). The fits:
+# id; default: HEAD, which must be on GitHub), for the set "species" (the
+# default, species_runs); for the set "wb" (wb_runs, below),
+# jobs_wb.csv and pods_wb.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
 #   sp_v1         V1: the species model, no floors
@@ -56,6 +58,25 @@
 # shear's 42, against V4_class's 38, at 4 chains and 4 threads, so about
 # 6.7-7.5 h and $2 each; state the price first), and when each is done,
 # `irpod fetch <name>` and delete its pod (it does not delete itself).
+#
+# The set "wb" (wb_runs): the candidate models with the weighted binomial
+# likelihood (#47; dynamical_model_options(likelihood = "weighted_binomial"),
+# R/weighted_binomial.R), rho per type fixed at the replicate estimates
+# (data/clean/bioassay_rho_replicate.csv, which irpod sync uploads), with the
+# default sampler of #48 (centred data-informed hierarchy, 30-60 leapfrog
+# steps, 2,000 warmup and 1,500 samples):
+#   wb_ref        ref_f0: the default options, no floor
+#   wb_bf         B_f, as sp_ref_floor
+#   wb_v3f        V3f, as sp_v3_floor
+#   wb_v4         V4, as sp_v4
+#   wb_v4_class   V4_class, as sp_v4_class
+#   wb_v5         V5, as sp_v5
+# each with the options and initial values of the fit it copies (ref_f0 from
+# the default initial values), and likelihood = "weighted_binomial". Their
+# gradients took 0.87-0.95 times the default beta-binomial model's (4 chains,
+# 8 threads, 8 October 2026), which took 48 ms on the default pod: about
+# 42-46 ms there, and for 3,500 iterations of 45 leapfrog steps, 1.8-2.0 h
+# each, about 2.5 h and $0.70 a pod with setup and saving.
 
 floor_mode_inits <- paste("temporary/inits_floor_low.RDS",
                           "temporary/inits_floor_high.RDS", sep = ",")
@@ -97,9 +118,33 @@ species_runs <- data.frame(
             floor_mode_inits, floor_mode_inits, floor_mode_inits,
             floor_mode_inits))
 
+# The candidate models with the weighted binomial likelihood (the set "wb"):
+# the options of each fit it copies, with likelihood = "weighted_binomial"
+weighted_binomial_options <- function(expression) {
+  stopifnot(grepl("^dynamical_model_options\\(.+\\)$", expression))
+  sub("\\)$", ", likelihood = \"weighted_binomial\")", expression)
+}
+wb_copies <- c(wb_bf = "B_f", wb_v3f = "V3f", wb_v4 = "V4",
+               wb_v4_class = "V4_class", wb_v5 = "V5")
+wb_runs <- rbind(
+  data.frame(name = "wb_ref", label = "ref_f0_wb",
+             options = paste0("dynamical_model_options(",
+                              "likelihood = \"weighted_binomial\")"),
+             inits = ""),
+  data.frame(name = names(wb_copies),
+             label = paste0(wb_copies, "_wb"),
+             options = vapply(species_runs$options[match(wb_copies,
+                                                          species_runs$label)],
+                              weighted_binomial_options, ""),
+             inits = species_runs$inits[match(wb_copies, species_runs$label)],
+             row.names = NULL))
+
+# the sets of fits, by name
+run_sets <- list(species = species_runs, wb = wb_runs)
+
 # One row per pod job, with its environment (docker/README.md)
-species_run_jobs <- function(code_ref, threads = 8) {
-  jobs <- species_runs
+species_run_jobs <- function(code_ref, threads = 8, runs = species_runs) {
+  jobs <- runs
   jobs$JOB <- sprintf("%s full --threads %d", jobs$name, threads)
   jobs$CODE_REF <- code_ref
   jobs$IR_CUBE_MODEL_OPTIONS <- jobs$options
@@ -136,27 +181,33 @@ if (sys.nframe() == 0) {
   code_ref <- if (length(arguments) >= 1) arguments[1] else
     system("git rev-parse HEAD", intern = TRUE)
   stopifnot(grepl("^[0-9a-f]{40}$", code_ref))
+  set <- if (length(arguments) >= 2) arguments[2] else "species"
+  stopifnot(set %in% names(run_sets))
+  runs <- run_sets[[set]]
+  suffix <- if (set == "species") "" else paste0("_", set)
   # each fit's options must pass the model's checks (definitions only; no
   # data or python)
   source("R/dynamical_model.R")
-  for (expression in species_runs$options) {
+  for (expression in runs$options) {
     check_dynamical_model_options(eval(str2lang(expression)))
   }
   inputs <- c(arabiensis_fraction_file, kdr_total_file,
-              unlist(strsplit(species_runs$inits[nzchar(species_runs$inits)],
-                              ",")))
+              if (set == "wb") replicate_rho_file,
+              unlist(strsplit(runs$inits[nzchar(runs$inits)], ",")))
   missing <- inputs[!file.exists(inputs)]
   if (length(missing) > 0) {
     warning("not found here, so not uploaded by irpod sync: ",
             toString(unique(missing)))
   }
-  jobs <- species_run_jobs(code_ref)
+  jobs <- species_run_jobs(code_ref, runs = runs)
   dir.create("outputs/species_runs", showWarnings = FALSE, recursive = TRUE)
-  write.csv(jobs, "outputs/species_runs/jobs.csv", row.names = FALSE)
+  write.csv(jobs, sprintf("outputs/species_runs/jobs%s.csv", suffix),
+            row.names = FALSE)
   bodies <- lapply(seq_len(nrow(jobs)), function(i) {
     species_run_pod_body(jobs[i, ])
   })
-  jsonlite::write_json(bodies, "outputs/species_runs/pods.json",
+  jsonlite::write_json(bodies, sprintf("outputs/species_runs/pods%s.json",
+                                       suffix),
                        auto_unbox = TRUE, pretty = TRUE)
   cat(sprintf("%d fits at %s\n", nrow(jobs), code_ref))
   print(jobs[, c("name", "label", "JOB", "IR_CUBE_MODEL_OPTIONS",
