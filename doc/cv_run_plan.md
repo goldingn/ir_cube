@@ -102,7 +102,7 @@ afterwards, or the real fold will be skipped.
 `fit_fold()`, `run_one_fold.R`, `run_validation_folds.R` and `fit_model.R` all
 take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 30 to 60
 leapfrog steps (`Lmin`, `Lmax`), redrawn every 10 iterations, target
-acceptance 0.65, 4 chains, 2,000 warmup and 3,000 samples. The model samples the
+acceptance 0.65, 4 chains, 2,000 warmup and 1,500 samples. The model samples the
 countries' initial states centred and starts from `temporary/inits_refit.RDS`
 (`dynamical_inits_file`).
 
@@ -129,6 +129,13 @@ of 1.00. The worst-mixing quantity in all three is `sigma_class` for net use:
 it is set by the type deviations the data barely inform (the
 organophosphates, and bendiocarb and DDT alone in their classes), which
 centred sit in a mild funnel with it.
+
+At 30-60 steps the worst quantity had 0.40 effective samples per draw, so
+1,500 samples (3,000 before #48) should give a minimum bulk ESS of about 600.
+The warmup stays at 2,000: at 1,000 (+ 1,500, the same pod type), one of the
+four chains ended warmup in that funnel's neck (`sigma_class` for net use at
+0.13, against a posterior median of 0.27) and rejected every proposal while
+sampling, at the step size the other chains adapted (rank Rhat up to 4.6).
 
 At four threads the 2014 forecasting fold took 3.7 h at 3.0 s per iteration
 (2,000 + 2,500, machine loaded to about 8 of 16 cores), so about 4.2 h at

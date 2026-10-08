@@ -725,7 +725,7 @@ noncentred_draws <- function(draws, classes_index, options) {
 # in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with
 # 30 to 60 leapfrog steps (60 to 120 before the centred selection hierarchy,
 # #48), redrawn every 10 iterations, target acceptance 0.65, 4 chains, 2,000
-# warmup and 3,000 samples.
+# warmup and 1,500 samples (3,000 before #48).
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
 #                  burst of iterations
 #   accept_target  target acceptance of the step-size adaptation
@@ -735,7 +735,7 @@ noncentred_draws <- function(draws, classes_index, options) {
 #                  hardly moves for the whole burst
 dynamical_mcmc_settings <- function(n_chains = 4,
                                     warmup = 2000,
-                                    n_samples = 3000,
+                                    n_samples = 1500,
                                     Lmin = 30,
                                     Lmax = 60,
                                     accept_target = 0.65,
