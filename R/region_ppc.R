@@ -127,11 +127,15 @@ if (length(arguments) > 0) {
 stopifnot(all(file.exists(fits)))
 labels <- names(fits)
 # the fit whose posterior mean rho per type the error-model check fixes
-fixed_rho_fit <- "V4_class"
+fixed_rho_fit <- Sys.getenv("FIXED_RHO_FIT", "V4_class")
 stopifnot(fixed_rho_fit %in% labels)
 # Okabe-Ito, as R/region_diagnostics.R
 fit_colours <- c(ref_f0 = grey(0.3), V3f = "#E69F00", V4_class = "#CC79A7",
                  V5 = "#009E73")
+# the weighted binomial fits (#47) in the colours of the fits they copy
+fit_colours <- c(fit_colours, V4 = "#0072B2", wb_ref = grey(0.3),
+                 wb_bf = "#56B4E9", wb_v3f = "#E69F00", wb_v4 = "#0072B2",
+                 wb_v4_class = "#CC79A7", wb_v5 = "#009E73")
 llin_pyrethroids <- c("Alpha-cypermethrin", "Deltamethrin", "Permethrin")
 windows <- list(`2010-2015` = 2010:2015, `2016-2018` = 2016:2018,
                 `2019-2024` = 2019:2024)
@@ -414,8 +418,11 @@ pooled_current <- ppc_windows %>%
   filter(check == "as fitted", statistic == "pooled", window == "2019-2024")
 
 model_key <- function(text) {
-  paste(sprintf("<span style='color:%s'>**%s** %s</span>",
-                fit_colours[labels], labels, text), collapse = ", ")
+  keys <- sprintf("<span style='color:%s'>**%s** %s</span>",
+                  fit_colours[labels], labels, text)
+  # three to a line, so that more than four models fit the panel
+  lines <- split(keys, ceiling(seq_along(keys) / 3))
+  paste(vapply(lines, paste, "", collapse = ", "), collapse = "<br>")
 }
 region_title <- function(r) {
   counts <- region_counts[region_counts$region == r, ]

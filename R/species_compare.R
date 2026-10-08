@@ -90,6 +90,10 @@ stopifnot(all(file.exists(fits)))
 reference <- "ref_f0"
 fit_colours <- c(ref_f0 = grey(0.55), V3f = "#E69F00", V4 = "#0072B2",
                  V4_class = "#CC79A7", V5 = "#009E73", V5_shear = "#D55E00")
+# the weighted binomial fits (#47) in the colours of the fits they copy
+fit_colours <- c(fit_colours, wb_ref = grey(0.3), wb_bf = "#56B4E9",
+                 wb_v3f = "#E69F00", wb_v4 = "#0072B2", wb_v4_class = "#CC79A7",
+                 wb_v5 = "#009E73")
 
 output_dir <- "outputs/species_runs/compare"
 figure_dir <- "figures/species_runs"

@@ -51,9 +51,17 @@ source("R/functions.R")
 source("R/species_fit_helpers.R")
 
 labels <- c("ref_f0", "V3f", "V4_class", "V5")
+# or the labels given (Rscript R/region_diagnostics.R <label> ...)
+if (length(commandArgs(trailingOnly = TRUE)) > 0) {
+  labels <- commandArgs(trailingOnly = TRUE)
+}
 # Okabe-Ito, as R/west_figures.R; the observed points are light grey
 fit_colours <- c(ref_f0 = grey(0.3), V3f = "#E69F00", V4_class = "#CC79A7",
                  V5 = "#009E73")
+# the weighted binomial fits (#47) in the colours of the fits they copy
+fit_colours <- c(fit_colours, V4 = "#0072B2", wb_ref = grey(0.3),
+                 wb_bf = "#56B4E9", wb_v3f = "#E69F00", wb_v4 = "#0072B2",
+                 wb_v4_class = "#CC79A7", wb_v5 = "#009E73")
 llin_pyrethroids <- c("Alpha-cypermethrin", "Deltamethrin", "Permethrin")
 windows <- c(early = "2010-2015", current = "2019-2024")
 years <- 2005:2024
@@ -151,9 +159,11 @@ yearly_long <- long_by_model(yearly) %>%
 max_tested <- max(yearly$tested)
 
 model_key <- function(values, format) {
-  paste(sprintf("<span style='color:%s'>**%s** %s</span>",
-                fit_colours[labels], labels, sprintf(format, values)),
-        collapse = ", ")
+  keys <- sprintf("<span style='color:%s'>**%s** %s</span>",
+                  fit_colours[labels], labels, sprintf(format, values))
+  # three to a line, so that more than four models fit the panel
+  lines <- split(keys, ceiling(seq_along(keys) / 3))
+  paste(vapply(lines, paste, "", collapse = ", "), collapse = "<br>")
 }
 trend_panel <- function(r) {
   counts <- region_counts[region_counts$region == r, ]

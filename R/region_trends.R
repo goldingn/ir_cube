@@ -66,6 +66,10 @@ if (length(arguments) > 0) {
 stopifnot(all(file.exists(fits)))
 fit_colours <- c(ref_f0 = grey(0.3), V3f = "#E69F00", V4_class = "#CC79A7",
                  V5 = "#009E73")
+# the weighted binomial fits (#47) in the colours of the fits they copy
+fit_colours <- c(fit_colours, V4 = "#0072B2", wb_ref = grey(0.3),
+                 wb_bf = "#56B4E9", wb_v3f = "#E69F00", wb_v4 = "#0072B2",
+                 wb_v4_class = "#CC79A7", wb_v5 = "#009E73")
 llin_pyrethroids <- c("Alpha-cypermethrin", "Deltamethrin", "Permethrin")
 output_dir <- "outputs/species_runs/regions"
 figure_dir <- "figures/species_runs/regions"
@@ -229,10 +233,13 @@ current_note <- function(r) {
   at <- trends %>% filter(region == r, year %in% 2019:2024) %>%
     group_by(label) %>% summarise(mean = mean(mean), .groups = "drop")
   observed <- points %>% filter(region == r, year %in% 2019:2024)
-  sprintf("2019-2024 mean of the lines: %s",
-          paste(sprintf("<span style='color:%s'>**%s** %.0f%%</span>",
-                        fit_colours[as.character(at$label)], at$label,
-                        100 * at$mean), collapse = ", "))
+  keys <- sprintf("<span style='color:%s'>**%s** %.0f%%</span>",
+                  fit_colours[as.character(at$label)], at$label,
+                  100 * at$mean)
+  # three to a line, so that more than four models fit the panel
+  lines <- split(keys, ceiling(seq_along(keys) / 3))
+  sprintf("2019-2024 mean of the lines:<br>%s",
+          paste(vapply(lines, paste, "", collapse = ", "), collapse = "<br>"))
 }
 trend_panel <- function(r) {
   counts <- region_counts[region_counts$region == r, ]
