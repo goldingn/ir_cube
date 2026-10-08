@@ -1,5 +1,6 @@
-# The fits of the species model (#47) and its reference, full data only. Run
-# on RunPod (docker/README.md), one fit per pod.
+# The fits of the species model (#47) and its reference, full data only, and
+# of V5 with a fixed range, full and forecasting folds. Run on RunPod
+# (docker/README.md), one fit per pod.
 #
 #   Rscript R/species_runs.R [code ref] [set]
 #
@@ -7,8 +8,8 @@
 # outputs/species_runs/pods.json, the create-pod body of each
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
-# default, species_runs); for the set "wb" (wb_runs, below),
-# jobs_wb.csv and pods_wb.json. The fits:
+# default, species_runs); for the sets "wb" and "v5r" (wb_runs, v5r_runs,
+# below), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
 #   sp_v1         V1: the species model, no floors
@@ -139,13 +140,60 @@ wb_runs <- rbind(
              inits = species_runs$inits[match(wb_copies, species_runs$label)],
              row.names = NULL))
 
-# the sets of fits, by name
-run_sets <- list(species = species_runs, wb = wb_runs)
+# The set "v5r" (v5r_runs): V5 with the range of both smooths fixed at 1,500
+# km (smooth_options(range = 1.5), R/latent_smooth.R; the basis set for it,
+# 164 functions), each smooth's sd estimated with its PC prior, with the
+# beta-binomial (bb) and the weighted binomial (wb) likelihood, the full fit
+# and the temporal forecasting folds from 2014 and 2018 (fc2014, fc2018;
+# R/run_one_fold.R):
+#   v5r_bb_full, v5r_wb_full, v5r_bb_fc2014, v5r_wb_fc2014, v5r_bb_fc2018,
+#   v5r_wb_fc2018
+# The range is fixed because V5's fitted ranges (500-650 km) piled against
+# the basis's limit; 1,500 km is the spatial correlation range of recent
+# pyrethroid mortality (1,230 km [840, 1,800]) and of block plateaus (1,500
+# km [1,100, 2,000]; R/plateau_range.R). Every chain starts from the
+# low-floor initial values: in the V5 fits, the chains from the high-floor
+# ones found a mode 125 log-posterior units lower. With the default sampler
+# of #48. V5r's gradient took 0.98 (bb) and 0.94 (wb) times the default
+# model's (4 chains, 8 threads, 9 October 2026; as wb_v5's, within the
+# timing noise): about 45-47 ms on the default pod, and for 3,500 iterations
+# of 45 leapfrog steps about 2.0 h (wb_ref, at 0.90, sampled in 1.9 h), so
+# about 2.3-2.5 h and $0.70 a pod with setup, predictions and saving.
+v5r_options <- function(likelihood) {
+  sprintf(paste("dynamical_model_options(mortality_floor = TRUE,",
+                "floor_prior = c(1, 4),",
+                "smooth = smooth_options(selection = TRUE, floor = \"class\",",
+                "shear = FALSE, floor_intercepts = \"class\", kernel = \"se\",",
+                "c = 2, range = 1.5, basis_range = 1.5,",
+                "sd_prior = c(1, 0.05)), likelihood = \"%s\")"),
+          likelihood)
+}
+v5r_fits <- data.frame(fit = c("full", "fc2014", "fc2018"),
+                       job = c("full", "fold temporal_forecasting 2014",
+                               "fold temporal_forecasting 2018"))
+v5r_likelihoods <- c(bb = "beta_binomial", wb = "weighted_binomial")
+v5r_runs <- merge(data.frame(short = names(v5r_likelihoods),
+                             likelihood = unname(v5r_likelihoods)),
+                  v5r_fits, by = NULL)
+v5r_runs <- v5r_runs[order(match(v5r_runs$fit, v5r_fits$fit),
+                           match(v5r_runs$short, names(v5r_likelihoods))), ]
+v5r_runs <- data.frame(
+  name = sprintf("v5r_%s_%s", v5r_runs$short, v5r_runs$fit),
+  label = sprintf("V5r_%s_%s", v5r_runs$short, v5r_runs$fit),
+  options = v5r_options(v5r_runs$likelihood),
+  inits = "temporary/inits_floor_low.RDS",
+  job = v5r_runs$job,
+  row.names = NULL)
 
-# One row per pod job, with its environment (docker/README.md)
+# the sets of fits, by name
+run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs)
+
+# One row per pod job, with its environment (docker/README.md): the full fit,
+# or the fold in the runs' column job, if they have one
 species_run_jobs <- function(code_ref, threads = 8, runs = species_runs) {
   jobs <- runs
-  jobs$JOB <- sprintf("%s full --threads %d", jobs$name, threads)
+  if (is.null(jobs$job)) jobs$job <- "full"
+  jobs$JOB <- sprintf("%s %s --threads %d", jobs$name, jobs$job, threads)
   jobs$CODE_REF <- code_ref
   jobs$IR_CUBE_MODEL_OPTIONS <- jobs$options
   jobs$IR_CUBE_INITS <- jobs$inits
@@ -192,7 +240,7 @@ if (sys.nframe() == 0) {
     check_dynamical_model_options(eval(str2lang(expression)))
   }
   inputs <- c(arabiensis_fraction_file, kdr_total_file,
-              if (set == "wb") replicate_rho_file,
+              if (set %in% c("wb", "v5r")) replicate_rho_file,
               unlist(strsplit(runs$inits[nzchar(runs$inits)], ",")))
   missing <- inputs[!file.exists(inputs)]
   if (length(missing) > 0) {
