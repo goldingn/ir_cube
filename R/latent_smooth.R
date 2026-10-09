@@ -18,6 +18,10 @@
 # settings ---------------------------------------------------------------------
 
 # Settings of the latent smooths, for dynamical_model_options(smooth = ).
+# The defaults are V5h's (#47), the default model's: the range fixed at
+# 1,500 km and a half-normal prior of scale 0.5 on each smooth's sd. V5 is
+# smooth_options(range = NULL, sd_prior = c(1, 0.05)), and V5r
+# smooth_options(sd_prior = c(1, 0.05)).
 #   selection         the smooth u_s(x) of the strength of selection: the
 #                     cumulative log fitness is multiplied by exp(u_s(x))
 #                     (outer_mortality(), R/dynamical_model.R). TRUE (the
@@ -51,27 +55,29 @@
 #   m                 the number of basis functions per dimension (x, y), or
 #                     NULL (the default) for the rule of Riutort-Mayol et al.
 #                     at range basis_range (smooth_box())
-#   range             the range rho of both smooths, in 1,000 km, fixed; or
-#                     NULL (the default) to estimate each smooth's with
-#                     range_prior. A fixed range leaves no range variable in
-#                     the model: the spectral weights use it as a constant.
-#                     V5r fixes it at 1.5: the spatial correlation range of
-#                     recent pyrethroid mortality is 1,230 km [840, 1,800],
-#                     and of block plateaus 1,500 km [1,100, 2,000]
-#                     (R/plateau_range.R)
+#   range             the range rho of both smooths, in 1,000 km, fixed: 1.5
+#                     by default (V5r, V5h); or NULL to estimate each
+#                     smooth's with range_prior (V5). A fixed range leaves no
+#                     range variable in the model: the spectral weights use
+#                     it as a constant. 1,500 km because the spatial
+#                     correlation range of recent pyrethroid mortality is
+#                     1,230 km [840, 1,800], and of block plateaus 1,500 km
+#                     [1,100, 2,000] (R/plateau_range.R)
 #   basis_range       the shortest range, in 1,000 km, the rule sets m for:
-#                     by default 1 (1,000 km), or the fixed range if there is
-#                     one; NULL for the fixed range, or else the prior's lower
-#                     range, range_prior[1] (smooth_basis_range())
+#                     the fixed range if there is one (by default 1.5), or
+#                     else 1 (1,000 km); NULL for the fixed range, or else
+#                     the prior's lower range, range_prior[1]
+#                     (smooth_basis_range())
 #   range_prior       the penalised-complexity prior of each smooth's range
 #                     rho (Fuglstad et al. 2019): P(rho < range_prior[1]) =
 #                     range_prior[2], rho in 1,000 km; unused with a fixed
 #                     range
-#   sd_prior          the prior of its marginal sd: c(sd_0, alpha) (the
-#                     default, c(1, 0.05)) for the penalised-complexity prior,
-#                     exponential with P(sd > sd_0) = alpha; or list(family =
+#   sd_prior          the prior of its marginal sd: list(family =
 #                     "half_normal", scale = s) for sd ~ N(0, s^2) truncated
-#                     to sd > 0 (smooth_sd_prior_family())
+#                     to sd > 0, by default with scale 0.5 (V5h); or c(sd_0,
+#                     alpha) for the penalised-complexity prior, exponential
+#                     with P(sd > sd_0) = alpha (V5 and V5r, c(1, 0.05);
+#                     smooth_sd_prior_family())
 #   init              FALSE (the default), or TRUE for a smooth u_init(x) of
 #                     the logit relative initial state (the position between
 #                     init_frac_min and 1; init_frac_constants(),
@@ -103,10 +109,11 @@ smooth_options <- function(selection = TRUE,
                            kernel = "se",
                            c = 2,
                            m = NULL,
-                           range = NULL,
+                           range = 1.5,
                            basis_range = if (is.null(range)) 1 else range,
                            range_prior = c(1.5, 0.05),
-                           sd_prior = c(1, 0.05),
+                           sd_prior = list(family = "half_normal",
+                                           scale = 0.5),
                            init = FALSE) {
   list(selection = selection,
        floor = floor,
@@ -364,14 +371,14 @@ smooth_mask_range <- function(crs = smooth_crs) {
 # corners beyond omega_max have less power than the frequencies just beyond
 # the grid along each axis, which the rule already leaves out. The basis
 # functions are ordered by frequency. A saved basis is kept, so a rebuilt fit
-# has its own. With the defaults (squared exponential, c = 2, m = (25, 20)
-# for ranges down to 1,000 km, 363 of 500 kept), the covariance the basis
-# implies at the modelled cells, centred, is within 2.4% of sd^2 of the
-# kernel's for ranges of 1,000-4,000 km (0.02% at 1,500 km), but 27% at
-# 8,000 km and 22% at 16,000 km, where the box is too narrow for the range.
-# m set at 1,500 km ((17, 14), 164 of 238 kept), as for the fixed range of
-# V5r, is within 2.3% at 1,500 km (0.8% with all 238), but 19% at 1,000 km
-# (R/check_latent_smooth.R).
+# has its own. With the squared exponential, c = 2 and m set at 1,000 km
+# (basis_range 1, as for V5's estimated range: m = (25, 20), 363 of 500
+# kept), the covariance the basis implies at the modelled cells, centred, is
+# within 2.4% of sd^2 of the kernel's for ranges of 1,000-4,000 km (0.02% at
+# 1,500 km), but 27% at 8,000 km and 22% at 16,000 km, where the box is too
+# narrow for the range. m set at 1,500 km ((17, 14), 164 of 238 kept), as
+# for the fixed range of the defaults (V5r, V5h), is within 2.3% at 1,500 km
+# (0.8% with all 238), but 19% at 1,000 km (R/check_latent_smooth.R).
 smooth_box <- function(smooth, cells, classes) {
   smooth$term_classes <- classes %in% smooth_classes
   if (!is.null(smooth$indices)) {

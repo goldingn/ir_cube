@@ -22,7 +22,9 @@ floor_names <- c("mortality_floor", "other_floor", "arabiensis_floor")
 # fits before d2dee17, 2 October 2026, used Beta(1, 9)); species, kdr and the
 # latent smooths off; with kdr, no kdr-dependent floor; the beta-binomial
 # likelihood; and no centred levels (centred_options(), #48), as the
-# hierarchy was sampled before the centred option.
+# hierarchy was sampled before the centred option. These are fixed values,
+# not the current defaults (V5h since #47), which only name the options: a
+# change of default leaves a saved fit as it was.
 # Settings of older code that the current code no longer has are dropped if
 # their values are what the current code does, and stop the script otherwise.
 complete_model_options <- function(options, floor_prior = c(1, 49)) {

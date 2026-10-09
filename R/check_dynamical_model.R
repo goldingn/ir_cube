@@ -40,16 +40,20 @@
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
 # (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
 # where p rounds to 1 at assays with survivors, and the log density is NaN)
-# e.g.
+# Without IR_CUBE_MODEL_OPTIONS, the defaults: V5h (#47), with the latent
+# smooths and the floor per class. Other models, e.g.
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(reversion = FALSE)' \
 #     Rscript R/check_dynamical_model.R
-#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(species = species_options())' \
+#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(mortality_floor = FALSE,
+#     smooth = FALSE)' Rscript R/check_dynamical_model.R  # the default before V5h
+#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(mortality_floor = FALSE,
+#     smooth = FALSE, species = species_options())' \
 #     Rscript R/check_dynamical_model.R
-#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(kdr = kdr_options())' \
-#     Rscript R/check_dynamical_model.R
-#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(mortality_floor = TRUE,
-#     floor_prior = c(1, 4), smooth = smooth_options())' \
-#     Rscript R/check_dynamical_model.R
+#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(mortality_floor = FALSE,
+#     smooth = FALSE, kdr = kdr_options())' Rscript R/check_dynamical_model.R
+#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(smooth = smooth_options(
+#     range = NULL, sd_prior = c(1, 0.05)))' \
+#     Rscript R/check_dynamical_model.R  # V5
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(
 #     likelihood = "weighted_binomial")' Rscript R/check_dynamical_model.R
 #

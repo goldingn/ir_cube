@@ -13,9 +13,9 @@
 # m[1] x m[2] grid of basis functions as well as the kept ones (smooth_box()).
 #
 #   Rscript R/check_latent_smooth.R ['<smooth options>']
-# e.g.
+# by default the default smooths (V5h's: the range fixed at 1,500 km), e.g.
 #   Rscript R/check_latent_smooth.R 'smooth_options(kernel = "matern52")'
-#   Rscript R/check_latent_smooth.R 'smooth_options(range = 1.5)'
+#   Rscript R/check_latent_smooth.R 'smooth_options(range = NULL)'  # V5's basis
 #
 # Plain R; about 1.5 GB and 1 minute.
 

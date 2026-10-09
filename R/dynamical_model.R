@@ -21,15 +21,24 @@ source("R/windowed_hmc.R")
 
 # model options ------------------------------------------------------------
 
-# Switches for model terms. The defaults (population d_half 270 in
-# selection_design(), no mortality floor; #37) are not those of the fits
+# Switches for model terms. The defaults are V5h (#47): population d_half 270
+# in selection_design(); a mortality floor per insecticide class, its prior
+# matched to Beta(1, 4), shifted by a latent smooth for the pyrethroids and
+# DDT; a latent smooth of the strength of selection for every class; both
+# smooths at a fixed range of 1,500 km, each sd with a half-normal prior of
+# scale 0.5 (smooth_options()); and the beta-binomial likelihood. They are
+# not those of the fits before V5h (#37: no floor, no smooths), nor of those
 # before #37 (d_half 50, an estimated floor). A fit's own options are saved
-# with it (model_options), and the scripts that use a fit take them from there.
-#   mortality_floor   TRUE for an estimated floor on bioassay mortality, the
-#                     mortality of a fully resistant population (#14), or
-#                     FALSE for none
+# with it (model_options), and the scripts that use a fit take them from
+# there (complete_model_options(), R/species_fit_helpers.R).
+#   mortality_floor   TRUE (the default) for an estimated floor on bioassay
+#                     mortality, the mortality of a fully resistant
+#                     population (#14), or FALSE for none
 #   floor_prior       the Beta shape parameters of the prior of the floor:
-#                     Beta(1, 49) by default (dynamical_variables())
+#                     Beta(1, 4) by default (Beta(1, 49) before V5h;
+#                     dynamical_variables()); with the smooths, the normal
+#                     prior of each class's logit floor intercept has its
+#                     logit's mean and sd
 #   init_covariates   names of static covariates of the initial state, from
 #                     init_covariate_names(selection_columns), or NULL for
 #                     none (#19)
@@ -44,18 +53,19 @@ source("R/windowed_hmc.R")
 #                     for An. arabiensis and one for the other members, mixed
 #                     at each bioassay by its arabiensis share (#47). With it,
 #                     species_options() sets the floors of both species, and
-#                     mortality_floor must be FALSE
+#                     mortality_floor and smooth must be FALSE
 #   kdr               FALSE (the default) for no kdr covariate;
 #                     kdr_options() (R/kdr_covariate.R) for the map of total
 #                     kdr as a covariate of the strength of selection and the
-#                     fitness cost, with or without the species model (#47)
-#   smooth            FALSE (the default) for no latent smooths;
-#                     smooth_options() (R/latent_smooth.R) for latent spatial
-#                     smooths of the strength of selection and of the
-#                     mortality floor, in place of the kdr covariate (V5,
-#                     #47). Not with the species model or the kdr covariate;
-#                     with mortality_floor = TRUE, the floor is per class by
-#                     default (smooth_options(floor_intercepts = )). With
+#                     fitness cost, with or without the species model (#47);
+#                     needs smooth = FALSE
+#   smooth            smooth_options() (the default; R/latent_smooth.R) for
+#                     latent spatial smooths of the strength of selection and
+#                     of the mortality floor, in place of the kdr covariate
+#                     (V5, #47), or FALSE for none. Not with the species model
+#                     or the kdr covariate; with mortality_floor = TRUE, the
+#                     floor is per class by default (smooth_options(
+#                     floor_intercepts = )). With
 #                     smooth_options(init = TRUE), a third smooth, of the
 #                     initial state, with a loading per type, replaces the
 #                     hierarchy of regions and countries (no init_region_*,
@@ -74,15 +84,15 @@ source("R/windowed_hmc.R")
 #                     (centred_options()); by default the data-informed levels
 #                     (centred_options_data_informed(); #48). The same model
 #                     either way: it changes only the coordinates HMC moves in
-dynamical_model_options <- function(mortality_floor = FALSE,
-                                    floor_prior = c(1, 49),
+dynamical_model_options <- function(mortality_floor = TRUE,
+                                    floor_prior = c(1, 4),
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
                                     reversion = "estimated",
                                     species = FALSE,
                                     kdr = FALSE,
-                                    smooth = FALSE,
+                                    smooth = smooth_options(),
                                     likelihood = "beta_binomial",
                                     centred = centred_options_data_informed()) {
   list(mortality_floor = mortality_floor,
@@ -186,7 +196,8 @@ check_dynamical_model_options <- function(options) {
   check_kdr_options(options$kdr)
   if (species_on(options) && isTRUE(options$mortality_floor)) {
     stop("with the species model, the floors are set by ",
-         "species_options(floors = ); leave mortality_floor FALSE")
+         "species_options(floors = ); set mortality_floor = FALSE (TRUE by ",
+         "default)")
   }
   if (!isFALSE(kdr_floor(options)) &&
       (!isTRUE(options$mortality_floor) || species_on(options))) {
@@ -195,8 +206,9 @@ check_dynamical_model_options <- function(options) {
   }
   check_smooth_options(options$smooth)
   if (smooth_on(options) && (species_on(options) || kdr_on(options))) {
-    stop("the latent smooths (smooth_options()) replace the kdr covariate: ",
-         "leave kdr and species FALSE")
+    stop("the latent smooths (smooth_options(), on by default) replace the ",
+         "kdr covariate and the species model: set smooth = FALSE for them, ",
+         "or leave kdr and species FALSE")
   }
   if (smooth_on(options) && !isFALSE(options$smooth$floor) &&
       !isTRUE(options$mortality_floor)) {
@@ -526,12 +538,14 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # sd and inverse range with the penalised-complexity priors of
   # smooth_prior_rates(): exponential, on the inverse range because in two
   # dimensions the prior of the range rho is the density of 1 / rho for an
-  # exponential 1 / rho. With the defaults, P(rho < 1,500 km) = 0.05 and
-  # P(sd > 1) = 0.05; with smooth_options(sd_prior = list(family =
-  # "half_normal", scale = s)), sd ~ N(0, s^2) truncated to sd > 0 in place
-  # of the sd's PC prior (smooth_sd_prior_distribution()); and with the
-  # shear, its loading b ~ N(1, 0.5) (smooth_shear_prior). With a fixed range
-  # (smooth_options(range = )), there is no inverse range variable. The
+  # exponential 1 / rho. With V5's PC priors (smooth_options(range = NULL,
+  # sd_prior = c(1, 0.05))), P(rho < 1,500 km) = 0.05 and P(sd > 1) = 0.05;
+  # with smooth_options(sd_prior = list(family = "half_normal", scale = s))
+  # (the default, s = 0.5), sd ~ N(0, s^2) truncated to sd > 0 in place of
+  # the sd's PC prior (smooth_sd_prior_distribution()); and with the shear,
+  # its loading b ~ N(1, 0.5) (smooth_shear_prior). With a fixed range
+  # (smooth_options(range = ), the default), there is no inverse range
+  # variable. The
   # smooth of the initial state (smooth_options(init = TRUE)) has its sd
   # fixed at 1, and in its place a loading lambda >= 0 per type, each with
   # the sd's prior, so each type's sd of the field
@@ -943,13 +957,15 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
   # mortality_floor if there is one (so that cached values in either floor
   # mode, R/floor_mode_inits.R, start there), or else at 0.02 (#47). The
   # latent smooths start flat (raw weights 0), with sd 0.3 and range 3,000
-  # km (with the default priors, the means of sd and 1 / range are 0.33 and
-  # 1 / 4,500 km; a fixed range is no variable, so has no start), the shear
+  # km (with V5's PC priors, the means of sd and 1 / range are 0.33 and 1 /
+  # 4,500 km; a fixed range is no variable, so has no start), the shear
   # loading at its prior mean, 1, and the floor where they are 0 at the
   # cached floor too; the smooth of the initial state flat too, with every
   # type's loading 0.3 (its sd of the field), and logit_init_mean at the
   # cached value (the mean of the regions' levels in the model with the
-  # hierarchy, whose region and country variables are left out)
+  # hierarchy, whose region and country variables are left out). These
+  # starts are for variables the cache does not have: a cache made from one
+  # draw of a fit with the smooths (R/draw_inits.R) gives them all
   species_floor <- if (!is.null(cached$mortality_floor)) {
     c(cached$mortality_floor)[1]
   } else {
@@ -1142,17 +1158,20 @@ inits_levels <- list(
   init_coef = c(NA, "types"))
 
 # The cached initial values for the fits: posterior means of every variable
-# of the default model, from a 4-chain fit to the interpolation fold
-# (September 2026, before reversion was added; reversion_rate starts at
+# of the default model of the time, from a 4-chain fit to the interpolation
+# fold (September 2026, before reversion was added; reversion_rate starts at
 # 0.01), with the columns of its selection design as attribute "columns" and
 # the names of its types, classes, regions and countries as "levels". Not in
-# git: remake it from a fit's draws as in fit_model.R.
+# git: remake it from a fit's draws as in fit_model.R. The V5h fits (#47)
+# started from temporary/inits_floor_low.RDS instead (IR_CUBE_INITS).
 dynamical_inits_file <- "temporary/inits_refit.RDS"
 
 # The cached initial values the fits start from: the files in IR_CUBE_INITS,
 # comma-separated, or dynamical_inits_file if it is unset or empty. With
 # several, the chains are split between them (dynamical_chain_inits()), e.g.
-# to start chains in both mortality-floor modes (#37; R/floor_mode_inits.R)
+# to start chains in both mortality-floor modes (#37; R/floor_mode_inits.R),
+# or each chain from its own draw of a full fit (one file per chain;
+# R/draw_inits.R)
 dynamical_inits_files <- function() {
   files <- Sys.getenv("IR_CUBE_INITS")
   if (files == "") dynamical_inits_file else strsplit(files, ",")[[1]]

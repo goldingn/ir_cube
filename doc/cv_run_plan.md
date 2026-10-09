@@ -96,6 +96,18 @@ Rscript R/run_one_fold.R spatial_blocks 1 2 4 5 5
 takes a few minutes and exercises everything. Delete the resulting `.rds`
 afterwards, or the real fold will be skipped.
 
+### The default model (#47)
+
+Since #47 the defaults of `dynamical_model_options()` are V5h: population
+d½ 270; a mortality floor per insecticide class, its prior matched to
+Beta(1, 4); latent smooths (`smooth_options()`, `R/latent_smooth.R`) of the
+strength of selection, for every class, and of the logit floor, for the
+pyrethroids and DDT, at a range fixed at 1,500 km, each sd with a half-normal
+prior of scale 0.5; and the beta-binomial likelihood. Before, they were no
+floor and no smooths (#37). The pod jobs give the options in full
+(`IR_CUBE_MODEL_OPTIONS`) all the same. Its folds, and the two-stage model on
+them, are run as in `doc/v5h_cv_runbook.md`.
+
 ### Sampling settings (#25)
 
 `dynamical_mcmc_settings()` in `R/dynamical_model.R` holds them, and
@@ -111,7 +123,7 @@ class and type levels of the net use, IRS and population selection effects,
 and the type level of the overdispersion, centred
 (`centred_options_data_informed()`), which the data pin down; the crop
 effects stay non-centred. The steps were 60 to 120 before. Full fits of the
-default model (d_half 270, no floor) on the full data, the same data and
+default model of the time (d_half 270, no floor) on the full data, the same data and
 initial values, 4 chains, 2,000 + 3,000, 8 vCPU RunPod pods (cpu5c, except
 cpu3c at 62 ms per gradient for 15-30); ESS per 1,000 gradients counts the
 sampling iterations at the mean number of steps:

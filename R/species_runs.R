@@ -42,8 +42,10 @@
 #   sp_v5_floor   V5 floor: as V5, without the smooth of selection
 # sp_v5_sel and sp_v5_floor are for comparisons after V5: do not launch them
 # with it.
-# Otherwise the default options (d_half 270, reversion estimated), which the
-# option strings leave out: a change of default would change a rerun. The fits
+# Otherwise the default options of the time (#37: d_half 270, reversion
+# estimated, no floor, no smooths, the beta-binomial likelihood), which each
+# option string sets where it does not set them itself (pre_v5h_defaults), so
+# that a rerun under the defaults of V5h (#47) is the same fit. The fits
 # with floors start chains 1-2 from the low-floor mode and 3-4 from the
 # high-floor mode (IR_CUBE_INITS, dynamical_chain_inits(); with the species
 # model, both species' floors start at the cached floor, and with the kdr or
@@ -80,17 +82,34 @@
 # 42-46 ms there, and for 3,500 iterations of 45 leapfrog steps, 1.8-2.0 h
 # each, about 2.5 h and $0.70 a pod with setup and saving.
 
+# The options the species and wb fits left at their defaults, at the
+# defaults of the time (#37), before those of V5h (#47)
+pre_v5h_defaults <- list(mortality_floor = FALSE, floor_prior = c(1, 49),
+                         smooth = FALSE, likelihood = "beta_binomial")
+
+# An option string (a call of dynamical_model_options()) with the options in
+# `settings` (a named list of values) added where it does not set them, or
+# with replace = TRUE, set to them whether it does or not
+set_options <- function(expression, settings, replace = FALSE) {
+  call <- str2lang(expression)
+  stopifnot(identical(call[[1]], quote(dynamical_model_options)))
+  for (name in names(settings)) {
+    if (replace || is.null(call[[name]])) call[[name]] <- settings[[name]]
+  }
+  paste(deparse(call, width.cutoff = 500L), collapse = " ")
+}
+
 floor_mode_inits <- paste("temporary/inits_floor_low.RDS",
                           "temporary/inits_floor_high.RDS", sep = ",")
 species_floors <- "species_options(floors = TRUE, floor_prior = c(1, 4))"
 # the latent smooths of V5, in full, with the smooths on selection and the
-# floor, and the shear, as given
+# floor, and the shear, as given; the range estimated
 v5_smooth <- function(selection, floor, shear = "FALSE") {
   sprintf(paste("mortality_floor = TRUE, floor_prior = c(1, 4),",
                 "smooth = smooth_options(selection = %s, floor = %s,",
                 "shear = %s, floor_intercepts = \"class\", kernel = \"se\",",
-                "c = 2, basis_range = 1, range_prior = c(1.5, 0.05),",
-                "sd_prior = c(1, 0.05))"),
+                "c = 2, range = NULL, basis_range = 1,",
+                "range_prior = c(1.5, 0.05), sd_prior = c(1, 0.05))"),
           selection, floor, shear)
 }
 species_runs <- data.frame(
@@ -99,7 +118,7 @@ species_runs <- data.frame(
            "sp_v5_shear", "sp_v5_sel", "sp_v5_floor"),
   label = c("B_f", "V1", "V1f", "V2", "V2f", "V3", "V3f", "V4", "V4_class",
             "V5", "V5_shear", "V5_sel", "V5_floor"),
-  options = sprintf("dynamical_model_options(%s)", c(
+  options = vapply(sprintf("dynamical_model_options(%s)", c(
     "mortality_floor = TRUE, floor_prior = c(1, 4)",
     "species = species_options(floors = FALSE)",
     sprintf("species = %s", species_floors),
@@ -115,6 +134,7 @@ species_runs <- data.frame(
     v5_smooth("TRUE", "\"class\"", shear = "TRUE"),
     v5_smooth("TRUE", "FALSE"),
     v5_smooth("FALSE", "\"class\""))),
+    set_options, "", settings = pre_v5h_defaults, USE.NAMES = FALSE),
   inits = c(floor_mode_inits, "", floor_mode_inits, "", floor_mode_inits, "",
             floor_mode_inits, floor_mode_inits, floor_mode_inits,
             floor_mode_inits, floor_mode_inits, floor_mode_inits,
@@ -123,15 +143,16 @@ species_runs <- data.frame(
 # The candidate models with the weighted binomial likelihood (the set "wb"):
 # the options of each fit it copies, with likelihood = "weighted_binomial"
 weighted_binomial_options <- function(expression) {
-  stopifnot(grepl("^dynamical_model_options\\(.+\\)$", expression))
-  sub("\\)$", ", likelihood = \"weighted_binomial\")", expression)
+  set_options(expression, list(likelihood = "weighted_binomial"),
+              replace = TRUE)
 }
 wb_copies <- c(wb_bf = "B_f", wb_v3f = "V3f", wb_v4 = "V4",
                wb_v4_class = "V4_class", wb_v5 = "V5")
 wb_runs <- rbind(
   data.frame(name = "wb_ref", label = "ref_f0_wb",
-             options = paste0("dynamical_model_options(",
-                              "likelihood = \"weighted_binomial\")"),
+             options = set_options(paste0("dynamical_model_options(",
+                                          "likelihood = \"weighted_binomial\")"),
+                                   pre_v5h_defaults),
              inits = ""),
   data.frame(name = names(wb_copies),
              label = paste0(wb_copies, "_wb"),
