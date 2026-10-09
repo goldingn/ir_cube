@@ -80,7 +80,11 @@ An `--in` job takes its fit's `IR_CUBE_MODEL_OPTIONS`. For example,
 `JOB="ts_blocks1 --in blocks1 -- Rscript R/run_two_stage_folds.R spatial_blocks 1 stage_one"`.
 The steps of a second stage and their order are in each script's header.
 Loading a saved fold takes 4 to 8 GB, so on a 16 GB pod run such steps one
-at a time.
+at a time. `docker/two_stage_fold.sh` runs all the steps of the two-stage
+model on a fold, and `docker/two_stage_maps.sh` those of the two-stage maps
+on a full fit, each by `--in` with the code of a given commit, in a work
+directory under `ts_v5f/` on the volume, where the scripts are uploaded
+(`doc/v5f_cv_runbook.md`).
 
 The job runs in `jobs/<name>/` on the volume, with its own `R/`, `tmb/`,
 `temporary/` and `outputs/`, and writes `job.log`, `job.DONE` or
