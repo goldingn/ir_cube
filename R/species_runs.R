@@ -10,7 +10,7 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
 # and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -363,8 +363,10 @@ v5n_options <- function(scale) {
       sub("scale = 0.05), floor_link", sprintf("scale = %s), floor_link", scale),
           v5c_options, fixed = TRUE), fixed = TRUE)
 }
-v5n_runs <- do.call(rbind, lapply(c("0.05", "0.1", "0.2"), function(scale) {
-  tag <- sprintf("v5n%02d", round(100 * as.numeric(scale)))
+# the runs of V5n at prior scales `scales`, each tagged v5n<digits after
+# the decimal point> (v5n05 for 0.05, v5n005 for 0.005)
+v5n_set <- function(scales) do.call(rbind, lapply(scales, function(scale) {
+  tag <- paste0("v5n", sub("^0\\.", "", scale))
   data.frame(
     name = paste0(tag, c("_full", "_fc2018", "_fc2014")),
     label = paste0(toupper(substr(tag, 1, 1)), substring(tag, 2),
@@ -374,7 +376,12 @@ v5n_runs <- do.call(rbind, lapply(c("0.05", "0.1", "0.2"), function(scale) {
     job = c("full", "fold temporal_forecasting 2018",
             "fold temporal_forecasting 2014"))
 }))
-stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)))
+v5n_runs <- v5n_set(c("0.05", "0.1", "0.2"))
+# The set "v5t": V5n at tighter scales, 0.02, 0.01 and 0.005, after the 2014
+# fold still used the floor at 0.05 (the full fit and both folds at each)
+v5t_runs <- v5n_set(c("0.02", "0.01", "0.005"))
+stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
+          identical(v5n_runs$name[1:3], c("v5n05_full", "v5n05_fc2018", "v5n05_fc2014")))
 cv5f_folds <- data.frame(
   fold = c("blocks1", "blocks2", "interp", "fc2014", "fc2018"),
   job = c("fold spatial_blocks 1", "fold spatial_blocks 2",
@@ -441,7 +448,7 @@ v5f_maps <- data.frame(
 # the sets of fits, by name
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
-                 v5c = v5c_runs, v5n = v5n_runs,
+                 v5c = v5c_runs, v5n = v5n_runs, v5t = v5t_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
