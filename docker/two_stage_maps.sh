@@ -70,7 +70,8 @@ if has fit; then
     }, integer(1))
     order_k <- order(-n)
     a <- rep_len(c(TRUE, FALSE, FALSE, TRUE), length(order_k))
-    cat(paste(order_k[a], collapse = ","), paste(order_k[!a], collapse = ","))
+    cat(paste(order_k[a], collapse = ","), paste(order_k[!a], collapse = ","),
+        "\n")
   ')
   say "fit queue a: $queue_a; queue b: $queue_b"
   run_queue() {

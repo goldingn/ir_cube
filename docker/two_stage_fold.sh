@@ -64,7 +64,7 @@ read -r queue_a queue_b < <(Rscript -e '
   types <- order(-n)
   if (nzchar(only)) types <- types[types %in% as.integer(strsplit(only, ",")[[1]])]
   a <- rep_len(c(TRUE, FALSE, FALSE, TRUE), length(types))
-  cat(paste(types[a], collapse = ","), paste(types[!a], collapse = ","))
+  cat(paste(types[a], collapse = ","), paste(types[!a], collapse = ","), "\n")
 ' "outputs/two_stage/stage_one__$key.rds")
 say "queue a: ${queue_a:-none}; queue b: ${queue_b:-none}"
 run_queue() {

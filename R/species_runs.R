@@ -267,9 +267,9 @@ v5h_runs <- data.frame(
 # with a half-normal prior of scale 0.05 (smooth_options(
 # floor_intercept_prior = )), its options in full (v5f_options, which must
 # equal dynamical_model_options() at the commit run): the full fit and the
-# temporal forecasting fold from 2018, to test the model before the
-# cross-validation,
-#   v5f_full, v5f_fc2018
+# temporal forecasting folds from 2018 and 2014, to test the model before
+# the cross-validation, and as its forecasting folds,
+#   v5f_full, v5f_fc2018, v5f_fc2014
 # every chain from the low-floor initial values (each class's floor at a
 # flat smooth starting at the cached floor, 0.0015; dynamical_inits()), 2,000
 # warmup and 1,500 samples. On the default pod (cpu5c, 8 vCPU, $0.28/h),
@@ -280,13 +280,16 @@ v5h_runs <- data.frame(
 # V5f, the five folds of R/run_validation_folds.R,
 #   cv5f_blocks1, cv5f_blocks2  spatial blocks 1 and 2
 #   cv5f_interp                 spatial interpolation
-#   cv5f_fc2014, cv5f_fc2018    forecasting from 2014 and from 2018
+#   v5f_fc2014, v5f_fc2018      forecasting from 2014 and from 2018: the
+#                               test set's jobs, so not in "cv5f"
 # from the low-floor initial values, as the test jobs; and as a fallback, if
-# the test fold does not converge, cv5f_warm_<fold>, chain i from draw i of
+# the test fold does not converge, all five as cv5f_warm_<fold>
+# (blocks1, blocks2, interp, fc2014, fc2018), chain i from draw i of
 # the full fit v5f_full (R/draw_inits.R: temporary/inits_v5f_draw1.RDS to
 # draw4.RDS, one draw from each of its chains, spread along the pyrethroid
 # floor at a flat smooth), so 4 chains. About 1-1.6 h a fold (V5h's 2014
-# fold took 0.95 h), plus the pull: about $2.50 for five pods.
+# fold took 0.95 h), plus the pull: about $1.50 for the three pods of
+# "cv5f", $2.50 for the five of "cv5f_warm".
 #
 # The sets "ts_cv5f" and "ts_cv5f_warm" (cv5f_two_stage()): the two-stage
 # model on each fold of the set, with docker/two_stage_fold.sh, run by --in
@@ -325,36 +328,55 @@ cv5f_draw_inits <- paste(sprintf("%s%i.RDS",
                                  1:4),
                          collapse = ",")
 v5f_runs <- data.frame(
-  name = c(v5f_full_name, "v5f_fc2018"),
-  label = c("V5f_full", "V5f_fc2018"),
+  name = c(v5f_full_name, "v5f_fc2018", "v5f_fc2014"),
+  label = c("V5f_full", "V5f_fc2018", "V5f_fc2014"),
   options = v5f_options,
   inits = low_floor_inits,
-  job = c("full", "fold temporal_forecasting 2018"))
+  job = c("full", "fold temporal_forecasting 2018",
+          "fold temporal_forecasting 2014"))
 cv5f_folds <- data.frame(
   fold = c("blocks1", "blocks2", "interp", "fc2014", "fc2018"),
   job = c("fold spatial_blocks 1", "fold spatial_blocks 2",
           "fold spatial_interpolation all",
           "fold temporal_forecasting 2014", "fold temporal_forecasting 2018"))
+# the forecasting folds of the cross-validation are the test set's jobs
+# (v5f_fc2014 was launched with the test fits), so "cv5f" has the other
+# three; the warm start, if needed, refits all five
+cv5f_test_folds <- c(fc2014 = "v5f_fc2014", fc2018 = "v5f_fc2018")
 cv5f_runs <- function(warm = FALSE) {
   prefix <- if (warm) paste0(cv5f_name, "_warm") else cv5f_name
+  folds <- if (warm) cv5f_folds else
+    cv5f_folds[!cv5f_folds$fold %in% names(cv5f_test_folds), ]
   data.frame(
-    name = sprintf("%s_%s", prefix, cv5f_folds$fold),
-    label = sprintf("V5f%s_%s", if (warm) "_warm" else "", cv5f_folds$fold),
+    name = sprintf("%s_%s", prefix, folds$fold),
+    label = sprintf("V5f%s_%s", if (warm) "_warm" else "", folds$fold),
     options = v5f_options,
     inits = if (warm) cv5f_draw_inits else low_floor_inits,
-    job = cv5f_folds$job,
+    job = folds$job,
     row.names = NULL)
+}
+# the fold job of each fold of the cross-validation: those of "cv5f" and the
+# test set's forecasting folds, or those of "cv5f_warm"
+cv5f_fold_jobs <- function(warm = FALSE) {
+  if (warm) {
+    return(setNames(cv5f_runs(warm = TRUE)$name, cv5f_folds$fold))
+  }
+  standard <- cv5f_runs()
+  jobs <- setNames(standard$name,
+                   cv5f_folds$fold[!cv5f_folds$fold %in% names(cv5f_test_folds)])
+  c(jobs, cv5f_test_folds)[cv5f_folds$fold]
 }
 ts_script_dir <- "/workspace/ir_cube/ts_v5f"
 cv5f_two_stage <- function(warm = FALSE) {
-  runs <- cv5f_runs(warm)
-  data.frame(name = paste0("ts_", runs$name),
-             label = paste0("two_stage_", runs$label), options = "",
-             inits = "",
+  jobs <- cv5f_fold_jobs(warm)
+  data.frame(name = paste0("ts_", jobs),
+             label = paste0("two_stage_V5f", if (warm) "_warm" else "", "_",
+                            cv5f_folds$fold),
+             options = "", inits = "",
              job = sprintf("--in %s -- bash %s/two_stage_fold.sh %s {ref}",
-                           runs$name, ts_script_dir,
+                           jobs, ts_script_dir,
                            sub("^fold ", "", cv5f_folds$job)),
-             cpu = "cpu3c", vcpu = 16L)
+             cpu = "cpu3c", vcpu = 16L, row.names = NULL)
 }
 v5f_maps <- data.frame(name = paste0("maps_", v5f_full_name),
                        label = "two_stage_maps", options = "", inits = "",
