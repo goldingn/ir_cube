@@ -66,10 +66,7 @@ if (length(arguments) > 0) {
 stopifnot(all(file.exists(fits)))
 fit_colours <- c(ref_f0 = grey(0.3), V3f = "#E69F00", V4_class = "#CC79A7",
                  V5 = "#009E73")
-# the weighted binomial fits (#47) in the colours of the fits they copy
-fit_colours <- c(fit_colours, V4 = "#0072B2", wb_ref = grey(0.3),
-                 wb_bf = "#56B4E9", wb_v3f = "#E69F00", wb_v4 = "#0072B2",
-                 wb_v4_class = "#CC79A7", wb_v5 = "#009E73")
+fit_colours <- c(fit_colours, V4 = "#0072B2")
 llin_pyrethroids <- c("Alpha-cypermethrin", "Deltamethrin", "Permethrin")
 output_dir <- "outputs/species_runs/regions"
 figure_dir <- "figures/species_runs/regions"

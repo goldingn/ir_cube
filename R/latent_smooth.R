@@ -73,7 +73,9 @@
 #                     it as a constant. 1,500 km because the spatial
 #                     correlation range of recent pyrethroid mortality is
 #                     1,230 km [840, 1,800], and of block plateaus 1,500 km
-#                     [1,100, 2,000] (R/plateau_range.R)
+#                     [1,100, 2,000] (R/plateau_range.R of #47, on the
+#                     branch weighted-binomial: it fits blocks with the
+#                     weighted binomial likelihood, since removed)
 #   basis_range       the shortest range, in 1,000 km, the rule sets m for:
 #                     the fixed range if there is one (by default 1.5), or
 #                     else 1 (1,000 km); NULL for the fixed range, or else

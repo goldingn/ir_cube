@@ -21,14 +21,16 @@ floor_names <- c("mortality_floor", "other_floor", "arabiensis_floor")
 # the fit take the values that reproduce it: floor_prior (#47) the prior of
 # the floor before #47, Beta(1, 49), unless `floor_prior` gives another (the
 # fits before d2dee17, 2 October 2026, used Beta(1, 9)); species, kdr and the
-# latent smooths off; with kdr, no kdr-dependent floor; the beta-binomial
-# likelihood; and no centred levels (centred_options(), #48), as the
-# hierarchy was sampled before the centred option. These are fixed values,
-# not the current defaults (V5h since #47), which only name the options: a
-# change of default leaves a saved fit as it was.
+# latent smooths off; with kdr, no kdr-dependent floor; and no centred levels
+# (centred_options(), #48), as the hierarchy was sampled before the centred
+# option. These are fixed values, not the current defaults (V5h since #47),
+# which only name the options: a change of default leaves a saved fit as it
+# was.
 # Settings of older code that the current code no longer has are dropped if
-# their values are what the current code does, and stop the script otherwise.
+# their values are what the current code does, and stop the script otherwise
+# (drop_removed_options(), R/dynamical_model.R).
 complete_model_options <- function(options, floor_prior = c(1, 49)) {
+  options <- drop_removed_options(options)
   defaults <- dynamical_model_options()
   equivalent <- list(rho = "type", init_centred = "country")
   for (name in setdiff(names(options),
@@ -53,7 +55,6 @@ complete_model_options <- function(options, floor_prior = c(1, 49)) {
   if (is.null(out$species)) out$species <- FALSE
   if (is.null(out$kdr)) out$kdr <- FALSE
   if (is.null(out$smooth)) out$smooth <- FALSE
-  if (is.null(out$likelihood)) out$likelihood <- "beta_binomial"
   if (is.null(out$centred)) out$centred <- centred_options()
   # kdr options saved before the kdr-dependent floor have none
   if (is.list(out$kdr) && is.null(out$kdr$floor)) out$kdr$floor <- FALSE

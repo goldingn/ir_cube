@@ -5,13 +5,8 @@
 #   - the log likelihood: the model's log density over all the data, less that
 #     of the same model with one assay in the likelihood (which shares every
 #     prior and Jacobian term), against the plain-R betabinomial log likelihood
-#     of the other assays (with likelihood = "weighted_binomial", the weighted
-#     binomial log likelihood at the replicate rho, from the plain-R logit)
+#     of the other assays
 # and print the log density itself, for regression checks between versions.
-# Whatever the options, the weighted binomial log density of greta
-# (weighted_binomial(), R/weighted_binomial.R) is also checked against plain
-# R at a few points, from p near 0 to p near 1, with and without a floor and
-# as a mixture of two trajectories.
 # With the species model (#47) the predictions are the mixture at each assay's
 # arabiensis share, the map path is checked at the arabiensis fraction r(x),
 # and the plain-R mixture is checked to reduce to one trajectory when the
@@ -60,8 +55,6 @@
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(smooth = smooth_options(
 #     range = NULL, sd_prior = c(1, 0.05)))' \
 #     Rscript R/check_dynamical_model.R  # V5
-#   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(
-#     likelihood = "weighted_binomial")' Rscript R/check_dynamical_model.R
 #
 # Run with the greta 0.6 environment (doc/cv_run_plan.md, section 1).
 
@@ -165,18 +158,11 @@ values <- greta:::as_greta_mcmc_list(
   coda::mcmc.list(coda::mcmc(trace)),
   list(raw_draws = coda::mcmc.list(coda::mcmc(matrix(free, nrow = 1))),
        model = built$model))
-# (rho too, when it is a parameter; with the weighted binomial it is fixed)
-weighted <- !rho_estimated(model_options)
-greta_values <- if (weighted) {
-  calculate(p = built$population_mortality_vec, values = values)
-} else {
-  calculate(p = built$population_mortality_vec, rho = built$terms$rho_types,
-            values = values)
-}
-greta_values <- as.matrix(greta_values)
+greta_values <- as.matrix(calculate(p = built$population_mortality_vec,
+                                    rho = built$terms$rho_types,
+                                    values = values))
 p_greta <- greta_values[1, grep("^p\\[", colnames(greta_values))]
-rho_greta <- if (weighted) built$terms$rho_types else
-  greta_values[1, grep("^rho\\[", colnames(greta_values))]
+rho_greta <- greta_values[1, grep("^rho\\[", colnames(greta_values))]
 
 # plain R
 logit_r <- c(dynamical_logit(parameters, df, df, x_cell_years,
@@ -184,25 +170,12 @@ logit_r <- c(dynamical_logit(parameters, df, df, x_cell_years,
 p_r <- plogis(logit_r)
 rho_r <- c(parameters$rho_types)
 
-if (weighted) {
-  # the weighted binomial log likelihood at the replicate rho, its log p and
-  # log(1 - p) from the plain-R logit
-  stopifnot(identical(unname(rho_r), unname(replicate_rho(types))))
-  cat(sprintf("weighted binomial: replicate rho %s\n",
-              paste(sprintf("%s %.3f", types, rho_r), collapse = ", ")))
-  loglik_r <- weighted_binomial_log_lik(
-    df$died, df$mosquito_number,
-    log_p = plogis(logit_r, log.p = TRUE),
-    log_not_p = plogis(logit_r, lower.tail = FALSE, log.p = TRUE),
-    weight = design_effect_weight(df$mosquito_number, rho_r[df$type_id]))
-} else {
-  # the betabinomial log likelihood, parameterised as in betabinomial_p_rho()
-  # and not clamped (dbetabinom() clamps p away from 0 and 1)
-  a <- p_r * (1 / rho_r[df$type_id] - 1)
-  b <- a * (1 - p_r) / p_r
-  loglik_r <- extraDistr::dbbinom(df$died, df$mosquito_number, alpha = a,
-                                  beta = b, log = TRUE)
-}
+# the betabinomial log likelihood, parameterised as in betabinomial_p_rho()
+# and not clamped (dbetabinom() clamps p away from 0 and 1)
+a <- p_r * (1 / rho_r[df$type_id] - 1)
+b <- a * (1 - p_r) / p_r
+loglik_r <- extraDistr::dbbinom(df$died, df$mosquito_number, alpha = a,
+                                beta = b, log = TRUE)
 
 cat(sprintf("free parameters %d, log density %.10g\n", n_free, ld_all))
 p_diff <- max(abs(p_greta - p_r))
@@ -825,102 +798,5 @@ if (smooth_on(model_options)) {
     stopifnot(init_difference < 1e-9, mean_difference < 1e-8)
   }
 }
-# The weighted binomial log density of greta against plain R, at points from
-# p near 0 to p near 1 (the logit l from -50 to 50), with and without a floor,
-# and as a mixture of two trajectories (the species model). The plain-R
-# reference takes log p and log(1 - p) from plogis(), not from
-# floored_log_probs(), and the weighted binomial log likelihood from
-# dbinom() less the binomial coefficient, at the points where p and 1 - p are
-# not too near 0 or 1 for that; at l = 50 with survivors, log(1 - p) from p
-# itself would be -Inf. And its simulations (sample(), the beta-binomial at
-# the replicate rho) against the beta-binomial's mean n p and variance
-# n p (1 - p) (1 + (n - 1) rho), where p is in (0.01, 0.99).
-check_weighted_binomial_points <- function() {
-  l <- c(-50, -4, -0.5, 0, 1.5, 6, 50)
-  n <- c(20, 25, 100, 60, 50, 80, 30)
-  died <- c(0, 2, 40, 31, 41, 79, 29)
-  rho <- c(0.1, 0.25, 0.15, 0.12, 0.18, 0.09, 0.2)
-  weight <- design_effect_weight(n, rho)
-  floor <- 0.15
-  share <- c(0, 0.3, 0.5, 1, 0.8, 0.2, 0.6)
-  l_other <- l - 1.3
-  floor_other <- 0.05
-  reference <- function(l, floor = NULL) {
-    log_q <- plogis(l, log.p = TRUE)
-    log_not_q <- plogis(l, lower.tail = FALSE, log.p = TRUE)
-    if (is.null(floor)) {
-      return(list(log_p = log_q, log_not_p = log_not_q))
-    }
-    list(log_p = log(floor + (1 - floor) * plogis(l)),
-         log_not_p = log1p(-floor) + log_not_q)
-  }
-  mixed <- function(a, b) {
-    list(log_p = log(share * exp(a$log_p) + (1 - share) * exp(b$log_p)),
-         log_not_p = log(share * exp(a$log_not_p) +
-                           (1 - share) * exp(b$log_not_p)))
-  }
-  cases <- list(
-    `no floor` = list(
-      greta = function(lv) floored_log_probs(lv),
-      r = reference(l)),
-    floor = list(
-      greta = function(lv) floored_log_probs(lv, as_data(floor)),
-      r = reference(l, floor)),
-    mixture = list(
-      greta = function(lv) mixture_log_probs(
-        share, floored_log_probs(lv, as_data(floor)),
-        floored_log_probs(lv - 1.3, as_data(floor_other))),
-      r = mixed(reference(l, floor), reference(l_other, floor_other))))
-  for (name in names(cases)) {
-    case <- cases[[name]]
-    lv <- variable(dim = length(l))
-    probs <- case$greta(lv)
-    y <- as_data(died)
-    distribution(y) <- weighted_binomial(n, probs$log_p, probs$log_not_p,
-                                         weight)
-    m <- model(lv)
-    density <- m$dag$generate_log_prob_function(which = "unadjusted")
-    ld_greta <- as.numeric(density(tensorflow::tf$constant(
-      matrix(l, nrow = 1), dtype = tensorflow::tf$float64)))
-    log_lik <- weighted_binomial_log_lik(died, n, case$r$log_p,
-                                         case$r$log_not_p, weight)
-    stopifnot(all(is.finite(log_lik)))
-    # the same points' log p and log(1 - p) in greta, by calculate()
-    values <- calculate(log_p = probs$log_p, log_not_p = probs$log_not_p,
-                        values = list(lv = l))
-    probs_diff <- max(abs(c(values$log_p) - case$r$log_p),
-                      abs(c(values$log_not_p) - case$r$log_not_p))
-    # and dbinom() less the binomial coefficient, where p is not within 1e-6
-    # of 0 or 1
-    p <- exp(case$r$log_p)
-    usable <- p > 1e-6 & p < 1 - 1e-6
-    binomial <- weight * (dbinom(died, n, p, log = TRUE) - lchoose(n, died))
-    binomial_diff <- max(abs(binomial[usable] - log_lik[usable]))
-    cat(sprintf(paste0("weighted binomial, %s, %d points (l %g to %g): ",
-                       "greta %.10g, plain R %.10g, diff %.3g; log p and ",
-                       "log(1 - p) max diff %.3g; vs dbinom() at %d: max ",
-                       "diff %.3g\n"),
-                name, length(l), min(l), max(l), ld_greta, sum(log_lik),
-                ld_greta - sum(log_lik), probs_diff, sum(usable),
-                binomial_diff))
-    stopifnot(abs(ld_greta - sum(log_lik)) < 1e-9, probs_diff < 1e-12,
-              binomial_diff < 1e-9)
-    nsim <- 20000
-    simulated <- matrix(calculate(y, values = list(lv = l), nsim = nsim)$y,
-                        nsim)
-    middle <- p > 0.01 & p < 0.99
-    expected_var <- n * p * (1 - p) * (1 + (n - 1) * rho)
-    z_mean <- (colMeans(simulated) - n * p) / sqrt(expected_var / nsim)
-    var_ratio <- apply(simulated, 2, var) / expected_var
-    cat(sprintf(paste0("weighted binomial, %s: %d simulations at %d points, ",
-                       "mean z %s, variance ratio %s\n"),
-                name, nsim, sum(middle),
-                paste(sprintf("%.2f", z_mean[middle]), collapse = " "),
-                paste(sprintf("%.3f", var_ratio[middle]), collapse = " ")))
-    stopifnot(all(abs(z_mean[middle]) < 5),
-              all(abs(var_ratio[middle] - 1) < 0.08))
-  }
-}
-check_weighted_binomial_points()
 
 cat("all checks passed\n")

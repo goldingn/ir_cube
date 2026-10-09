@@ -11,8 +11,8 @@ source("R/dynamical_model.R")
 # set model_options. A fold paired with a full fit made with other options
 # needs that fit's options
 if (!exists("model_options")) {
-  model_options <- eval(str2lang(Sys.getenv("IR_CUBE_MODEL_OPTIONS",
-                                            "dynamical_model_options()")))
+  model_options <- model_options_from_string(
+    Sys.getenv("IR_CUBE_MODEL_OPTIONS", "dynamical_model_options()"))
 }
 
 # the design matrix at all unique cells and years (R/model_covariates.R)

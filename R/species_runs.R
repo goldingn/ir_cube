@@ -77,8 +77,7 @@ v5f_options <- Sys.getenv("CV5F_OPTIONS", paste(
   "shear = FALSE, floor_intercepts = \"class\", kernel = \"se\", c = 2,",
   "range = 1.5, basis_range = 1.5,",
   "sd_prior = list(family = \"half_normal\", scale = 0.5),",
-  "floor_intercept_prior = list(family = \"half_normal\", scale = 0.05)),",
-  "likelihood = \"beta_binomial\")"))
+  "floor_intercept_prior = list(family = \"half_normal\", scale = 0.05)))"))
 cv5f_name <- Sys.getenv("CV5F_NAME", "cv5f")
 v5f_full_name <- Sys.getenv("CV5F_FULL", "v5f_full")
 low_floor_inits <- "temporary/inits_floor_low.RDS"

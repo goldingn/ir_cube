@@ -33,8 +33,8 @@ years <- baseline_year - 1 + sort(unique(df$year_id))
 
 # the model terms (R/dynamical_model.R), or an R expression for them in
 # IR_CUBE_MODEL_OPTIONS (docker/run_pod_job.sh)
-model_options <- eval(str2lang(Sys.getenv("IR_CUBE_MODEL_OPTIONS",
-                                          "dynamical_model_options()")))
+model_options <- model_options_from_string(
+  Sys.getenv("IR_CUBE_MODEL_OPTIONS", "dynamical_model_options()"))
 
 # create design matrix at all unique cells and for all years, as the model
 # options' selection design asks (R/model_covariates.R)

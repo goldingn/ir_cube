@@ -19,11 +19,7 @@
 # R/species_fit_helpers.R; with USE_CHAINS, as R/species_misfit.R used for
 # V5), the predicted mortality p_i at every bioassay (dynamical_logit(),
 # R/dynamical_predictions.R, as R/species_misfit.R: with the species model,
-# the mixture at the bioassay's arabiensis share) and the draw's rho per type:
-# for a fit with the weighted binomial likelihood (#47), which has no rho
-# and is not a model of the data, the fixed replicate rho
-# (fixed_rho_types(), R/dynamical_model.R), so that its replicates are from
-# the beta-binomial at the replicate rho, the noise of repeated bioassays.
+# the mixture at the bioassay's arabiensis share) and the draw's rho per type.
 # Cached in outputs/species_runs/regions/ppc_draws_<label>.rds (recomputed
 # when the fit is newer). Per draw, one replicate of every bioassay from the
 # model's likelihood (betabinomial_p_rho(), R/functions.R, rho the intra-class
@@ -132,10 +128,7 @@ stopifnot(fixed_rho_fit %in% labels)
 # Okabe-Ito, as R/region_diagnostics.R
 fit_colours <- c(ref_f0 = grey(0.3), V3f = "#E69F00", V4_class = "#CC79A7",
                  V5 = "#009E73")
-# the weighted binomial fits (#47) in the colours of the fits they copy
-fit_colours <- c(fit_colours, V4 = "#0072B2", wb_ref = grey(0.3),
-                 wb_bf = "#56B4E9", wb_v3f = "#E69F00", wb_v4 = "#0072B2",
-                 wb_v4_class = "#CC79A7", wb_v5 = "#009E73")
+fit_colours <- c(fit_colours, V4 = "#0072B2")
 llin_pyrethroids <- c("Alpha-cypermethrin", "Deltamethrin", "Permethrin")
 windows <- list(`2010-2015` = 2010:2015, `2016-2018` = 2016:2018,
                 `2019-2024` = 2019:2024)
@@ -180,8 +173,6 @@ fit_draws <- function(label, file) {
   )[["elapsed"]]
   report("%s: predictions at %d LLIN-pyrethroid bioassays x %d draws in %.0f s",
          label, ncol(logit), nrow(logit), time)
-  # the fit's rho, or with the weighted binomial, the replicate rho in every
-  # draw (dynamical_parameter_draws())
   rho <- parameters$rho_types
   colnames(rho) <- fit$types
   out <- list(bioassays = as.data.frame(df[llin, c("cell", "year_start",

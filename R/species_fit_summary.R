@@ -6,8 +6,7 @@
 # For the key parameters: beta_overall, beta_class (overall plus the class
 # deviation, per covariate and class, by the model's own transforms,
 # dynamical_terms(), whichever levels are centred, #48), sigma_overall,
-# sigma_class, rho per type (with the weighted binomial likelihood the fixed
-# replicate rho, constant), the reversion rates, and those of #47 (gamma_*, delta_*, the floors,
+# sigma_class, rho per type, the reversion rates, and those of #47 (gamma_*, delta_*, the floors,
 # the latent smooths' sd and range, and shear loading, and with the smooth of
 # the initial state (smooth_options(init = TRUE)) its loading per type,
 # smooth_loading_init[<type>]),
@@ -68,8 +67,7 @@ key_parameters <- function(chain) {
   sigma_class <- matrix(p("sigma_class"), n)
   # the class effects and rho per type, by dynamical_terms(): from the
   # standard normal deviations of the non-centred levels and the effects
-  # themselves of the centred ones (#48); with the weighted binomial
-  # likelihood, rho is the fixed replicate rho
+  # themselves of the centred ones (#48)
   variables <- lapply(setNames(nm = unique(sub("\\[.*$", "", colnames(m)))),
                       extract_parameter, draws_matrix = m)
   terms <- dynamical_terms_draws(variables, fit$classes_index, fit$types,

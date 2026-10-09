@@ -17,13 +17,7 @@
 #               [1e-12, 1 - 1e-12]), for PSIS-LOO (loo::loo(), with relative
 #               efficiencies by chain). Bioassays are clustered (repeats at a
 #               site and year, sites in a study), so leaving one out tests
-#               interpolation, not prediction to new places or years. For a
-#               fit with the weighted binomial likelihood (#47), its own log
-#               likelihood, the binomial weighted by the design effect at
-#               the fixed replicate rho (weighted_binomial_log_lik(),
-#               R/weighted_binomial.R): not a normalised density of the
-#               data, so its elpd_loo is NOT comparable with a beta-binomial
-#               fit's, only with other weighted binomial fits' at the same rho
+#               interpolation, not prediction to new places or years
 # Writes
 #   outputs/species_runs/misfit/<label>_bioassays.csv  misfit per bioassay
 #   outputs/species_runs/misfit/<label>_regions.csv    mean pyrethroid misfit
@@ -129,22 +123,10 @@ print(as.data.frame(regions), digits = 3)
 
 # pointwise log likelihood and PSIS-LOO ------------------------------------------------
 
-# rho per type in each draw: the fit's, or with the weighted binomial, the
-# fixed replicate rho (fixed_rho_types(), R/dynamical_model.R)
 rho <- parameters$rho_types
-weighted <- !rho_estimated(fit$options)
 loglik <- matrix(NA_real_, nrow(p), ncol(p))
 for (d in seq_len(nrow(p))) {
   rd <- rho[d, df$type_id]
-  if (weighted) {
-    # from the logit, which keeps log p and log(1 - p) precise near 0 and 1
-    loglik[d, ] <- weighted_binomial_log_lik(
-      df$died, df$mosquito_number,
-      log_p = plogis(logit[d, ], log.p = TRUE),
-      log_not_p = plogis(logit[d, ], lower.tail = FALSE, log.p = TRUE),
-      weight = design_effect_weight(df$mosquito_number, rd))
-    next
-  }
   pd <- clamp(p[d, ])
   a <- pd * (1 / rd - 1)
   loglik[d, ] <- extraDistr::dbbinom(df$died, df$mosquito_number, alpha = a,
@@ -169,11 +151,6 @@ print(loo::pareto_k_table(loo_fit))
 cat("bioassays are clustered (repeats at a site and year, sites in a study):",
     "leave-one-out tests interpolation, and the elpd differences between fits",
     "are optimistic about their precision\n")
-if (weighted) {
-  cat(label, "has the weighted binomial likelihood: its elpd_loo is of the",
-      "design-effect weighted binomial log likelihood, not comparable with",
-      "the beta-binomial fits'\n")
-}
 
 
 # maps --------------------------------------------------------------------------------

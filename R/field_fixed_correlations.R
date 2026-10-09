@@ -320,7 +320,7 @@ correlation_plot <- ggplot(plot_draws, aes(x = exp(field_value),
        title = "LLIN-use selection on the pyrethroids against the latent smooths",
        subtitle = paste("Posterior draws (600 per chain); text: correlation",
                         "of the logs within chains, averaged over each fit's",
-                        "chains. V5: chains 1-2; wb_v5 not converged"))
+                        "chains (USE_CHAINS)"))
 ggsave(file.path(figure_dir, "field_fixed_correlations.png"),
        correlation_plot, bg = "white", width = 11, height = 8.5)
 report("wrote %s", file.path(figure_dir, "field_fixed_correlations.png"))
