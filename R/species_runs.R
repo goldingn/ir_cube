@@ -8,8 +8,9 @@
 # outputs/species_runs/pods.json, the create-pod body of each
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
-# default, species_runs); for the sets "wb", "v5r" and "v5i" (wb_runs,
-# v5r_runs, v5i_runs, below), jobs_<set>.csv and pods_<set>.json. The fits:
+# default, species_runs); for the sets "wb", "v5r", "v5i" and "v5h"
+# (wb_runs, v5r_runs, v5i_runs, v5h_runs, below), jobs_<set>.csv and
+# pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
 #   sp_v1         V1: the species model, no floors
@@ -211,9 +212,29 @@ v5i_runs <- data.frame(
   job = v5r_fits$job,
   row.names = NULL)
 
+# The set "v5h" (v5h_runs): V5r with the beta-binomial likelihood and each
+# smooth's sd with the half-normal prior of scale 0.5 in place of the PC
+# prior (smooth_options(sd_prior = list(family = "half_normal", scale =
+# 0.5)), R/latent_smooth.R), under which V5r's sds ran to 4-13; the full fit
+# and the temporal forecasting folds from 2014 and 2018:
+#   v5h_bb_full, v5h_bb_fc2014, v5h_bb_fc2018
+# Every chain starts from the low-floor initial values, as V5r's. With the
+# default sampler of #48. The model is V5r's but for the prior of two
+# scalars, so about V5r's time and cost, 2.3-2.5 h and $0.70 a pod.
+v5h_options <- sub("sd_prior = c(1, 0.05)",
+                   "sd_prior = list(family = \"half_normal\", scale = 0.5)",
+                   v5r_options("beta_binomial"), fixed = TRUE)
+v5h_runs <- data.frame(
+  name = sprintf("v5h_bb_%s", v5r_fits$fit),
+  label = sprintf("V5h_bb_%s", v5r_fits$fit),
+  options = v5h_options,
+  inits = "temporary/inits_floor_low.RDS",
+  job = v5r_fits$job,
+  row.names = NULL)
+
 # the sets of fits, by name
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
-                 v5i = v5i_runs)
+                 v5i = v5i_runs, v5h = v5h_runs)
 
 # One row per pod job, with its environment (docker/README.md): the full fit,
 # or the fold in the runs' column job, if they have one
