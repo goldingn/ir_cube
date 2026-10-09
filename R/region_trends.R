@@ -14,7 +14,7 @@
 # and insecticide with bioassays in a region, weighted by its share of the
 # region's mosquitoes tested over the whole series (constant over the years),
 # as figure 1 (R/fig_temporal_preds_data.R) and R/species_compare.R weight
-# them; with the species model, of the whole complex at r(x). Each country's
+# them. Each country's
 # region is in outputs/species_runs/regions/regions.csv. Cached in
 # outputs/species_runs/regions/trends_<label>.rds (recomputed when the fit
 # is newer or the regions differ).
@@ -108,10 +108,9 @@ summarise_fit <- function(label, file) {
   pairs <- distinct(weights, cell_id, type_id, cell)
   rows <- pairs[rep(seq_len(nrow(pairs)), n_times), ]
   rows$year_id <- rep(seq_len(n_times), each = nrow(pairs))
-  share <- prediction_share(fit$options, rows$cell)
   time <- system.time(
     p <- plogis(dynamical_logit(parameters, rows, df, fit$x_cell_years,
-                                fit$cell_years_index, share = share))
+                                fit$cell_years_index))
   )[["elapsed"]]
   report("%s: predictions at %d cell-insecticide-years from %d draws in %.0f s",
          label, nrow(rows), nrow(p), time)

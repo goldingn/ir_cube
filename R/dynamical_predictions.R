@@ -12,17 +12,10 @@
 #
 # the state for year index t having had the fitness of years 1..t applied.
 # The logit draws are of predicted mortality: q_t, or with a mortality floor
-# f, f + (1 - f) q_t. With the species model (#47), the one cumulative log
-# fitness gives the states of the other members of the complex and of
-# arabiensis (outer_mortality() in R/dynamical_model.R), and the
-# predictions are of their mixture at a share of arabiensis: each bioassay's
-# own (arabiensis_share(), R/species.R) in dynamical_logit(), and one given
-# per cell in dynamical_logit_cells() (r(x) for the whole complex, 0 or 1 for
-# one species). With the kdr covariate (#47), each trajectory's cumulative log
-# fitness and reversion are multiplied by its factors at the cell's kdr, by
-# the same outer form, and with the latent smooths (V5), the cumulative log
-# fitness by exp(u_s(x)) and the floor shifted by u_f(x) at the cell, from the
-# basis at the cell (prediction_basis(), R/latent_smooth.R).
+# f, f + (1 - f) q_t. With the latent smooths (V5, #47), the cumulative log
+# fitness is multiplied by exp(u_s(x)) and the floor shifted by u_f(x) at the
+# cell (outer_mortality() in R/dynamical_model.R), from the basis at the cell
+# (prediction_basis(), R/latent_smooth.R).
 
 source("R/dynamical_model.R")
 # thin_draws() and max_draws
@@ -150,17 +143,9 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   mortality_floor      draws (NULL for none)
 #   kappa_type           draws x n_types, the reversion kappa (<= 0; NULL for
 #                        none, see reversion_kappa())
-#   gamma_selection, gamma_cost, other_floor, arabiensis_floor
-#                        draws, with the species model (#47; NULL without it,
-#                        and gamma_cost and the floors NULL when not in the
-#                        model; see dynamical_terms())
-#   kdr_slopes           the slopes of the kdr covariate (#47; kdr_slope_names),
-#                        a list of draws each, empty without it
-#   floor_intercept      draws x 1 or classes, and
-#   floor_kdr            draws, the kdr-dependent floor (#47; NULL without
-#                        it; kdr_floor_value()); floor_intercept is that of
-#                        the floor of the latent smooths too (with the
-#                        half-normal prior of V5f, logit(floor_flat))
+#   floor_intercept      draws x 1 or classes, the logit floor of the latent
+#                        smooths where u_f is 0 (with the half-normal prior
+#                        of V5f, logit(floor_flat); NULL without it)
 #   smooth_weights       the weights of the latent smooths' basis functions
 #                        and centring terms (V5; smooth_weight_terms()), a
 #                        list of draws x (basis functions + 1), named by
@@ -188,10 +173,8 @@ dynamical_parameter_draws <- function(fold,
               draws_matrix = draws_matrix)
   stopifnot(!is.null(options),
             identical(dim(v$logit_init_mean), c(n_draws, n_types)),
-            species_on(options) == !is.null(v$gamma_selection),
-            kdr_on(options) ==
-              any(kdr_slope_names %in% names(v)),
-            smooth_on(options) == any(grepl("^smooth_raw_", names(v))))
+            (length(smooth_kinds(options)) > 0) ==
+              any(grepl("^smooth_raw_", names(v))))
   # the logit floor where u_f is 0, from the floor itself where the model
   # samples that (floor_flat, V5f; smooth_floor_intercept()), as a variable
   # for the scripts that read it there
@@ -218,19 +201,9 @@ dynamical_parameter_draws <- function(fold,
          c(v$mortality_floor)
        },
        kappa_type = if (reversion) matrix(terms$kappa_type, n_draws),
-       gamma_selection = if (!is.null(v$gamma_selection)) {
-         c(v$gamma_selection)
-       },
-       gamma_cost = if (!is.null(v$gamma_cost)) c(v$gamma_cost),
-       other_floor = if (!is.null(v$other_floor)) c(v$other_floor),
-       arabiensis_floor = if (!is.null(v$arabiensis_floor)) {
-         c(v$arabiensis_floor)
-       },
-       kdr_slopes = lapply(v[intersect(kdr_slope_names, names(v))], c),
        floor_intercept = if (!is.null(v$floor_intercept)) {
          matrix(v$floor_intercept, n_draws)
        },
-       floor_kdr = if (!is.null(v$floor_kdr)) c(v$floor_kdr),
        smooth_weights = smooth_weight_terms(v, options),
        init_min = init_frac_constants(types)$min,
        x_cells_init = select_init_covariates(fold$x_cells_init, options),
@@ -251,11 +224,9 @@ subset_draws <- function(parameters, draws) {
   }
   for (name in c("effect_type", "logit_init_relative", "init_coef",
                  "rho_types", "mortality_floor", "kappa_type",
-                 "gamma_selection", "gamma_cost", "other_floor",
-                 "arabiensis_floor", "floor_intercept", "floor_kdr")) {
+                 "floor_intercept")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
-  parameters$kdr_slopes <- lapply(parameters$kdr_slopes, rows)
   parameters$smooth_weights <- lapply(parameters$smooth_weights, rows)
   parameters$variables <- lapply(parameters$variables, rows)
   parameters$n_draws <- length(draws)
@@ -287,53 +258,15 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
 #   years_keep  year indices to return
 #   x_init      cells x initial-state covariates (named columns), for fits
 #               with them
-#   share       with the species model (#47) only, and needed there: the
-#               arabiensis share of the predictions at each cell (length 1
-#               or cells): r(x) for the whole complex (prediction_share()),
-#               0 for the other members or 1 for arabiensis
-#   kdr         with the kdr covariate (#47) only, and needed there: the
-#               standardised kdr at each cell, cells x kdr_bands()
-#               (prediction_kdr())
 #   basis       with the latent smooths (V5) only, and needed there: their
 #               basis at each cell, cells x (basis functions + 1)
 #               (prediction_basis())
-# Returns a list named by years_keep of draws x cells logit mortality.
+# Returns a list named by years_keep of draws x cells logit mortality. With
+# the latent smooths, this is the outer form of outer_mortality()
+# (R/dynamical_model.R): the cumulative log fitness multiplied by exp(u_s(x))
+# and the floor shifted by u_f(x) at each cell.
 dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
-                                  x_init = NULL, share = NULL, kdr = NULL,
-                                  basis = NULL) {
-  mix_trajectories(dynamical_trajectories(parameters, k, logit_init, x,
-                                          years_keep, x_init, kdr, basis),
-                   share)
-}
-
-# The logit mortality, by year, of the output of dynamical_trajectories() at
-# the arabiensis share `share` (as dynamical_logit_cells() takes it): the
-# trajectories themselves without the species model
-mix_trajectories <- function(trajectories, share) {
-  if (!is.list(trajectories[[1]])) {
-    stopifnot(is.null(share))
-    return(trajectories)
-  }
-  if (is.null(share)) {
-    stop("the species model (#47) predicts at an arabiensis share: give ",
-         "dynamical_logit_cells() a share, e.g. prediction_share()")
-  }
-  lapply(trajectories, function(year) {
-    mixture_logit(year$arabiensis, year$other, share)
-  })
-}
-
-# The recursion of dynamical_logit_cells(), returning a list named by
-# years_keep of draws x cells logit mortality, or with the species model, of
-# lists of two of them, "other" (the other members of the complex) and
-# "arabiensis", whose log fitness from selection is the other members' times
-# exp(gamma_selection) and reversion kappa theirs times exp(gamma_cost); each
-# species has its own mortality floor, if any. With the species model, the
-# kdr covariate or the latent smooths, this is the outer form of
-# outer_mortality() (R/dynamical_model.R): one cumulative log fitness serves
-# every trajectory.
-dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
-                                   x_init = NULL, kdr = NULL, basis = NULL) {
+                                  x_init = NULL, basis = NULL) {
   n_cells <- dim(x)[1]
   n_draws <- parameters$n_draws
   stopifnot(ncol(logit_init) == n_cells, nrow(logit_init) == n_draws,
@@ -341,10 +274,8 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
 
   effect <- matrix(parameters$effect_type[, , k], nrow = n_draws)
   kappa <- parameters$kappa_type[, k]
-  species <- species_on(parameters$options)
-  outer <- species || kdr_on(parameters$options) ||
-    smooth_on(parameters$options)
-  if (smooth_on(parameters$options)) {
+  outer <- smooth_on(parameters$options)
+  if (outer) {
     if (is.null(basis)) {
       stop("the latent smooths (V5) need their basis at the cells: give ",
            "dynamical_logit_cells() basis, e.g. prediction_basis()")
@@ -353,33 +284,13 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
   } else {
     stopifnot(is.null(basis))
   }
-  if (kdr_on(parameters$options)) {
-    if (is.null(kdr)) {
-      stop("the kdr covariate (#47) needs the standardised kdr at the ",
-           "cells: give dynamical_logit_cells() kdr, e.g. prediction_kdr()")
-    }
-    stopifnot(nrow(kdr) == n_cells)
-  } else {
-    stopifnot(is.null(kdr))
-  }
-  # the floor of one trajectory: the constant mortality_floor, or the
-  # kdr-dependent floor at the cells, draws x cells (kdr_floor_value())
+  # the floor: the constant mortality_floor, or that of the smooths at k's
+  # class's intercept, draws x cells; and the latent smooths at the cells
+  # for type k, draws x cells, each NULL where the model or k's class has
+  # none
   floor <- parameters$mortality_floor
-  if (!isFALSE(kdr_floor(parameters$options))) {
-    class <- 1L
-    k_floor <- kdr[, "complex"]
-    if (identical(kdr_floor(parameters$options), "class")) {
-      class <- parameters$classes_index[k]
-      k_floor <- k_floor * parameters$options$kdr$floor_classes[class]
-    }
-    floor <- kdr_floor_value(parameters$floor_intercept[, class],
-                             parameters$floor_kdr, k_floor)
-  }
-  # the latent smooths at the cells for type k, draws x cells, each NULL
-  # where the model or k's class has none; and the floor of the smooths, at
-  # k's class's intercept
   smooth <- list()
-  if (smooth_on(parameters$options)) {
+  if (outer) {
     class <- parameters$classes_index[k]
     for (kind in names(parameters$smooth_weights)) {
       if (smooth_class_weight(parameters$options, kind, class) == 1) {
@@ -394,24 +305,6 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
     }
   }
   logit_init <- cell_logit_init(parameters, k, logit_init, x_init)
-  # logit mortality of one trajectory of the outer form, from `rows`
-  # (outer_logit()), with species offsets gamma (NULL for none), the kdr of
-  # `band` and the slopes named with `suffix` (kdr_slope_names), and `floor`
-  slopes <- parameters$kdr_slopes
-  trajectory <- function(rows, gamma_selection, gamma_cost, band, suffix,
-                         floor) {
-    k_band <- if (!is.null(kdr)) kdr[, band]
-    floored_logit(
-      outer_logit(rows,
-                  log_selection = outer_log_multiplier(
-                    gamma_selection,
-                    slopes[[paste0("delta_selection", suffix)]], k_band,
-                    smooth$selection),
-                  log_cost = outer_log_multiplier(
-                    gamma_cost, slopes[[paste0("delta_cost", suffix)]],
-                    k_band)),
-      floor)
-  }
   cumulative <- 0
   out <- list()
   for (t in seq_len(max(years_keep))) {
@@ -419,21 +312,13 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
     log_w <- log1p(effect %*% t(matrix(x[, t, ], nrow = n_cells)))
     cumulative <- cumulative + log_w
     if (outer) {
-      # cumulative is the log fitness alone; the multipliers are one per draw
-      # (gamma), or per draw and cell (with kdr or the latent smooths)
+      # cumulative is the log fitness alone, multiplied by exp(u_s) per draw
+      # and cell (outer_logit())
       if (t %in% years_keep) {
         rows <- list(logit_init = logit_init, cumulative = cumulative,
                      reversion = if (!is.null(kappa)) t * kappa)
-        out[[as.character(t)]] <- if (!species) {
-          trajectory(rows, NULL, NULL, "complex", "", floor)
-        } else {
-          list(other = trajectory(rows, NULL, NULL, "other", "_other",
-                                  parameters$other_floor),
-               arabiensis = trajectory(rows, parameters$gamma_selection,
-                                       parameters$gamma_cost, "arabiensis",
-                                       "_arabiensis",
-                                       parameters$arabiensis_floor))
-        }
+        out[[as.character(t)]] <- floored_logit(
+          outer_logit(rows, log_selection = smooth$selection), floor)
       }
       next
     }
@@ -454,14 +339,9 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
 # the full `df`, as in the model (dynamical_lookups()), whatever the rows'
 # country_id. Returns a draws x nrow(rows) matrix, paired with
 # thin_draws(fold$p_draws) when `parameters` are at paired_draw_index().
-# With the species model (#47), the prediction at each row is the mixture at
-# its arabiensis share, `share` (one per row, or one for all), by default the
-# bioassay's own (arabiensis_share(): the rows then need species and cell).
-# With the kdr covariate, each cell's kdr is that of its mask cell in `df`,
-# and with the latent smooths, so is each cell's basis.
+# With the latent smooths, each cell's basis is that of its mask cell in `df`.
 dynamical_logit <- function(parameters, rows, df, x_cell_years,
-                            cell_years_index, max_block = 2.5e7,
-                            share = NULL) {
+                            cell_years_index, max_block = 2.5e7) {
 
   n_draws <- parameters$n_draws
   n_times <- max(cell_years_index$year_id)
@@ -470,10 +350,8 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
   }
   cell_country <- dynamical_lookups(df)$cell_country_lookup
   stopifnot(!anyNA(cell_country[rows$cell_id]))
-  # the standardised kdr at each cell_id, NULL without the kdr covariate, and
-  # the basis of the latent smooths, NULL without them
+  # the basis of the latent smooths at each cell_id, NULL without them
   mask_cells <- df$cell[match(seq_len(max(df$cell_id)), df$cell_id)]
-  kdr_cells <- prediction_kdr(parameters$options, mask_cells)
   basis_cells <- prediction_basis(parameters$options, mask_cells)
 
   # row of x_cell_years for each (cell, year)
@@ -481,23 +359,9 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
   x_row[cbind(cell_years_index$cell_id, cell_years_index$year_id)] <-
     seq_len(nrow(cell_years_index))
 
-  # assays sharing a (cell, type, year), and with the species model a share,
-  # share a prediction, computed once
+  # assays sharing a (cell, type, year) share a prediction, computed once
   keys <- paste(rows$cell_id, rows$type_id, rows$year_id)
-  species <- species_on(parameters$options)
-  if (species) {
-    rows$share <- if (is.null(share)) {
-      arabiensis_share(rows, parameters$options)
-    } else {
-      rep_len(share, nrow(rows))
-    }
-    keys <- paste(keys, rows$share)
-  } else {
-    stopifnot(is.null(share))
-  }
-  unique_rows <- rows[!duplicated(keys),
-                      c("cell_id", "type_id", "year_id",
-                        if (species) "share")]
+  unique_rows <- rows[!duplicated(keys), c("cell_id", "type_id", "year_id")]
   result <- matrix(NA_real_, n_draws, nrow(unique_rows))
   chunk_size <- max(1, floor(max_block / (n_times * n_draws)))
 
@@ -511,27 +375,19 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
       stopifnot(!anyNA(x_index))
       x <- array(x_cell_years[as.vector(x_index), , drop = FALSE],
                  c(length(cells), max(years_keep), ncol(x_cell_years)))
-      logit <- dynamical_trajectories(
+      logit <- dynamical_logit_cells(
         parameters, k,
         matrix(parameters$logit_init_relative[, cell_country[cells], k],
                nrow = n_draws),
         x, years_keep,
         x_init = parameters$x_cells_init[cells, , drop = FALSE],
-        kdr = if (!is.null(kdr_cells)) kdr_cells[cells, , drop = FALSE],
         basis = if (!is.null(basis_cells)) {
           basis_cells[cells, , drop = FALSE]
         })
       for (t in years_keep) {
         at_t <- target[unique_rows$year_id[target] == t]
         columns <- match(unique_rows$cell_id[at_t], cells)
-        logit_t <- logit[[as.character(t)]]
-        result[, at_t] <- if (!species) {
-          logit_t[, columns, drop = FALSE]
-        } else {
-          mixture_logit(logit_t$arabiensis[, columns, drop = FALSE],
-                        logit_t$other[, columns, drop = FALSE],
-                        unique_rows$share[at_t])
-        }
+        result[, at_t] <- logit[[as.character(t)]][, columns, drop = FALSE]
       }
     }
   }

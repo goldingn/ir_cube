@@ -143,8 +143,7 @@ block_names <- c(A = "A: Senegal to Liberia, and Mali",
 # the base fit, at its posterior mean (as R/floor_selection_blocks.R) ----------------
 
 fit <- load_fit(fit_file)
-stopifnot(!species_on(fit$options), !kdr_on(fit$options),
-          isFALSE(fit$options$mortality_floor))
+stopifnot(!smooth_on(fit$options), isFALSE(fit$options$mortality_floor))
 usable <- usable_chains(fit$draws, "base")
 means <- colMeans(as.matrix(fit$draws[usable]))
 parameters <- dynamical_parameter_draws(
@@ -167,7 +166,7 @@ west <- df %>%
          window = window_of(year_start))
 stopifnot(!anyNA(west$block))
 
-# l0 and C at every bioassay, of every class, as dynamical_trajectories()
+# l0 and C at every bioassay, of every class, as dynamical_logit_cells()
 # forms them (the loop of R/floor_selection_blocks.R over all types)
 cell_country <- dynamical_lookups(df)$cell_country_lookup
 n_times <- max(fit$cell_years_index$year_id)

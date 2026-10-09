@@ -19,9 +19,7 @@
 #    insecticides weighted by their mosquitoes tested; together, a weight on
 #    each cell and insecticide proportional to its mosquitoes tested, constant
 #    over the years. This does the same within each region, from the fits'
-#    draws (dynamical_logit(), R/dynamical_predictions.R). For the species
-#    model, the prediction at a cell is that of the whole complex, the mixture
-#    at the arabiensis fraction r(x), as all_states() gives figure 1. The data
+#    draws (dynamical_logit(), R/dynamical_predictions.R). The data
 #    points are figure 1's, computed within the region: per year, died over
 #    tested with each cell reweighted to its share over the whole series, then
 #    the insecticides reweighted the same way, the point size the effective
@@ -131,8 +129,7 @@ summarise_fit <- function(label, file) {
   chosen <- even_draws(fit, n_draws, label)
   parameters <- fit_parameter_draws(fit, chosen$index)
 
-  # posterior mean mortality at every bioassay, as the fit predicts it (with
-  # the species model, the mixture at the bioassay's arabiensis share)
+  # posterior mean mortality at every bioassay, as the fit predicts it
   time <- system.time(
     p_mean <- colMeans(plogis(dynamical_logit(parameters, df, df,
                                               fit$x_cell_years,
@@ -141,17 +138,15 @@ summarise_fit <- function(label, file) {
   report("%s: mean predictions at %d bioassays from %d draws in %.0f s",
          label, nrow(df), nrow(parameters$effect_type), time)
 
-  # every year at each weighted cell and insecticide; with the species model
-  # the whole complex, at r(x)
+  # every year at each weighted cell and insecticide
   weights <- area_weights(df)
   n_times <- max(fit$cell_years_index$year_id)
   pairs <- distinct(weights, cell_id, type_id, cell)
   rows <- pairs[rep(seq_len(nrow(pairs)), n_times), ]
   rows$year_id <- rep(seq_len(n_times), each = nrow(pairs))
-  share <- prediction_share(fit$options, rows$cell)
   time <- system.time(
     p <- plogis(dynamical_logit(parameters, rows, df, fit$x_cell_years,
-                                fit$cell_years_index, share = share))
+                                fit$cell_years_index))
   )[["elapsed"]]
   report("%s: predictions at %d cell-insecticide-years in %.0f s", label,
          nrow(rows), time)

@@ -46,10 +46,7 @@
 #            Permethrin together with llin_effective, their mortality weighted
 #            draw by draw by temporary/ingredient_weights.RDS, as R/predict.R
 #            does. The target is m + omega + xi. u and p are observation-level
-#            noise and are not mapped. Beyond T, xi is the AR(1) forecast.
-#            With the species model (#47), m at the assays is the mixture at
-#            each bioassay's arabiensis share, and on the grid the mixture at
-#            the arabiensis fraction r(x), the whole complex
+#            noise and are not mapped. Beyond T, xi is the AR(1) forecast
 #            (R/two_stage_predictions.R);
 #   figures  the two-stage-specific maps in figures/two_stage/ (posterior SD,
 #            correction, difference from the dynamical model), in the layout

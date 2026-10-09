@@ -27,9 +27,7 @@
 #            cell, exp(u(x)), averaged over the same cell-years:
 #            exp(beta_kt) mean(x_k exp(u(x)))
 # The multiplier is the latent smooth of selection u_s(x) (V5; for the classes
-# it applies to) or, for one trajectory with the kdr covariate (V2, V4), its
-# kdr term delta_selection k(x) (for every class). The species model's
-# multipliers differ by species and are not applied. For small per-year
+# it applies to). For small per-year
 # selection z = sum_k x_k exp(beta_k), exp(u) log(1 + z) is close to
 # log(1 + exp(u) z), so the multiplier acts as a common shift of every beta at
 # the cell. With a multiplier, the grid figure shows both, side by side.
@@ -111,12 +109,6 @@ if ("selection" %in% smooth_kinds(fit$options)) {
       fit$options$smooth$term_classes[fit$classes_index]
     },
     name = "u_s(x)")
-} else if (kdr_on(fit$options) && !species_on(fit$options) &&
-           length(parameters$kdr_slopes$delta_selection) > 0) {
-  k <- prediction_kdr(fit$options, cells)[, "complex"]
-  multiplier <- list(log = outer(parameters$kdr_slopes$delta_selection, k),
-                     types = rep(TRUE, length(types)),
-                     name = "delta k(x)")
 }
 
 # the average selection pressure per draw, draws x covariates x types, with

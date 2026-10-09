@@ -6,12 +6,11 @@
 # For the key parameters: beta_overall, beta_class (overall plus the class
 # deviation, per covariate and class, by the model's own transforms,
 # dynamical_terms(), whichever levels are centred, #48), sigma_overall,
-# sigma_class, rho per type, the reversion rates, and those of #47 (gamma_*, delta_*, the floors,
-# the latent smooths' sd and range),
-# the posterior mean, sd and quantiles, R-hat and bulk and tail ESS
-# (posterior::summarise_draws()), over the usable chains (all but those
-# stuck, stuck_chains()) and, for R-hat, over all chains; gamma_* and delta_*
-# also on the multiplier scale, exp(); and those of #47 within each floor
+# sigma_class, rho per type, the reversion rates, and those of #47 (the
+# floors, the latent smooths' sd and range), the posterior mean, sd and
+# quantiles, R-hat and bulk and tail ESS (posterior::summarise_draws()), over
+# the usable chains (all but those stuck, stuck_chains()) and, for R-hat,
+# over all chains; and those of #47 within each floor
 # mode of the usable chains (parameters_by_mode). Per chain: its floor means
 # and mode, the share of distinct draws, whether it is stuck, and with
 # chain_modes (R/chain_floor_modes.R) its log posterior. Stuck chains are
@@ -89,22 +88,17 @@ key_parameters <- function(chain) {
       out[[sprintf("reversion_rate[%s]", fit$classes[c])]] <- reversion[, c]
     }
   }
-  new <- grep("^(gamma_|delta_|floor_)|floor$", colnames(m), value = TRUE)
-  new <- new[!grepl("^smooth_", new)]
-  smooth <- smooth_on(fit$options)
+  new <- grep("^floor_|floor$", colnames(m), value = TRUE)
   for (name in new) {
     out[[name]] <- m[, name]
-    if (grepl("^(gamma_|delta_)", name)) {
-      out[[sprintf("exp(%s)", name)]] <- exp(m[, name])
-    }
-    # the kdr-dependent floor at the mean kdr, or the floor of the latent
-    # smooths where u_f is 0, per class with an intercept per class: from its
-    # logit, floor_intercept, or itself, floor_flat (V5f)
+    # the floor of the latent smooths where u_f is 0, per class with an
+    # intercept per class: from its logit, floor_intercept, or itself,
+    # floor_flat (V5f)
     if (grepl("^floor_(intercept|flat)", name)) {
       index <- if (name %in% c("floor_intercept", "floor_flat")) "" else
         sprintf("[%s]", fit$classes[as.integer(sub("^.*\\[(\\d+),.*$", "\\1",
                                                     name))])
-      out[[paste0(if (smooth) "floor_at_u0" else "floor_at_k0", index)]] <-
+      out[[paste0("floor_at_u0", index)]] <-
         if (grepl("^floor_flat", name)) m[, name] else plogis(m[, name])
     }
   }
@@ -174,8 +168,6 @@ parameters <- summary_usable %>%
   mutate(label = label, .before = 1) %>%
   rename(parameter = variable) %>%
   mutate(group = case_when(
-    str_detect(parameter, "^exp\\(") ~ "multiplier",
-    str_detect(parameter, "^(gamma_|delta_)") ~ "species and kdr",
     str_detect(parameter, "^smooth_") ~ "smooth",
     str_detect(parameter, "floor$|^floor_") ~ "floor",
     str_detect(parameter, "^rho") ~ "rho",
@@ -192,7 +184,7 @@ parameters_by_mode <- bind_rows(lapply(names(modes), function(this_mode) {
     rhat = posterior::rhat) %>%
     rename(parameter = variable) %>%
     filter(str_detect(parameter,
-                      "^exp\\(|^(gamma_|delta_|floor_|smooth_)|floor$")) %>%
+                      "^(floor_|smooth_)|floor$")) %>%
     mutate(label = label, mode = this_mode,
            chains = toString(modes[[this_mode]]), .before = 1)
 }))
@@ -222,8 +214,8 @@ options(width = 160)
 print(as.data.frame(chains), digits = 4)
 print(as.data.frame(fit_row %>% select(-file, -options)), digits = 4)
 print(as.data.frame(parameters %>%
-                      filter(group %in% c("multiplier", "floor", "species and kdr",
-                                          "smooth", "reversion", "rho")) %>%
+                      filter(group %in% c("floor", "smooth", "reversion",
+                                          "rho")) %>%
                       select(parameter, mean, q2.5, q50, q97.5, rhat,
                              rhat_all_chains, ess_bulk, ess_tail)),
       digits = 3)

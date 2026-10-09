@@ -17,7 +17,7 @@
 # "noncentred")), the same posterior in other coordinates: centred, the
 # density is unbounded where a type's country levels can all meet their means
 # as its init_country_sd goes to 0, and the optimiser runs off along it. With
-# the species model's two floors, each is profiled in turn, the other free. At
+# several floors, each is profiled in turn, the other free. At
 # the optimum, H, the Hessian of the negative log density in the other free
 # parameters, by central differences of the gradient, gives
 #   profile height      the maximum, log p(u, theta*), u = logit f
@@ -31,7 +31,7 @@
 # value. Each grid point is saved as it is done, to
 # outputs/species_runs/floor_profile/<label>/, and points already there are
 # skipped, so a run can be resumed, and points split between processes:
-# <floor> (e.g. mortality_floor, other_floor) and <points> (grid indices, e.g.
+# <floor> (e.g. mortality_floor, floor_flat[1,1]) and <points> (grid indices, e.g.
 # 1-5 or 3,7) choose them. A point takes about 2 minutes (two L-BFGS-B runs of
 # 10-20 s, and 2-3 Hessians of 30 s) and a process about 6.5 GB.
 #

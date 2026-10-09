@@ -182,8 +182,6 @@ if (identical(mode, "predict")) {
                  d$parameters$n_draws),
           x, keep - baseline_year + 1,
           x_init = covariates$init[rows[ok], , drop = FALSE],
-          share = prediction_share(d$parameters$options, cells[rows[ok]]),
-          kdr = prediction_kdr(d$parameters$options, cells[rows[ok]]),
           basis = prediction_basis(d$parameters$options, cells[rows[ok]]))
         for (j in seq_along(keep)) {
           p <- plogis(dyn[[j]])

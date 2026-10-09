@@ -6,7 +6,7 @@
 # For each floor mode of the fit's usable chains (all but those stuck), every
 # other free parameter is held at the mean of that mode's chains' free states,
 # and the log posterior density is evaluated on a fine grid of each floor (one
-# for mortality_floor; with the species model's two floors, each in turn with
+# for mortality_floor; with two floors, each in turn with
 # the other at the mode's mean, and on a 41 x 41 grid of both). The density
 # is that of the rebuilt model (rebuild_fit_model(), R/species_fit_helpers.R):
 # "unadjusted", on the floor's own scale, which is plotted, and "adjusted",

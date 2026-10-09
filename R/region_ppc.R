@@ -18,8 +18,8 @@
 # posterior draws, the same number from each usable chain (even_draws(),
 # R/species_fit_helpers.R; with USE_CHAINS, as R/species_misfit.R used for
 # V5), the predicted mortality p_i at every bioassay (dynamical_logit(),
-# R/dynamical_predictions.R, as R/species_misfit.R: with the species model,
-# the mixture at the bioassay's arabiensis share) and the draw's rho per type.
+# R/dynamical_predictions.R, as R/species_misfit.R) and the draw's rho per
+# type.
 # Cached in outputs/species_runs/regions/ppc_draws_<label>.rds (recomputed
 # when the fit is newer). Per draw, one replicate of every bioassay from the
 # model's likelihood (betabinomial_p_rho(), R/functions.R, rho the intra-class

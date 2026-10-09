@@ -10,22 +10,17 @@
 # the scale of the parameters (without the Jacobian of greta's transforms to
 # the free state), the density the modes are compared on. Draws are evaluated
 # `batch` at a time, which bounds the memory of the batched states. NULL for a
-# model without a floor. With the species model's two floors (#47), floor is
-# NA, other_floor and arabiensis_floor are the chain's mean floors, and mode
-# is the mode of each, other members first, e.g. "low/high". With the
-# kdr-dependent floor (#47), the floor is that at the mean kdr,
-# plogis(floor_intercept) (floor_at_k0), one per class with floor = "class"
-# (floor NA, and a mode per class in class order); with the latent smooths
-# (V5), that where u_f is 0 (floor_at_u0; the variable floor_flat with the
-# prior of V5f, smooth_options(floor_intercept_prior = )), and the chain's
+# model without a floor. With the latent smooths (V5, #47), the floor is that
+# where u_f is 0, plogis(floor_intercept) (floor_at_u0; the variable
+# floor_flat with the prior of V5f, smooth_options(floor_intercept_prior =
+# )), one per class with floor_intercepts = "class" (floor NA, and a mode per
+# class in class order), and the chain's
 # mean sd and range
 # (in km; none for a fixed range, which is no variable) of each smooth,
 # also for a model without a floor.
 chain_floor_modes <- function(model, draws, n_per_chain = 60,
                               high_floor = 0.1, batch = 10) {
-  floor_columns <- c(intersect(c("mortality_floor", "other_floor",
-                                 "arabiensis_floor"),
-                               colnames(draws[[1]])),
+  floor_columns <- c(intersect("mortality_floor", colnames(draws[[1]])),
                      grep("^floor_(intercept|flat)", colnames(draws[[1]]),
                           value = TRUE))
   smooth_columns <- grep("^smooth_(sd_|inv_range_)",
@@ -47,9 +42,8 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
     chain_draws <- as.matrix(draws[[chain]])
     floors <- colMeans(floor_values(chain_draws[, floor_columns,
                                                 drop = FALSE]))
-    names(floors) <- sub("^floor_(intercept|flat)",
-                         if (length(smooth_columns) > 0) "floor_at_u0" else
-                           "floor_at_k0", names(floors))
+    names(floors) <- sub("^floor_(intercept|flat)", "floor_at_u0",
+                         names(floors))
     row <- data.frame(chain = chain,
                       floor = if (length(floors) == 1) floors[[1]] else NA,
                       mode = if (length(floors) == 0) "none" else

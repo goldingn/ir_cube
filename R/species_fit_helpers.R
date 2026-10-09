@@ -8,22 +8,20 @@
 # report() and peak_memory_gb()
 source("R/two_stage_helpers.R")
 
-# The floors of a fit: mortality_floor, or the species model's other_floor and
-# arabiensis_floor, or the intercepts of the kdr-dependent floor or the floor
-# of the latent smooths (floor_intercept, one or one per class: the logit
-# floor at the mean kdr, or where u_f is 0; #47), or the floor itself where
-# u_f is 0 (floor_flat, V5f). The scripts treat an intercept as its floor,
-# plogis(floor_intercept) (floor_values(), R/dynamical_model.R), whose free
-# state is the same, qlogis(floor), as floor_flat's (on [0, 1])
-floor_names <- c("mortality_floor", "other_floor", "arabiensis_floor")
+# The floors of a fit: mortality_floor, or the intercepts of the floor of the
+# latent smooths (floor_intercept, one or one per class: the logit floor
+# where u_f is 0; #47), or the floor itself where u_f is 0 (floor_flat,
+# V5f). The scripts treat an intercept as its floor, plogis(floor_intercept)
+# (floor_values(), R/dynamical_model.R), whose free state is the same,
+# qlogis(floor), as floor_flat's (on [0, 1])
+floor_names <- "mortality_floor"
 
 # A fit's saved options, completed for the current code. Options added since
 # the fit take the values that reproduce it: floor_prior (#47) the prior of
 # the floor before #47, Beta(1, 49), unless `floor_prior` gives another (the
-# fits before d2dee17, 2 October 2026, used Beta(1, 9)); species, kdr and the
-# latent smooths off; with kdr, no kdr-dependent floor; and no centred levels
-# (centred_options(), #48), as the hierarchy was sampled before the centred
-# option. These are fixed values, not the current defaults (V5h since #47),
+# fits before d2dee17, 2 October 2026, used Beta(1, 9)); the latent smooths
+# off; and no centred levels (centred_options(), #48), as the hierarchy was
+# sampled before the centred option. These are fixed values, not the current defaults (V5h since #47),
 # which only name the options: a change of default leaves a saved fit as it
 # was.
 # Settings of older code that the current code no longer has are dropped if
@@ -52,12 +50,8 @@ complete_model_options <- function(options, floor_prior = c(1, 49)) {
   out <- options[intersect(names(options),
                            c(names(defaults), dynamical_built_options))]
   if (is.null(out$floor_prior)) out$floor_prior <- floor_prior
-  if (is.null(out$species)) out$species <- FALSE
-  if (is.null(out$kdr)) out$kdr <- FALSE
   if (is.null(out$smooth)) out$smooth <- FALSE
   if (is.null(out$centred)) out$centred <- centred_options()
-  # kdr options saved before the kdr-dependent floor have none
-  if (is.list(out$kdr) && is.null(out$kdr$floor)) out$kdr$floor <- FALSE
   out$selection_columns <- complete_selection_design(design)
   out
 }
@@ -104,8 +98,8 @@ fit_floor_names <- function(draws) {
 }
 
 # The floor mode of each chain of `draws`: as chain_floor_modes(), "low" or
-# "high" for each floor by its chain mean against `high_floor`, other members
-# first with the species model ("low/high"); "none" for a fit without a floor
+# "high" for each floor by its chain mean against `high_floor`, in order
+# ("low/high/..."); "none" for a fit without a floor
 chain_floor_mode <- function(draws, high_floor = 0.1) {
   floors <- fit_floor_names(draws)
   vapply(draws, function(chain) {

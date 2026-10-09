@@ -10,17 +10,14 @@
 # used (even_draws(), R/species_fit_helpers.R; with USE_CHAINS, as there):
 #
 # 1. The check. Predictions at n_rows bioassays (half of them LLIN-pyrethroid
-#    bioassays in the West), by the map path: the cells' covariates, the
-#    arabiensis share r(x) (prediction_share()), the standardised kdr
-#    (prediction_kdr()) and the centred basis of the latent smooths
-#    (prediction_basis()) from two_stage_cells() and two_stage_chunk()
+#    bioassays in the West), by the map path: the cells' covariates and the
+#    basis of the latent smooths (prediction_basis()) from two_stage_cells()
+#    and two_stage_chunk()
 #    (R/two_stage_predictions.R), and dynamical_logit_cells(), at the fit's
 #    country of the cell (data_cell_country()). Against the posterior mean
 #    predicted mortality of the same bioassays in
 #    outputs/species_runs/misfit/<label>_bioassays.csv, from the same draws:
-#    they must agree to rounding. The bioassays are of the complex (species
-#    not identified), whose share in the misfit is r(x) at the cell, as on
-#    the map. Also reported: the difference at the n_draws map draws (a
+#    they must agree to rounding. Also reported: the difference at the n_draws map draws (a
 #    subset; Monte Carlo error), and at the country of the cell in
 #    data/clean/country_raster.tif, which the map uses.
 #    Writes outputs/species_runs/west/check_<label>.csv.
@@ -33,8 +30,7 @@
 #    2019-2025) and over the three LLIN pyrethroids, weighted as the regional
 #    trend figure (R/species_compare.R) weights the insecticides within the
 #    West: by their mosquitoes tested in the West's modelled bioassays, all
-#    years; and each pyrethroid's own posterior mean. With the species model,
-#    of the whole complex at r(x). Countries take their fitted initial states
+#    years; and each pyrethroid's own posterior mean. Countries take their fitted initial states
 #    (all West countries with bioassays; others from the hierarchical prior,
 #    map_logit_init(), seed 1, as R/predict.R).
 #    Writes outputs/species_runs/west/grid_<label>.rds.
@@ -123,7 +119,7 @@ map_logit <- function(parameters, setup, chunk, k, logit_init) {
   out <- dynamical_logit_cells(
     parameters, k, matrix(logit_init[, chunk$country, k], parameters$n_draws),
     chunk$x, setup$years - setup$baseline_year + 1, x_init = chunk$x_init,
-    share = chunk$share, kdr = chunk$kdr, basis = chunk$basis)
+    basis = chunk$basis)
   setNames(out, setup$years)
 }
 
@@ -147,21 +143,18 @@ for (label in names(fits)) {
   parameters <- fit_parameter_draws(fit, chosen$index)
   set.seed(1)
   logit_init <- map_logit_init(parameters, fit$countries, fit$regions, df)
-  report("%s: %d draws from chains %s; options: species %s, kdr %s, smooth %s, floor %s",
+  report("%s: %d draws from chains %s; options: smooth %s, floor %s",
          label, parameters$n_draws, toString(unique(chosen$chain)),
-         species_on(fit$options), kdr_on(fit$options),
          smooth_on(fit$options),
          if (!is.null(parameters$mortality_floor)) "constant" else
-           if (!is.null(parameters$floor_intercept)) "intercepts" else
-             if (!is.null(parameters$other_floor)) "per species" else "none")
+           if (!is.null(parameters$floor_intercept)) "intercepts" else "none")
 
   # 1. the check ------------------------------------------------------------------
 
-  complex <- is.na(arabiensis_identified(df$species))
-  west_pyrethroid <- which(complex & df$insecticide_type %in% llin_pyrethroids &
+  west_pyrethroid <- which(df$insecticide_type %in% llin_pyrethroids &
                              analysis_region(df$country_name, df$region) ==
                              "West")
-  elsewhere <- setdiff(which(complex), west_pyrethroid)
+  elsewhere <- setdiff(seq_len(nrow(df)), west_pyrethroid)
   set.seed(47)
   rows <- sort(c(sample(west_pyrethroid, n_rows / 2),
                  sample(elsewhere, n_rows / 2)))

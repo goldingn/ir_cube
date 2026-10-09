@@ -89,8 +89,7 @@ stopifnot(all.equal(logit_beta_moments(c(1, 4))$mean, floor_prior$mean,
 # the base fit, at its posterior mean -----------------------------------------------
 
 fit <- load_fit(fit_file)
-stopifnot(!species_on(fit$options), !kdr_on(fit$options),
-          isFALSE(fit$options$mortality_floor))
+stopifnot(!smooth_on(fit$options), isFALSE(fit$options$mortality_floor))
 usable <- usable_chains(fit$draws, "base")
 means <- colMeans(as.matrix(fit$draws[usable]))
 parameters <- dynamical_parameter_draws(
@@ -107,7 +106,7 @@ pyrethroids <- df %>%
   filter(insecticide_class == "Pyrethroids") %>%
   mutate(row = row_number())
 
-# l0, C and t kappa at each bioassay, as dynamical_trajectories() forms them
+# l0, C and t kappa at each bioassay, as dynamical_logit_cells() forms them
 cell_country <- dynamical_lookups(df)$cell_country_lookup
 n_times <- max(fit$cell_years_index$year_id)
 x_row <- matrix(NA_integer_, max(fit$cell_years_index$cell_id), n_times)

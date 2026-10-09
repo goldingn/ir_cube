@@ -98,13 +98,9 @@ ln -s "$root/data" "$job/data"
 cp "$root"/temporary/*.RDS "$job/temporary/"
 cp "$root"/outputs/bioassay_rho*.csv "$job/outputs/"
 printf '%s' "${IR_CUBE_MODEL_OPTIONS:-}" > "$job/job.options"
-# the maps of the species model and the kdr covariate (#47)
-checksum() { [ -f "$1" ] && sha256sum < "$1" | cut -c1-16 || echo none; }
-fraction_sum=$(checksum "$root/data/clean/arabiensis_fraction.tif")
-kdr_sum=$(checksum "$root/data/clean/kdr_total_2015.tif")
 cat > "$job/job.spec" <<EOF
 code: $repo@$CODE_REF
-inputs (sha256): bioassays $(sha256sum < "$root/data/clean/all_gambiae_complex_data.RDS" | cut -c1-16), initial values $(sha256sum < "$root/temporary/inits_refit.RDS" | cut -c1-16), arabiensis fraction $fraction_sum, kdr $kdr_sum
+inputs (sha256): bioassays $(sha256sum < "$root/data/clean/all_gambiae_complex_data.RDS" | cut -c1-16), initial values $(sha256sum < "$root/temporary/inits_refit.RDS" | cut -c1-16)
 command: ${command[*]}
 IR_CUBE_MODEL_OPTIONS: ${IR_CUBE_MODEL_OPTIONS:-}
 IR_CUBE_MCMC_SETTINGS: ${IR_CUBE_MCMC_SETTINGS:-}

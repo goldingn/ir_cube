@@ -77,10 +77,7 @@ check_two_stage_data <- function(dynamical, data, type) {
 # `country` their country names (those of dimnames(setup$logit_init)[[2]]; for
 # data cells, the fit's country of the cell, data_cell_country()). The
 # covariates are kept in the compact form of map_covariates();
-# two_stage_chunk() assembles them for a chunk of cells. With the species
-# model (#47), also the arabiensis fraction r(x) at each cell, the share of
-# the whole complex (prediction_share()), and with the kdr covariate, the
-# standardised kdr at each cell (prediction_kdr()); each NULL without it
+# two_stage_chunk() assembles them for a chunk of cells.
 two_stage_cells <- function(setup, cells, country,
                             mask = terra::rast("data/clean/raster_mask.tif")) {
   country_index <- match(country, dimnames(setup$logit_init)[[2]])
@@ -90,9 +87,7 @@ two_stage_cells <- function(setup, cells, country,
        country = country_index,
        covariates = map_covariates(cells, setup$baseline_year,
                                    max(setup$years), setup$design),
-       coords = project_km(xy[, 1], xy[, 2]),
-       share = prediction_share(setup$options, cells),
-       kdr = prediction_kdr(setup$options, cells))
+       coords = project_km(xy[, 1], xy[, 2]))
 }
 
 # The rows `rows` of `cells` (two_stage_cells()), with their covariates as the
@@ -106,8 +101,6 @@ two_stage_chunk <- function(setup, cells, rows = seq_along(cells$cells)) {
                  max(setup$years) - setup$baseline_year + 1),
        x_init = cells$covariates$init[rows, , drop = FALSE],
        coords = cells$coords[rows, , drop = FALSE],
-       share = cells$share[rows],
-       kdr = cells$kdr[rows, , drop = FALSE],
        basis = prediction_basis(setup$options, cells$cells[rows]))
 }
 
@@ -148,8 +141,7 @@ two_stage_logit_batch <- function(setup, b, chunk, noise = FALSE) {
   m <- dynamical_logit_cells(
     setup$parameters[[b]], setup$k,
     matrix(setup$logit_init[draws, chunk$country, setup$k], length(draws)),
-    chunk$x, year_index, x_init = chunk$x_init, share = chunk$share,
-    kdr = chunk$kdr, basis = chunk$basis)
+    chunk$x, year_index, x_init = chunk$x_init, basis = chunk$basis)
   correction <- project_cells(setup$fit, setup$fields[[b]], chunk,
                               setup$years, noise = noise)
   out <- list(dynamical = list(), two_stage = list())

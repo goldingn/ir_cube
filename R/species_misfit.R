@@ -5,9 +5,7 @@
 #
 # From about n_draws (500) posterior draws, evenly spaced in each usable chain
 # (all but those stuck), the predicted mortality at every modelled bioassay
-# (dynamical_logit(), R/dynamical_predictions.R: with the species model, the
-# mixture at the bioassay's arabiensis share; with the kdr covariate, at its
-# cell's kdr), and
+# (dynamical_logit(), R/dynamical_predictions.R), and
 #   misfit      empirical logit, log((died + 0.5) / (survived + 0.5)), minus
 #               the logit of the posterior mean predicted mortality: positive
 #               where more died than predicted, i.e. the model predicts too
@@ -92,9 +90,6 @@ bioassays <- df %>%
             misfit = empirical_logit - predicted_logit,
             window = case_when(year_start %in% windows[[1]] ~ names(windows)[1],
                                year_start %in% windows[[2]] ~ names(windows)[2]))
-if (species_on(fit$options)) {
-  bioassays$arabiensis_share <- arabiensis_share(df, fit$options)
-}
 write.csv(bioassays, file.path(output_dir, sprintf("%s_bioassays.csv", label)),
           row.names = FALSE)
 

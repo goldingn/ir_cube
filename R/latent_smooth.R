@@ -10,7 +10,7 @@
 # boundary), omega_j the square roots of their eigenvalues, and S the
 # kernel's spectral density. The basis at the cells is data; only the
 # weights depend on sd and rho. Functions and settings only; needs sf and
-# terra. Sourced by R/dynamical_model.R, after R/kdr_covariate.R.
+# terra. Sourced by R/dynamical_model.R.
 
 
 # settings ---------------------------------------------------------------------
@@ -175,9 +175,9 @@ smooth_basis_range <- function(smooth) {
     smooth$range_prior[1]
 }
 
-# the insecticide classes with the smooth terms where a smooth is "class":
-# kdr gives resistance to the pyrethroids and DDT
-smooth_classes <- kdr_floor_classes
+# the insecticide classes with the smooth terms where a smooth is "class",
+# the pyrethroids and DDT, to both of which kdr gives resistance
+smooth_classes <- c("Pyrethroids", "Organochlorines")
 
 # the elements build_dynamical_model() adds to the options (smooth_box())
 smooth_basis_elements <- c("crs", "origin", "half_width", "indices",
