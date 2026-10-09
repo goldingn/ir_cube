@@ -19,9 +19,8 @@
 # (V5), that where u_f is 0 (floor_at_u0; the variable floor_flat with the
 # prior of V5f, smooth_options(floor_intercept_prior = )), and the chain's
 # mean sd and range
-# (in km; none for a fixed range, which is no variable) of each smooth and
-# shear loading, and the loadings per type of the smooth of the initial state
-# (smooth_options(init = TRUE)), also for a model without a floor.
+# (in km; none for a fixed range, which is no variable) of each smooth,
+# also for a model without a floor.
 chain_floor_modes <- function(model, draws, n_per_chain = 60,
                               high_floor = 0.1, batch = 10) {
   floor_columns <- c(intersect(c("mortality_floor", "other_floor",
@@ -29,7 +28,7 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
                                colnames(draws[[1]])),
                      grep("^floor_(intercept|flat)", colnames(draws[[1]]),
                           value = TRUE))
-  smooth_columns <- grep("^smooth_(sd_|inv_range_|shear$|loading_)",
+  smooth_columns <- grep("^smooth_(sd_|inv_range_)",
                          colnames(draws[[1]]), value = TRUE)
   if (length(floor_columns) == 0 && length(smooth_columns) == 0) {
     return(NULL)

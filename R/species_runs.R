@@ -24,7 +24,10 @@
 # DDT (smooth_centre(), R/latent_smooth.R) and the floor at a flat smooth
 # with a half-normal prior of scale 0.05 (smooth_options(
 # floor_intercept_prior = )), its options in full (v5f_options, which must
-# equal dynamical_model_options() at the commit run): the full fit and the
+# equal dynamical_model_options() at the commit run; the fits launched on 9
+# October 2026, at 933f8ae, had likelihood = "beta_binomial" and
+# smooth_options(shear = FALSE) in it too, options since removed, which
+# model_options_from_string() drops, R/dynamical_model.R): the full fit and the
 # temporal forecasting folds from 2018 and 2014, to test the model before
 # the cross-validation, and as its forecasting folds,
 #   v5f_full, v5f_fc2018, v5f_fc2014
@@ -74,7 +77,7 @@
 v5f_options <- Sys.getenv("CV5F_OPTIONS", paste(
   "dynamical_model_options(mortality_floor = TRUE, floor_prior = c(1, 4),",
   "smooth = smooth_options(selection = TRUE, floor = \"class\",",
-  "shear = FALSE, floor_intercepts = \"class\", kernel = \"se\", c = 2,",
+  "floor_intercepts = \"class\", kernel = \"se\", c = 2,",
   "range = 1.5, basis_range = 1.5,",
   "sd_prior = list(family = \"half_normal\", scale = 0.5),",
   "floor_intercept_prior = list(family = \"half_normal\", scale = 0.05)))"))

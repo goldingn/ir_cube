@@ -7,9 +7,7 @@
 # deviation, per covariate and class, by the model's own transforms,
 # dynamical_terms(), whichever levels are centred, #48), sigma_overall,
 # sigma_class, rho per type, the reversion rates, and those of #47 (gamma_*, delta_*, the floors,
-# the latent smooths' sd and range, and shear loading, and with the smooth of
-# the initial state (smooth_options(init = TRUE)) its loading per type,
-# smooth_loading_init[<type>]),
+# the latent smooths' sd and range),
 # the posterior mean, sd and quantiles, R-hat and bulk and tail ESS
 # (posterior::summarise_draws()), over the usable chains (all but those
 # stuck, stuck_chains()) and, for R-hat, over all chains; gamma_* and delta_*
@@ -110,17 +108,10 @@ key_parameters <- function(chain) {
         if (grepl("^floor_flat", name)) m[, name] else plogis(m[, name])
     }
   }
-  # the latent smooths' sd, range in km (none when it is fixed, which is no
-  # variable), and shear loading b, and the loadings of the smooth of the
-  # initial state on each type
-  for (name in grep("^smooth_(sd_|shear$)", colnames(m), value = TRUE)) {
+  # the latent smooths' sd and range in km (none when it is fixed, which is
+  # no variable)
+  for (name in grep("^smooth_sd_", colnames(m), value = TRUE)) {
     out[[name]] <- m[, name]
-  }
-  if (smooth_init_on(fit$options)) {
-    loadings <- matrix(p("smooth_loading_init"), n)
-    for (k in seq_along(fit$types)) {
-      out[[sprintf("smooth_loading_init[%s]", fit$types[k])]] <- loadings[, k]
-    }
   }
   for (name in grep("^smooth_inv_range_", colnames(m), value = TRUE)) {
     out[[sub("^smooth_inv_range_", "smooth_range_km_", name)]] <-

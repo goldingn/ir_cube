@@ -89,7 +89,7 @@ for (argument in commandArgs(trailingOnly = TRUE)) {
 stopifnot(all(file.exists(fits)))
 reference <- "ref_f0"
 fit_colours <- c(ref_f0 = grey(0.55), V3f = "#E69F00", V4 = "#0072B2",
-                 V4_class = "#CC79A7", V5 = "#009E73", V5_shear = "#D55E00")
+                 V4_class = "#CC79A7", V5 = "#009E73")
 
 output_dir <- "outputs/species_runs/compare"
 figure_dir <- "figures/species_runs"

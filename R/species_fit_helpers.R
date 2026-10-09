@@ -115,7 +115,7 @@ chain_floor_mode <- function(draws, high_floor = 0.1) {
   }, character(1))
 }
 
-# The chains USE_CHAINS names for fit `label` (e.g. "V5=1,2;V5_shear=1,2,3"),
+# The chains USE_CHAINS names for fit `label` (e.g. "V5=1,2;V5f_full=1,2,3"),
 # to leave out chains in a minor mode of the posterior (a lower log
 # posterior) that are not stuck; NULL if it names none for `label`
 named_chains <- function(label) {

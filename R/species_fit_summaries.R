@@ -17,8 +17,8 @@
 #                                             parameters by fit (usable
 #                                             chains): exp(gamma_*),
 #                                             exp(delta_*), the floors, the
-#                                             latent smooths' sd and range,
-#                                             and shear loading
+#                                             latent smooths' sd and
+#                                             range
 # and, for the fits R/species_misfit.R has been run on,
 #   outputs/species_runs/misfit_regions.csv   their region tables together
 #   outputs/species_runs/loo_compare.csv      loo::loo_compare() of their

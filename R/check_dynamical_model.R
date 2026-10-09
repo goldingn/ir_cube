@@ -17,26 +17,19 @@
 # (V5, #47), each is checked to have mean 0 over the cells it is centred on
 # (every modelled cell, or for the floor smooth of the pyrethroids and DDT,
 # the cells with their bioassays) and to equal the smooth from the centred
-# basis functions, and the model with every raw weight 0 against the kdr
-# model with the same floor intercepts (by class: V4_class) and its slopes
-# at 0, in greta and in plain R: both are then the model with a constant
-# floor per class (or one floor, or none). With the shear, the model with
-# its loading b at 0 is checked against the same smooths without the shear,
-# in greta and in plain R. The model with the other prior of the smooths'
-# sds (PC or half-normal, smooth_options(sd_prior = )), and with the other
+# basis functions; the model with every raw weight 0 against the model
+# without the smooths (smooth_options(selection = FALSE, floor = FALSE)),
+# which has the same floor intercepts, in greta and in plain R, and in plain
+# R against the closed form with a constant floor per class (or one floor,
+# or none) put on by hand; with a fixed range, the model against the one with
+# the range estimated at it, in greta and in plain R. The model with the
+# other prior of the smooths' sds (PC or half-normal, smooth_options(
+# sd_prior = )), and with the other
 # prior of the floor where u_f is 0 (the half-normal on the floor itself or
 # the logit-normal on its logit, smooth_options(floor_intercept_prior = )),
 # is checked against it at the same free state, in greta: the log density
 # differs by the two priors (with the Jacobian of the floor's transform),
-# computed here. With
-# the smooth of the initial state (smooth_options(init = TRUE)), the
-# selection and floor smooths' raw weights at 0 are checked against the
-# model without them (the same smooth of the initial state, a constant floor
-# per class), in greta and in plain R; and the plain-R initial state at every
-# modelled cell and type, with selection, reversion and the floor switched
-# off, against logit_init_mean + lambda u_init(x) + the centred covariates'
-# effects, computed here from the variables, the basis functions and the
-# spectral density, with its mean over the cells logit_init_mean.
+# computed here.
 #
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
 # (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
@@ -424,13 +417,7 @@ if (smooth_on(model_options)) {
               }, integer(1))), collapse = ", ")))
   stopifnot(centring_difference < 1e-12)
   for (kind in kinds) {
-    scale <- if (kind == "init") {
-      sprintf("sd 1 (fixed), loadings %s", paste(sprintf(
-        "%.3f", trace[1, grep("^smooth_loading_init\\[", colnames(trace))]),
-        collapse = ", "))
-    } else {
-      sprintf("sd %.3f", trace[1, paste0("smooth_sd_", kind)])
-    }
+    scale <- sprintf("sd %.3f", trace[1, paste0("smooth_sd_", kind)])
     cat(sprintf("smooth %s: %s, range %.0f km%s; at the cells, mean %.2g (over the cells it is centred on %.2g), range %.3f to %.3f\n",
                 kind, scale,
                 smooth_range_km(trace, model_options, kind),
@@ -441,64 +428,36 @@ if (smooth_on(model_options)) {
   stopifnot(all(vapply(kinds, function(kind) {
     abs(mean(u_cells[[kind]][centre_rows(kind)])) < 1e-12
   }, logical(1))))
-  shear <- isTRUE(smooth$shear)
-  if (shear) {
-    cat(sprintf("smooth shear: b %.3f\n", trace[1, "smooth_shear"]))
-  }
 
-  # With every raw weight 0 the smooths are 0, and the model is the kdr model
-  # with the same floor intercepts (kdr_options(floor = "class") for one per
-  # class, as V4_class; TRUE for one; no floor without mortality_floor) and
-  # its slopes at 0. In greta, the log density then differs by the priors:
-  # those of the smooths (the raw weights N(0, 1) at 0, the exponential sd
-  # and inverse range (unless the range is fixed) with the Jacobians of their
-  # log free states, and the shear loading) less those of the kdr slopes N(0,
-  # 1) at 0. With the smooth of the initial state, which has no counterpart
-  # in the kdr model, the raw weights of the other smooths only are set to 0,
-  # and the model is the one without them: smooth_options(selection = FALSE,
-  # floor = FALSE), with the same smooth of the initial state and floor
-  # intercepts
+  # With every raw weight 0 the smooths are 0, and the model is the one
+  # without them, smooth_options(selection = FALSE, floor = FALSE), with the
+  # same floor intercepts (the floor per class), or none without
+  # mortality_floor. In greta, the log density then differs by the priors of
+  # the smooths: the raw weights N(0, 1) at 0, and the sd and inverse range
+  # (unless the range is fixed) with the Jacobians of their log free states.
+  # And in plain R, the model with the smooths at 0 is the closed form
+  # (smooth = FALSE) without a floor, with the floor of each type's class
+  # put on by hand: f + (1 - f) q, f = plogis(floor_intercept)
   floor_on <- smooth_floor_on(model_options)
-  init_on <- smooth_init_on(model_options)
-  zeroed <- setdiff(kinds, "init")
   options_base <- model_options
-  if (init_on) {
-    options_base$smooth$selection <- FALSE
-    options_base$smooth$floor <- FALSE
-    options_base$smooth$shear <- FALSE
-  } else {
-    options_base$smooth <- FALSE
-    options_base$kdr <- kdr_options(floor = if (!floor_on) FALSE else
-      if (identical(smooth$floor_intercepts, "class")) "class" else TRUE)
-  }
+  options_base$smooth$selection <- FALSE
+  options_base$smooth$floor <- FALSE
   built_base <- build(df, options_base)
   free_zero <- free
-  for (kind in zeroed) {
+  for (kind in kinds) {
     free_zero[free_columns(built$model, smooth_variable_names(kind)[["raw"]])] <- 0
   }
   columns_base <- free_state_columns(built_base$model)
-  base_slopes <- intersect(c(kdr_slope_names, "floor_kdr"),
-                           names(built_base$variables))
   free_base <- numeric(length(unlist(
     built_base$model$dag$example_parameters(free = TRUE))))
-  # the kdr model's floor intercepts take the free state of the floor at a
-  # flat smooth (floor_flat, V5f), which is its logit, the same value
-  flat_to_base <- !init_on && "floor_flat" %in% names(built$variables)
-  for (name in setdiff(names(attr(columns_base, "targets")), base_slopes)) {
-    own <- if (flat_to_base && name == "floor_intercept") "floor_flat" else
-      name
+  for (name in names(attr(columns_base, "targets"))) {
     free_base[columns_base[[attr(columns_base, "targets")[[name]]]]] <-
-      free_zero[free_columns(built$model, own)]
+      free_zero[free_columns(built$model, name)]
   }
   trace_zero <- built$model$dag$trace_values(matrix(free_zero, nrow = 1))
   rates <- smooth_prior_rates(smooth)
-  expected <- -length(base_slopes) * dnorm(0, log = TRUE)
-  if (flat_to_base) {
-    logit_f0 <- free_zero[free_columns(built$model, "floor_flat")]
-    expected <- expected + sum(floor_free_log_prior(logit_f0, smooth) -
-                                 floor_free_log_prior(logit_f0, "beta_moments"))
-  }
-  for (kind in zeroed) {
+  expected <- 0
+  for (kind in kinds) {
     sd <- trace_zero[1, paste0("smooth_sd_", kind)]
     expected <- expected + nrow(smooth$indices) * dnorm(0, log = TRUE) +
       smooth_sd_log_prior(sd, smooth) + log(sd)
@@ -508,85 +467,40 @@ if (smooth_on(model_options)) {
         log(inv_range)
     }
   }
-  if (shear) {
-    expected <- expected + dnorm(trace_zero[1, "smooth_shear"],
-                                 smooth_shear_prior$mean,
-                                 smooth_shear_prior$sd, log = TRUE)
-  }
   ld_difference <- log_density(built$model, free_zero) -
     log_density(built_base$model, free_base) - expected
-  base_label <- if (init_on) {
-    "the model without them (smooth of the initial state only)"
-  } else {
-    sprintf("the kdr model (floor %s) with slopes %s at 0",
-            deparse(options_base$kdr$floor), toString(base_slopes))
-  }
-  cat(sprintf("smooth: raw weights of %s 0 vs %s, greta log density: diff %.3g\n",
-              toString(zeroed), base_label, ld_difference))
+  cat(sprintf("smooth: raw weights of %s 0 vs the model without them, greta log density: diff %.3g\n",
+              toString(kinds), ld_difference))
   stopifnot(abs(ld_difference) < 1e-6)
 
-  # and in plain R, the predictions at every assay
+  # and in plain R, the predictions at every assay: against the model
+  # without them, and against the closed form with the floors by hand
   zero <- parameters
-  zero$smooth_weights[zeroed] <- lapply(zero$smooth_weights[zeroed],
-                                        function(x) 0 * x)
+  zero$smooth_weights <- lapply(zero$smooth_weights, function(x) 0 * x)
   base <- zero
-  base$smooth_weights <- zero$smooth_weights[setdiff(names(
-    zero$smooth_weights), zeroed)]
+  base$smooth_weights <- list()
   base$options <- built_base$options
-  if (!init_on) {
-    base$kdr_slopes <- lapply(
-      setNames(nm = intersect(kdr_slope_names, base_slopes)),
-      function(name) rep(0, parameters$n_draws))
-    if (floor_on) base$floor_kdr <- rep(0, parameters$n_draws)
-  }
   l_zero <- dynamical_logit(zero, df, df, x_cell_years, cell_years_index)
   l_base <- dynamical_logit(base, df, df, x_cell_years, cell_years_index)
   smooth_difference <- max(abs(clamp(l_zero) - clamp(l_base)))
-  cat(sprintf("smooth: raw weights of %s 0 vs %s, plain R, logit: max abs diff %.3g\n",
-              toString(zeroed), base_label, smooth_difference))
-  stopifnot(smooth_difference < 1e-12)
-  rm(built_base)
-
-  # With the shear loading b at 0, the selection smooth is v_s alone, and the
-  # model is the one without the shear: in greta, the log density differs by
-  # b's prior at 0
-  if (shear) {
-    options_unsheared <- model_options
-    options_unsheared$smooth$shear <- FALSE
-    built_unsheared <- build(df, options_unsheared)
-    free_b0 <- free
-    free_b0[free_columns(built$model, "smooth_shear")] <- 0
-    columns_unsheared <- free_state_columns(built_unsheared$model)
-    free_unsheared <- numeric(length(unlist(
-      built_unsheared$model$dag$example_parameters(free = TRUE))))
-    for (name in names(attr(columns_unsheared, "targets"))) {
-      free_unsheared[
-        columns_unsheared[[attr(columns_unsheared, "targets")[[name]]]]] <-
-        free_b0[free_columns(built$model, name)]
-    }
-    shear_difference <- log_density(built$model, free_b0) -
-      log_density(built_unsheared$model, free_unsheared) -
-      dnorm(0, smooth_shear_prior$mean, smooth_shear_prior$sd, log = TRUE)
-    cat(sprintf("smooth shear: b 0 vs no shear, greta log density: diff %.3g\n",
-                shear_difference))
-    stopifnot(abs(shear_difference) < 1e-6)
-    # and in plain R, the predictions at every assay
-    b0 <- parameters
-    b0$variables$smooth_shear[] <- 0
-    b0$smooth_weights <- smooth_weight_terms(b0$variables, model_options)
-    unsheared <- parameters
-    unsheared$options <- built_unsheared$options
-    unsheared$smooth_weights <- smooth_weight_terms(unsheared$variables,
-                                                    unsheared$options)
-    l_b0 <- dynamical_logit(b0, df, df, x_cell_years, cell_years_index)
-    l_unsheared <- dynamical_logit(unsheared, df, df, x_cell_years,
-                                   cell_years_index)
-    shear_plain <- max(abs(clamp(l_b0) - clamp(l_unsheared)))
-    cat(sprintf("smooth shear: b 0 vs no shear, plain R, logit: max abs diff %.3g\n",
-                shear_plain))
-    stopifnot(shear_plain < 1e-12)
-    rm(built_unsheared)
+  closed <- zero
+  closed$smooth_weights <- list()
+  closed$floor_intercept <- NULL
+  closed$mortality_floor <- NULL
+  closed$options$smooth <- FALSE
+  closed$options$mortality_floor <- FALSE
+  p_closed <- plogis(c(dynamical_logit(closed, df, df, x_cell_years,
+                                       cell_years_index)))
+  if (floor_on) {
+    f <- plogis(c(zero$floor_intercept[, smooth_intercept_index(
+      model_options, classes_index[df$type_id])]))
+    p_closed <- f + (1 - f) * p_closed
   }
+  closed_difference <- max(abs(plogis(c(l_zero)) - p_closed))
+  cat(sprintf("smooth: raw weights of %s 0 vs the model without them, plain R, logit: max abs diff %.3g; vs the closed form with the floor per class by hand, p: max abs diff %.3g\n",
+              toString(kinds), smooth_difference, closed_difference))
+  stopifnot(smooth_difference < 1e-12, closed_difference < 1e-12)
+  rm(built_base)
 
   # With a fixed range, the model is the one with the range estimated, on
   # the same basis, at an inverse range of 1 / range: in greta, the log
@@ -637,10 +551,10 @@ if (smooth_on(model_options)) {
   # The model with the other prior of the smooths' sds (the PC prior's
   # default, c(1, 0.05), for the half-normal, or the half-normal with scale
   # 0.5 for the PC prior), at the same free state: in greta, the log density
-  # differs by the two priors' log densities at each sd (and loading of the
-  # smooth of the initial state) only, the free state being log sd in both
+  # differs by the two priors' log densities at each sd only, the free state
+  # being log sd in both
   sd_names <- vapply(kinds, function(kind) {
-    smooth_variable_names(kind)[[if (kind == "init") "loading" else "sd"]]
+    smooth_variable_names(kind)[["sd"]]
   }, "")
   options_other <- model_options
   options_other$smooth$sd_prior <-
@@ -719,83 +633,6 @@ if (smooth_on(model_options)) {
                 smooth$floor_intercepts,
                 paste(sprintf("%.3f", plogis(c(parameters$floor_intercept))),
                       collapse = ", ")))
-  }
-
-  # The initial state with the smooth of the initial state, at every modelled
-  # cell and type, computed here from the variables: the basis functions
-  # (hsgp_basis()) centred over the modelled cells, the weights from the
-  # squared exponential's spectral density at sd 1, and the covariates
-  # centred at their mean over the modelled cells,
-  #   logit_init_relative(x, k) = logit_init_mean[k] + lambda[k] u_init(x) +
-  #                               (x_init(x) - mean) init_coef[, k]
-  #   q_0 = init_frac_min + (1 - init_frac_min) plogis(logit_init_relative)
-  # against the plain-R prediction for year index 1 with no selection
-  # (exp(beta) 0), no reversion and no floor, which is then logit q_0
-  if (init_on) {
-    stopifnot(nrow(map_rows) == max(df$cell_id))
-    value_of <- function(name) c(extract_parameter(trace, name))
-    phi <- hsgp_basis(smooth_cell_coords(map_rows$cell, smooth$crs), smooth)
-    phi <- sweep(phi, 2, colMeans(phi))
-    omega <- sqrt((pi * smooth$indices[, 1] / (2 * smooth$half_width[1])) ^ 2 +
-                    (pi * smooth$indices[, 2] / (2 * smooth$half_width[2])) ^ 2)
-    init_range <- if (smooth_range_fixed(smooth)) smooth[["range"]] else
-      1 / trace[1, "smooth_inv_range_init"]
-    ell <- init_range / 2
-    spectral <- if (smooth$kernel == "se") {
-      sqrt(2 * pi) * ell * exp(-ell ^ 2 * omega ^ 2 / 4)
-    } else {
-      c(smooth_sqrt_spectral(omega, 1, 1 / init_range, smooth$kernel))
-    }
-    u_init <- c(phi %*% (spectral * value_of("smooth_raw_init")))
-    lambda <- value_of("smooth_loading_init")
-    logit_init_mean <- value_of("logit_init_mean")
-    init_min <- init_frac_constants(types)$min
-    covariate_effect <- matrix(0, nrow(map_rows), length(types))
-    if (!is.null(model_options$init_covariates)) {
-      x_init_cells <- x_cells_init[map_rows$cell_id,
-                                   model_options$init_covariates,
-                                   drop = FALSE]
-      x_mean <- colMeans(x_cells_init[seq_len(max(df$cell_id)),
-                                      model_options$init_covariates,
-                                      drop = FALSE])
-      init_coef <- matrix(value_of("init_coef"),
-                          length(model_options$init_covariates))
-      covariate_effect <- sweep(x_init_cells, 2, x_mean) %*% init_coef
-    }
-    l_relative <- sweep(outer(u_init, lambda) + covariate_effect, 2,
-                        logit_init_mean, FUN = "+")
-    q_0 <- sweep(sweep(plogis(l_relative), 2, 1 - init_min, FUN = "*"), 2,
-                 init_min, FUN = "+")
-    # logit q_0, with 1 - q_0 = (1 - init_frac_min) plogis(-l) computed
-    # directly rather than from q_0 near 1
-    log_not_q_0 <- sweep(plogis(-l_relative, log.p = TRUE), 2,
-                         log1p(-init_min), FUN = "+")
-    l_expected <- c(log(q_0) - log_not_q_0)
-    off <- parameters
-    off$effect_type[] <- 0
-    if (!is.null(off$kappa_type)) off$kappa_type[] <- 0
-    if (!is.null(off$mortality_floor)) off$mortality_floor[] <- 0
-    if (!is.null(off$floor_intercept)) off$floor_intercept[] <- -Inf
-    rows <- tibble(cell_id = rep(map_rows$cell_id, length(types)),
-                   type_id = rep(seq_along(types), each = nrow(map_rows)),
-                   year_id = 1L)
-    l_plain <- c(dynamical_logit(off, rows, df, x_cell_years,
-                                 cell_years_index))
-    init_difference <- max(abs(l_plain - l_expected))
-    # the plain-R logit relative initial state, averaged over the cells
-    q_plain <- matrix(plogis(l_plain), nrow(map_rows))
-    l_relative_plain <- qlogis(sweep(sweep(q_plain, 2, init_min), 2,
-                                     1 - init_min, FUN = "/"))
-    mean_difference <- max(abs(colMeans(l_relative_plain) - logit_init_mean))
-    cat(sprintf(paste0("smooth init: initial state at %d cells x %d types ",
-                       "vs computed here, logit: max abs diff %.3g; mean ",
-                       "logit relative initial state over the cells vs ",
-                       "logit_init_mean: max abs diff %.3g; lambda u_init ",
-                       "%.2f to %.2f\n"),
-                nrow(map_rows), length(types), init_difference,
-                mean_difference, min(outer(u_init, lambda)),
-                max(outer(u_init, lambda))))
-    stopifnot(init_difference < 1e-9, mean_difference < 1e-8)
   }
 }
 
