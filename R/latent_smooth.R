@@ -58,6 +58,21 @@
 #                     the option) for floor_intercept ~ N with the mean and
 #                     sd of the logit of a Beta(floor_prior) variable
 #                     (logit_beta_moments(), R/dynamical_model.R)
+#   floor_link        how the floor smooth enters the floor: "logit" (the
+#                     default; V5 to V5f), f = plogis(floor_intercept + u_f),
+#                     u_f centred over its cells; or "cloglog" (V5c), the
+#                     floor of a log-normal hazard, f = 1 - exp(-lambda(x)),
+#                     log lambda(x) = log lambda_bar - sd^2 v / 2 + u_f(x),
+#                     u_f uncentred, of marginal variance sd^2 v at the cells
+#                     (v, floor_variance, smooth_box()). lambda_bar, sampled
+#                     as floor_flat with the half-normal prior of
+#                     floor_intercept_prior, is then the prior mean of
+#                     lambda(x) at any sd, about the mean floor for small
+#                     floors: the data's mean floor sets lambda_bar and the sd
+#                     only how uneven the floor is, so the sd can no longer
+#                     raise the floor everywhere (smooth_floor_intercept()).
+#                     Needs floor_intercept_prior "half_normal", one floor
+#                     intercept per class and a fixed range
 #   kernel            "se" (the default; squared exponential) or "matern52"
 #                     (Matern, smoothness 5/2)
 #   c                 the box's half-widths as multiples of the half-extents
@@ -128,6 +143,7 @@ smooth_options <- function(selection = TRUE,
                                            scale = 0.5),
                            floor_intercept_prior = list(family = "half_normal",
                                                         scale = 0.05),
+                           floor_link = "logit",
                            init = FALSE) {
   list(selection = selection,
        floor = floor,
@@ -141,6 +157,7 @@ smooth_options <- function(selection = TRUE,
        range_prior = range_prior,
        sd_prior = sd_prior,
        floor_intercept_prior = floor_intercept_prior,
+       floor_link = floor_link,
        init = init)
 }
 
@@ -171,15 +188,45 @@ smooth_floor_flat_on <- function(options) {
     smooth_floor_prior_family(options$smooth) == "half_normal"
 }
 
-# The logit floor where the floor smooth is 0, floor_intercept, from the
-# variables `v` of a model with `options`: logit(floor_flat), or the variable
-# floor_intercept. For greta arrays or plain R; NULL without it
+# The link of the floor smooth (smooth_options(floor_link = )): "logit", or
+# "cloglog". Options saved before the option have none, and the logit
+smooth_floor_link <- function(smooth) {
+  if (is.list(smooth) && identical(smooth[["floor_link"]], "cloglog")) {
+    "cloglog"
+  } else {
+    "logit"
+  }
+}
+
+# The floor intercept of each class on the scale of the floor's link, from
+# the variables `v` of a model with `options`, the floor being
+# smooth_floor_value(intercept + u_f(x)). With the logit (V5 to V5f), the
+# logit floor where the floor smooth is 0: logit(floor_flat), or the variable
+# floor_intercept. With the cloglog (V5c), the log hazard where the floor
+# smooth is 0: log(floor_flat) - sd^2 v / 2 for the classes with the floor
+# smooth, which makes floor_flat the mean hazard lambda_bar at any sd (sd the
+# floor smooth's, v its prior variance at sd 1 at the cells, floor_variance),
+# and log(floor_flat) for the others, whose floor is flat. For greta arrays
+# (one per class) or plain R (draws x classes); NULL without it
 smooth_floor_intercept <- function(v, options) {
   if (!smooth_floor_flat_on(options)) {
     return(v$floor_intercept)
   }
   f0 <- v$floor_flat
-  if (inherits(f0, "greta_array")) log(f0) - log(1 - f0) else qlogis(f0)
+  greta <- inherits(f0, "greta_array")
+  if (smooth_floor_link(options$smooth) == "logit") {
+    return(if (greta) log(f0) - log(1 - f0) else qlogis(f0))
+  }
+  # half the floor smooth's variance, on the classes it applies to
+  has_smooth <- smooth_class_weight(options, "floor",
+                                    seq_along(options$smooth$term_classes))
+  half_variance <- smooth_sd(v, "floor") ^ 2 *
+    options$smooth$floor_variance / 2
+  if (greta) {
+    log(f0) - half_variance * has_smooth
+  } else {
+    log(f0) - outer(c(half_variance), has_smooth)
+  }
 }
 
 # whether the smooths' range is fixed (smooth_options(range = )). Options
@@ -207,7 +254,7 @@ smooth_classes <- kdr_floor_classes
 # the elements build_dynamical_model() adds to the options (smooth_box())
 smooth_basis_elements <- c("crs", "origin", "half_width", "indices",
                            "column_means", "class_column_means",
-                           "term_classes")
+                           "term_classes", "floor_variance")
 
 # the projection of the coordinates: the two-stage correction's Albers
 # equal-area conic for Africa (africa_equal_area_crs,
@@ -255,7 +302,7 @@ check_smooth_options <- function(smooth) {
     is.list(smooth),
     all(setdiff(names(smooth_options()),
                 c("m", "range", "basis_range", "shear", "init",
-                  "floor_intercept_prior")) %in%
+                  "floor_intercept_prior", "floor_link")) %in%
           names(smooth)),
     all(names(smooth) %in% c(names(smooth_options()), smooth_basis_elements)),
     is_kind(smooth$selection), is_kind(smooth$floor),
@@ -281,7 +328,13 @@ check_smooth_options <- function(smooth) {
     is.numeric(smooth$range_prior), length(smooth$range_prior) == 2,
     all(smooth$range_prior > 0), smooth$range_prior[2] < 1,
     smooth_sd_prior_valid(smooth$sd_prior),
-    smooth_floor_prior_valid(smooth[["floor_intercept_prior"]]))
+    smooth_floor_prior_valid(smooth[["floor_intercept_prior"]]),
+    is.null(smooth[["floor_link"]]) ||
+      smooth[["floor_link"]] %in% c("logit", "cloglog"),
+    smooth_floor_link(smooth) == "logit" ||
+      (smooth_floor_prior_family(smooth) == "half_normal" &&
+         smooth$floor_intercepts == "class" && smooth_range_fixed(smooth) &&
+         !isFALSE(smooth$floor) && !isTRUE(smooth$shear)))
   invisible(smooth)
 }
 
@@ -458,7 +511,7 @@ smooth_mask_range <- function(crs = smooth_crs) {
 smooth_box <- function(smooth, cells, classes, class_cells) {
   smooth$term_classes <- classes %in% smooth_classes
   if (!is.null(smooth$indices)) {
-    return(smooth)
+    return(smooth_floor_variance(smooth, class_cells))
   }
   smooth$crs <- smooth_crs
   coords <- smooth_cell_coords(cells, smooth$crs)
@@ -485,6 +538,25 @@ smooth_box <- function(smooth, cells, classes, class_cells) {
   stopifnot(length(class_cells) > 0, all(class_cells %in% cells))
   smooth$class_column_means <- colMeans(hsgp_basis(
     smooth_cell_coords(class_cells, smooth$crs), smooth))
+  smooth_floor_variance(smooth, class_cells)
+}
+
+# With the cloglog floor link, `smooth` with floor_variance: the prior
+# variance at sd 1 of the uncentred smooth, sum_j S(omega_j) phi_j(x)^2, at
+# the fixed range, averaged over `class_cells`, the cells with bioassays of
+# the classes the floor smooth applies to. It is below 1 by the basis's
+# truncation of the spectrum, and nearly constant over the cells (0.980 to
+# 0.984 for the 1,500 km basis), so one value serves them all
+smooth_floor_variance <- function(smooth, class_cells) {
+  if (smooth_floor_link(smooth) != "cloglog" ||
+      !is.null(smooth$floor_variance)) {
+    return(smooth)
+  }
+  omega <- hsgp_frequencies(smooth$indices, smooth$half_width)
+  spectral <- c(smooth_sqrt_spectral(omega, 1, 1 / smooth[["range"]],
+                                     smooth$kernel)) ^ 2
+  basis <- hsgp_basis(smooth_cell_coords(class_cells, smooth$crs), smooth)
+  smooth$floor_variance <- mean(basis ^ 2 %*% spectral)
   smooth
 }
 
@@ -521,6 +593,11 @@ hsgp_basis <- function(coords, smooth) {
 # over those cells, so it does not trade off with the overall strength of
 # selection or the floor intercepts there
 smooth_centre <- function(smooth, kind) {
+  # the floor smooth of the cloglog link is not centred: its level is the
+  # mean hazard's, and the hazard's mean needs u_f's full prior variance
+  if (kind == "floor" && smooth_floor_link(smooth) == "cloglog") {
+    return(numeric(length(smooth$column_means)))
+  }
   if (identical(smooth[[kind]], "class") &&
       !is.null(smooth$class_column_means)) {
     return(smooth$class_column_means)
@@ -720,13 +797,17 @@ smooth_class_weight <- function(options, kind, class) {
 
 # The floor of the smooth model at rows with floor intercepts `intercept`
 # (that of each row's class) and floor smooth `u` (0 where the row's class has
-# none; NULL for no floor smooth): plogis(intercept + u). For greta arrays
+# none; NULL for no floor smooth): plogis(intercept + u), or with `link`
+# "cloglog" (smooth_floor_link()), 1 - exp(-exp(intercept + u)). For greta arrays
 # (one element per row) or plain R (intercept one per draw, u draws x cells,
 # giving draws x cells, or one per draw without u)
-smooth_floor_value <- function(intercept, u = NULL) {
-  logit_floor <- if (is.null(u)) intercept else intercept + u
-  if (inherits(logit_floor, "greta_array")) ilogit(logit_floor) else
-    plogis(logit_floor)
+smooth_floor_value <- function(intercept, u = NULL, link = "logit") {
+  eta <- if (is.null(u)) intercept else intercept + u
+  greta <- inherits(eta, "greta_array")
+  if (link == "cloglog") {
+    return(if (greta) icloglog(eta) else -expm1(-exp(eta)))
+  }
+  if (greta) ilogit(eta) else plogis(eta)
 }
 
 # The posterior mean and sd of each latent smooth of a fit at projected

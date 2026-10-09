@@ -450,6 +450,10 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # nearly free and higher floors are penalised (log density 2.8 at 0, 0.8 at
   # 0.1, -5.2 at 0.2, -15.2 at 0.3), so high floors must come from the smooth
   # locally.
+  # With smooth_options(floor_link = "cloglog") (V5c), floor_flat is instead
+  # the mean hazard lambda_bar of the floor 1 - exp(-lambda(x)), with the
+  # same prior: for small floors about the mean floor, P(> 0.1) = 0.046, the
+  # floor smooth's sd setting only how uneven it is (smooth_floor_intercept()).
   # Or (V5 to V5h) the logit-normal prior of the kdr-dependent floor's
   # intercept, above
   if (smooth_floor_on(options)) {
@@ -1376,7 +1380,8 @@ build_dynamical_model <- function(train_df,
       class <- classes_index[type]
       return(smooth_floor_value(
         terms$floor_intercept[smooth_intercept_index(options, class)],
-        row_smooth("floor", cell, class)))
+        row_smooth("floor", cell, class),
+        link = smooth_floor_link(options$smooth)))
     }
     if (isFALSE(kdr_floor(options))) {
       return(NULL)

@@ -465,7 +465,14 @@ if (smooth_on(model_options)) {
                 mean(u_cells[[kind]]), mean(u_cells[[kind]][centre_rows(kind)]),
                 min(u_cells[[kind]]), max(u_cells[[kind]])))
   }
-  stopifnot(all(vapply(kinds, function(kind) {
+  # every smooth is centred over its cells, but the floor smooth of the
+  # cloglog link (smooth_options(floor_link = "cloglog"), smooth_centre())
+  centred_kinds <- if (smooth_floor_link(smooth) == "cloglog") {
+    setdiff(kinds, "floor")
+  } else {
+    kinds
+  }
+  stopifnot(all(vapply(centred_kinds, function(kind) {
     abs(mean(u_cells[[kind]][centre_rows(kind)])) < 1e-12
   }, logical(1))))
   shear <- isTRUE(smooth$shear)
@@ -485,94 +492,125 @@ if (smooth_on(model_options)) {
   # and the model is the one without them: smooth_options(selection = FALSE,
   # floor = FALSE), with the same smooth of the initial state and floor
   # intercepts
+  # (with the cloglog floor link, whose floor at zero weights is not the kdr
+  # model's, the floor intercepts and the hazard's mean instead)
   floor_on <- smooth_floor_on(model_options)
   init_on <- smooth_init_on(model_options)
-  zeroed <- setdiff(kinds, "init")
-  options_base <- model_options
-  if (init_on) {
-    options_base$smooth$selection <- FALSE
-    options_base$smooth$floor <- FALSE
-    options_base$smooth$shear <- FALSE
-  } else {
-    options_base$smooth <- FALSE
-    options_base$kdr <- kdr_options(floor = if (!floor_on) FALSE else
-      if (identical(smooth$floor_intercepts, "class")) "class" else TRUE)
-  }
-  built_base <- build(df, options_base)
-  free_zero <- free
-  for (kind in zeroed) {
-    free_zero[free_columns(built$model, smooth_variable_names(kind)[["raw"]])] <- 0
-  }
-  columns_base <- free_state_columns(built_base$model)
-  base_slopes <- intersect(c(kdr_slope_names, "floor_kdr"),
-                           names(built_base$variables))
-  free_base <- numeric(length(unlist(
-    built_base$model$dag$example_parameters(free = TRUE))))
-  # the kdr model's floor intercepts take the free state of the floor at a
-  # flat smooth (floor_flat, V5f), which is its logit, the same value
-  flat_to_base <- !init_on && "floor_flat" %in% names(built$variables)
-  for (name in setdiff(names(attr(columns_base, "targets")), base_slopes)) {
-    own <- if (flat_to_base && name == "floor_intercept") "floor_flat" else
-      name
-    free_base[columns_base[[attr(columns_base, "targets")[[name]]]]] <-
-      free_zero[free_columns(built$model, own)]
-  }
-  trace_zero <- built$model$dag$trace_values(matrix(free_zero, nrow = 1))
-  rates <- smooth_prior_rates(smooth)
-  expected <- -length(base_slopes) * dnorm(0, log = TRUE)
-  if (flat_to_base) {
-    logit_f0 <- free_zero[free_columns(built$model, "floor_flat")]
-    expected <- expected + sum(floor_free_log_prior(logit_f0, smooth) -
-                                 floor_free_log_prior(logit_f0, "beta_moments"))
-  }
-  for (kind in zeroed) {
-    sd <- trace_zero[1, paste0("smooth_sd_", kind)]
-    expected <- expected + nrow(smooth$indices) * dnorm(0, log = TRUE) +
-      smooth_sd_log_prior(sd, smooth) + log(sd)
-    if (!smooth_range_fixed(smooth)) {
-      inv_range <- trace_zero[1, paste0("smooth_inv_range_", kind)]
-      expected <- expected + dexp(inv_range, rates$range, log = TRUE) +
-        log(inv_range)
+  if (smooth_floor_link(smooth) == "cloglog") {
+    # the floor intercepts: log(floor_flat) less half the floor smooth's
+    # variance on the classes it applies to (smooth_floor_intercept())
+    f0 <- trace[1, grep("^floor_flat\\[", colnames(trace))]
+    sd_floor <- trace[1, "smooth_sd_floor"]
+    by_hand <- log(f0) - sd_floor ^ 2 * smooth$floor_variance / 2 *
+      smooth$term_classes
+    intercept_difference <- max(abs(parameters$floor_intercept[1, ] - by_hand))
+    cat(sprintf("cloglog floor: intercepts vs log(floor_flat) - sd^2 v / 2 (v %.4f): max abs diff %.3g\n",
+                smooth$floor_variance, intercept_difference))
+    stopifnot(intercept_difference < 1e-12)
+    # the hazard's prior mean is floor_flat at any sd: exp(u_f - sd^2 v / 2)
+    # has mean 1 at the cells over draws of the raw weights
+    set.seed(1)
+    n_sim <- 20000
+    basis_floor <- hsgp_basis(coords_cells, smooth)
+    omega <- hsgp_frequencies(smooth$indices, smooth$half_width)
+    for (sd_sim in c(0.5, 2)) {
+      weights <- smooth_weights(matrix(rnorm(n_sim * nrow(smooth$indices)),
+                                       n_sim), rep(sd_sim, n_sim),
+                                rep(1 / smooth[["range"]], n_sim), smooth)
+      u <- weights %*% t(basis_floor)
+      ratio <- colMeans(exp(u - sd_sim ^ 2 * smooth$floor_variance / 2))
+      cat(sprintf("cloglog floor: prior mean of lambda / lambda_bar at sd %.1f over %d draws, at the cells: %.3f to %.3f\n",
+                  sd_sim, n_sim, min(ratio), max(ratio)))
+      stopifnot(abs(mean(ratio) - 1) < 0.05)
     }
-  }
-  if (shear) {
-    expected <- expected + dnorm(trace_zero[1, "smooth_shear"],
-                                 smooth_shear_prior$mean,
-                                 smooth_shear_prior$sd, log = TRUE)
-  }
-  ld_difference <- log_density(built$model, free_zero) -
-    log_density(built_base$model, free_base) - expected
-  base_label <- if (init_on) {
-    "the model without them (smooth of the initial state only)"
   } else {
-    sprintf("the kdr model (floor %s) with slopes %s at 0",
-            deparse(options_base$kdr$floor), toString(base_slopes))
-  }
-  cat(sprintf("smooth: raw weights of %s 0 vs %s, greta log density: diff %.3g\n",
-              toString(zeroed), base_label, ld_difference))
-  stopifnot(abs(ld_difference) < 1e-6)
+    zeroed <- setdiff(kinds, "init")
+    options_base <- model_options
+    if (init_on) {
+      options_base$smooth$selection <- FALSE
+      options_base$smooth$floor <- FALSE
+      options_base$smooth$shear <- FALSE
+    } else {
+      options_base$smooth <- FALSE
+      options_base$kdr <- kdr_options(floor = if (!floor_on) FALSE else
+        if (identical(smooth$floor_intercepts, "class")) "class" else TRUE)
+    }
+    built_base <- build(df, options_base)
+    free_zero <- free
+    for (kind in zeroed) {
+      free_zero[free_columns(built$model, smooth_variable_names(kind)[["raw"]])] <- 0
+    }
+    columns_base <- free_state_columns(built_base$model)
+    base_slopes <- intersect(c(kdr_slope_names, "floor_kdr"),
+                             names(built_base$variables))
+    free_base <- numeric(length(unlist(
+      built_base$model$dag$example_parameters(free = TRUE))))
+    # the kdr model's floor intercepts take the free state of the floor at a
+    # flat smooth (floor_flat, V5f), which is its logit, the same value
+    flat_to_base <- !init_on && "floor_flat" %in% names(built$variables)
+    for (name in setdiff(names(attr(columns_base, "targets")), base_slopes)) {
+      own <- if (flat_to_base && name == "floor_intercept") "floor_flat" else
+        name
+      free_base[columns_base[[attr(columns_base, "targets")[[name]]]]] <-
+        free_zero[free_columns(built$model, own)]
+    }
+    trace_zero <- built$model$dag$trace_values(matrix(free_zero, nrow = 1))
+    rates <- smooth_prior_rates(smooth)
+    expected <- -length(base_slopes) * dnorm(0, log = TRUE)
+    if (flat_to_base) {
+      logit_f0 <- free_zero[free_columns(built$model, "floor_flat")]
+      expected <- expected + sum(floor_free_log_prior(logit_f0, smooth) -
+                                   floor_free_log_prior(logit_f0, "beta_moments"))
+    }
+    for (kind in zeroed) {
+      sd <- trace_zero[1, paste0("smooth_sd_", kind)]
+      expected <- expected + nrow(smooth$indices) * dnorm(0, log = TRUE) +
+        smooth_sd_log_prior(sd, smooth) + log(sd)
+      if (!smooth_range_fixed(smooth)) {
+        inv_range <- trace_zero[1, paste0("smooth_inv_range_", kind)]
+        expected <- expected + dexp(inv_range, rates$range, log = TRUE) +
+          log(inv_range)
+      }
+    }
+    if (shear) {
+      expected <- expected + dnorm(trace_zero[1, "smooth_shear"],
+                                   smooth_shear_prior$mean,
+                                   smooth_shear_prior$sd, log = TRUE)
+    }
+    ld_difference <- log_density(built$model, free_zero) -
+      log_density(built_base$model, free_base) - expected
+    base_label <- if (init_on) {
+      "the model without them (smooth of the initial state only)"
+    } else {
+      sprintf("the kdr model (floor %s) with slopes %s at 0",
+              deparse(options_base$kdr$floor), toString(base_slopes))
+    }
+    cat(sprintf("smooth: raw weights of %s 0 vs %s, greta log density: diff %.3g\n",
+                toString(zeroed), base_label, ld_difference))
+    stopifnot(abs(ld_difference) < 1e-6)
 
-  # and in plain R, the predictions at every assay
-  zero <- parameters
-  zero$smooth_weights[zeroed] <- lapply(zero$smooth_weights[zeroed],
-                                        function(x) 0 * x)
-  base <- zero
-  base$smooth_weights <- zero$smooth_weights[setdiff(names(
-    zero$smooth_weights), zeroed)]
-  base$options <- built_base$options
-  if (!init_on) {
-    base$kdr_slopes <- lapply(
-      setNames(nm = intersect(kdr_slope_names, base_slopes)),
-      function(name) rep(0, parameters$n_draws))
-    if (floor_on) base$floor_kdr <- rep(0, parameters$n_draws)
+    # and in plain R, the predictions at every assay
+    zero <- parameters
+    zero$smooth_weights[zeroed] <- lapply(zero$smooth_weights[zeroed],
+                                          function(x) 0 * x)
+    base <- zero
+    base$smooth_weights <- zero$smooth_weights[setdiff(names(
+      zero$smooth_weights), zeroed)]
+    base$options <- built_base$options
+    if (!init_on) {
+      base$kdr_slopes <- lapply(
+        setNames(nm = intersect(kdr_slope_names, base_slopes)),
+        function(name) rep(0, parameters$n_draws))
+      if (floor_on) base$floor_kdr <- rep(0, parameters$n_draws)
+    }
+    l_zero <- dynamical_logit(zero, df, df, x_cell_years, cell_years_index)
+    l_base <- dynamical_logit(base, df, df, x_cell_years, cell_years_index)
+    smooth_difference <- max(abs(clamp(l_zero) - clamp(l_base)))
+    cat(sprintf("smooth: raw weights of %s 0 vs %s, plain R, logit: max abs diff %.3g\n",
+                toString(zeroed), base_label, smooth_difference))
+    stopifnot(smooth_difference < 1e-12)
+    rm(built_base)
   }
-  l_zero <- dynamical_logit(zero, df, df, x_cell_years, cell_years_index)
-  l_base <- dynamical_logit(base, df, df, x_cell_years, cell_years_index)
-  smooth_difference <- max(abs(clamp(l_zero) - clamp(l_base)))
-  cat(sprintf("smooth: raw weights of %s 0 vs %s, plain R, logit: max abs diff %.3g\n",
-              toString(zeroed), base_label, smooth_difference))
-  stopifnot(smooth_difference < 1e-12)
-  rm(built_base)
 
   # With the shear loading b at 0, the selection smooth is v_s alone, and the
   # model is the one without the shear: in greta, the log density differs by
@@ -618,8 +656,9 @@ if (smooth_on(model_options)) {
   # With a fixed range, the model is the one with the range estimated, on
   # the same basis, at an inverse range of 1 / range: in greta, the log
   # density differs by the inverse range's prior and the Jacobian of its log
-  # free state; in plain R, the weights of the smooths are the same
-  if (smooth_range_fixed(smooth)) {
+  # free state; in plain R, the weights of the smooths are the same (not
+  # with the cloglog floor link, which needs a fixed range)
+  if (smooth_range_fixed(smooth) && smooth_floor_link(smooth) == "logit") {
     options_estimated <- model_options
     options_estimated$smooth[["range"]] <- NULL
     built_estimated <- build(df, options_estimated)
@@ -705,8 +744,9 @@ if (smooth_on(model_options)) {
   # same free state, the logit floor l, so the log density differs by the
   # priors alone: log N(f0; 0, s^2) - log P(0 < f0 < 1) + log f0 + log(1 -
   # f0) (greta's Jacobian of f0 = plogis(l)) against log N(l; the logit
-  # moments of Beta(floor_prior)), computed here (floor_free_log_prior())
-  if (floor_on) {
+  # moments of Beta(floor_prior)), computed here (floor_free_log_prior());
+  # not with the cloglog floor link, which needs the half-normal prior
+  if (floor_on && smooth_floor_link(smooth) == "logit") {
     options_floor <- model_options
     half_normal <- smooth_floor_prior_family(smooth) == "half_normal"
     options_floor$smooth$floor_intercept_prior <- if (half_normal) {

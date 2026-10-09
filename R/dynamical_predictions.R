@@ -166,7 +166,9 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   floor_kdr            draws, the kdr-dependent floor (#47; NULL without
 #                        it; kdr_floor_value()); floor_intercept is that of
 #                        the floor of the latent smooths too (with the
-#                        half-normal prior of V5f, logit(floor_flat))
+#                        half-normal prior of V5f, logit(floor_flat); with
+#                        the cloglog link of V5c, the log hazard at u_f = 0;
+#                        smooth_floor_intercept())
 #   smooth_weights       the weights of the latent smooths' basis functions
 #                        and centring terms (V5; smooth_weight_terms()), a
 #                        list of draws x (basis functions + 1), named by
@@ -404,7 +406,7 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
       floor <- smooth_floor_value(
         parameters$floor_intercept[
           , smooth_intercept_index(parameters$options, class)],
-        smooth$floor)
+        smooth$floor, link = smooth_floor_link(parameters$options$smooth))
     }
     # the smooth of the initial state, at type k's loading (one per draw)
     if (!is.null(smooth$init)) {

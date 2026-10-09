@@ -10,7 +10,7 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# "v5r", "v5i", "v5h", "v5f", "v5c", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
 # and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -336,6 +336,22 @@ v5f_runs <- data.frame(
   inits = low_floor_inits,
   job = c("full", "fold temporal_forecasting 2018",
           "fold temporal_forecasting 2014"))
+# The set "v5c" (v5c_runs): V5c, V5f with the cloglog floor link
+# (smooth_options(floor_link = "cloglog"), R/latent_smooth.R): the floor of a
+# log-normal hazard, floor_flat its mean, so the floor smooth's sd sets how
+# uneven the floor is and not its mean. The full fit and the two forecasting
+# folds, as "v5f":
+#   v5c_full, v5c_fc2018, v5c_fc2014
+v5c_options <- sub("scale = 0.05))", "scale = 0.05), floor_link = \"cloglog\")",
+                   v5f_options, fixed = TRUE)
+stopifnot(grepl("floor_link", v5c_options, fixed = TRUE))
+v5c_runs <- data.frame(
+  name = c("v5c_full", "v5c_fc2018", "v5c_fc2014"),
+  label = c("V5c_full", "V5c_fc2018", "V5c_fc2014"),
+  options = v5c_options,
+  inits = low_floor_inits,
+  job = c("full", "fold temporal_forecasting 2018",
+          "fold temporal_forecasting 2014"))
 cv5f_folds <- data.frame(
   fold = c("blocks1", "blocks2", "interp", "fc2014", "fc2018"),
   job = c("fold spatial_blocks 1", "fold spatial_blocks 2",
@@ -402,6 +418,7 @@ v5f_maps <- data.frame(
 # the sets of fits, by name
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
+                 v5c = v5c_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
