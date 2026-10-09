@@ -497,31 +497,57 @@ if (smooth_on(model_options)) {
   floor_on <- smooth_floor_on(model_options)
   init_on <- smooth_init_on(model_options)
   if (smooth_floor_link(smooth) == "cloglog") {
-    # the floor intercepts: log(floor_flat) less half the floor smooth's
-    # variance on the classes it applies to (smooth_floor_intercept())
+    # the floor intercepts: log(floor_flat) less, on the classes the floor
+    # smooth applies to, the log mean of exp(u_f) over floor_mean_cells, or
+    # half its variance (smooth_floor_intercept())
     f0 <- trace[1, grep("^floor_flat\\[", colnames(trace))]
     sd_floor <- trace[1, "smooth_sd_floor"]
-    by_hand <- log(f0) - sd_floor ^ 2 * smooth$floor_variance / 2 *
-      smooth$term_classes
-    intercept_difference <- max(abs(parameters$floor_intercept[1, ] - by_hand))
-    cat(sprintf("cloglog floor: intercepts vs log(floor_flat) - sd^2 v / 2 (v %.4f): max abs diff %.3g\n",
-                smooth$floor_variance, intercept_difference))
-    stopifnot(intercept_difference < 1e-12)
-    # the hazard's prior mean is floor_flat at any sd: exp(u_f - sd^2 v / 2)
-    # has mean 1 at the cells over draws of the raw weights
-    set.seed(1)
-    n_sim <- 20000
-    basis_floor <- hsgp_basis(coords_cells, smooth)
-    omega <- hsgp_frequencies(smooth$indices, smooth$half_width)
-    for (sd_sim in c(0.5, 2)) {
-      weights <- smooth_weights(matrix(rnorm(n_sim * nrow(smooth$indices)),
-                                       n_sim), rep(sd_sim, n_sim),
-                                rep(1 / smooth[["range"]], n_sim), smooth)
-      u <- weights %*% t(basis_floor)
-      ratio <- colMeans(exp(u - sd_sim ^ 2 * smooth$floor_variance / 2))
-      cat(sprintf("cloglog floor: prior mean of lambda / lambda_bar at sd %.1f over %d draws, at the cells: %.3f to %.3f\n",
-                  sd_sim, n_sim, min(ratio), max(ratio)))
-      stopifnot(abs(mean(ratio) - 1) < 0.05)
+    if (smooth_floor_mean(smooth) == "cells") {
+      # with the realised mean (V5n, floor_mean = "cells"): the log mean
+      # of exp(u_f) over floor_mean_cells, by hand from the floor smooth at
+      # those cells, and the mean hazard there equal to floor_flat
+      u_mean_cells <- c(parameters$smooth_weights$floor %*%
+                          t(smooth_basis_at(smooth, smooth_cell_coords(
+                            smooth$floor_mean_cells, smooth$crs))))
+      by_hand <- log(f0) - log(mean(exp(u_mean_cells))) * smooth$term_classes
+      intercept_difference <- max(abs(parameters$floor_intercept[1, ] -
+                                        by_hand))
+      cat(sprintf("cloglog floor, realised mean: intercepts vs log(floor_flat) - log mean exp(u_f) over %d cells: max abs diff %.3g\n",
+                  length(u_mean_cells), intercept_difference))
+      stopifnot(intercept_difference < 1e-12)
+      smooth_class <- which(smooth$term_classes)
+      realised <- vapply(smooth_class, function(k) {
+        mean(exp(parameters$floor_intercept[1, k] + u_mean_cells))
+      }, numeric(1))
+      realised_difference <- max(abs(realised / f0[smooth_class] - 1))
+      cat(sprintf("cloglog floor, realised mean: mean hazard over the cells / floor_flat, classes %s: %s (max rel diff %.3g)\n",
+                  toString(smooth_class),
+                  paste(sprintf("%.6f", realised / f0[smooth_class]), collapse = ", "),
+                  realised_difference))
+      stopifnot(realised_difference < 1e-12)
+    } else {
+      by_hand <- log(f0) - sd_floor ^ 2 * smooth$floor_variance / 2 *
+        smooth$term_classes
+      intercept_difference <- max(abs(parameters$floor_intercept[1, ] - by_hand))
+      cat(sprintf("cloglog floor: intercepts vs log(floor_flat) - sd^2 v / 2 (v %.4f): max abs diff %.3g\n",
+                  smooth$floor_variance, intercept_difference))
+      stopifnot(intercept_difference < 1e-12)
+      # the hazard's prior mean is floor_flat at any sd: exp(u_f - sd^2 v / 2)
+      # has mean 1 at the cells over draws of the raw weights
+      set.seed(1)
+      n_sim <- 20000
+      basis_floor <- hsgp_basis(coords_cells, smooth)
+      omega <- hsgp_frequencies(smooth$indices, smooth$half_width)
+      for (sd_sim in c(0.5, 2)) {
+        weights <- smooth_weights(matrix(rnorm(n_sim * nrow(smooth$indices)),
+                                         n_sim), rep(sd_sim, n_sim),
+                                  rep(1 / smooth[["range"]], n_sim), smooth)
+        u <- weights %*% t(basis_floor)
+        ratio <- colMeans(exp(u - sd_sim ^ 2 * smooth$floor_variance / 2))
+        cat(sprintf("cloglog floor: prior mean of lambda / lambda_bar at sd %.1f over %d draws, at the cells: %.3f to %.3f\n",
+                    sd_sim, n_sim, min(ratio), max(ratio)))
+        stopifnot(abs(mean(ratio) - 1) < 0.05)
+      }
     }
   } else {
     zeroed <- setdiff(kinds, "init")

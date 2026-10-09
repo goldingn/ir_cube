@@ -785,7 +785,8 @@ dynamical_terms <- function(v, classes_index, types,
   }
   if (smooth_on(options)) {
     terms$smooth_weights <- smooth_weight_terms(v, options)
-    terms$floor_intercept <- smooth_floor_intercept(v, options)
+    terms$floor_intercept <- smooth_floor_intercept(
+      v, options, weights = terms$smooth_weights$floor)
     terms$init_loading <- smooth_init_loadings(v, options)
   }
   terms
