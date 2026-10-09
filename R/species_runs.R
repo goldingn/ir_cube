@@ -364,9 +364,11 @@ v5n_options <- function(scale) {
           v5c_options, fixed = TRUE), fixed = TRUE)
 }
 # the runs of V5n at prior scales `scales`, each tagged v5n<digits after
-# the decimal point> (v5n05 for 0.05, v5n005 for 0.005)
+# the decimal point, at least two> (v5n05 for 0.05, v5n10 for 0.1, v5n005
+# for 0.005)
 v5n_set <- function(scales) do.call(rbind, lapply(scales, function(scale) {
-  tag <- paste0("v5n", sub("^0\\.", "", scale))
+  digits <- sub("^0\\.", "", scale)
+  tag <- paste0("v5n", if (nchar(digits) < 2) paste0(digits, "0") else digits)
   data.frame(
     name = paste0(tag, c("_full", "_fc2018", "_fc2014")),
     label = paste0(toupper(substr(tag, 1, 1)), substring(tag, 2),
@@ -381,7 +383,10 @@ v5n_runs <- v5n_set(c("0.05", "0.1", "0.2"))
 # fold still used the floor at 0.05 (the full fit and both folds at each)
 v5t_runs <- v5n_set(c("0.02", "0.01", "0.005"))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
-          identical(v5n_runs$name[1:3], c("v5n05_full", "v5n05_fc2018", "v5n05_fc2014")))
+          identical(v5n_runs$name[c(1, 4, 7)],
+                    c("v5n05_full", "v5n10_full", "v5n20_full")),
+          identical(v5t_runs$name[c(1, 4, 7)],
+                    c("v5n02_full", "v5n01_full", "v5n005_full")))
 cv5f_folds <- data.frame(
   fold = c("blocks1", "blocks2", "interp", "fc2014", "fc2018"),
   job = c("fold spatial_blocks 1", "fold spatial_blocks 2",
