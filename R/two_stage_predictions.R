@@ -97,7 +97,7 @@ two_stage_cells <- function(setup, cells, country,
 
 # The rows `rows` of `cells` (two_stage_cells()), with their covariates as the
 # cells x years x n_covs array dynamical_logit_cells() takes, and with the
-# latent smooths (V5), their centred basis at the cells (prediction_basis();
+# latent smooths (V5), their basis at the cells (prediction_basis();
 # NULL without them), made for each chunk
 two_stage_chunk <- function(setup, cells, rows = seq_along(cells$cells)) {
   list(cells = cells$cells[rows],

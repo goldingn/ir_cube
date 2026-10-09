@@ -61,6 +61,12 @@ for (mode in names(chains)) {
   attr(means, "levels") <- dynamical_lookups(f$df)$levels
   out <- sprintf("temporary/inits_floor_%s.RDS", mode)
   saveRDS(means, out)
-  cat(sprintf("%s: chains %s, mortality floor %.4f -> %s\n", mode,
-              toString(chains[[mode]]), means$mortality_floor, out))
+  # the floors, as dynamical_inits() starts a model's floor from them
+  # (mortality_floor, or the floor where the floor smooth is 0: floor_flat,
+  # or plogis(floor_intercept))
+  floors <- c(means$mortality_floor, means$floor_flat,
+              if (is.null(means$floor_flat)) plogis(means$floor_intercept))
+  cat(sprintf("%s: chains %s, floors %s -> %s\n", mode,
+              toString(chains[[mode]]),
+              paste(sprintf("%.4f", floors), collapse = ", "), out))
 }

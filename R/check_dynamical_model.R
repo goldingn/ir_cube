@@ -19,15 +19,21 @@
 # slopes at 0 is checked against the model without it, in greta (the log
 # density) and in plain R (the predictions), and with the kdr-dependent floor,
 # with its slope at 0 against the constant floor. With the latent smooths
-# (V5, #47), each is checked to have mean 0 over the modelled cells, and the
-# model with every raw weight 0 against the kdr model with the same floor
-# intercepts (by class: V4_class) and its slopes at 0, in greta and in plain
-# R: both are then the model with a constant floor per class (or one floor,
-# or none). With the shear, the model with its loading b at 0 is checked
-# against the same smooths without the shear, in greta and in plain R. The
-# model with the other prior of the smooths' sds (PC or half-normal,
-# smooth_options(sd_prior = )) is checked against it at the same free state,
-# in greta: the log density differs by the two priors at the sds. With
+# (V5, #47), each is checked to have mean 0 over the cells it is centred on
+# (every modelled cell, or for the floor smooth of the pyrethroids and DDT,
+# the cells with their bioassays) and to equal the smooth from the centred
+# basis functions, and the model with every raw weight 0 against the kdr
+# model with the same floor intercepts (by class: V4_class) and its slopes
+# at 0, in greta and in plain R: both are then the model with a constant
+# floor per class (or one floor, or none). With the shear, the model with
+# its loading b at 0 is checked against the same smooths without the shear,
+# in greta and in plain R. The model with the other prior of the smooths'
+# sds (PC or half-normal, smooth_options(sd_prior = )), and with the other
+# prior of the floor where u_f is 0 (the half-normal on the floor itself or
+# the logit-normal on its logit, smooth_options(floor_intercept_prior = )),
+# is checked against it at the same free state, in greta: the log density
+# differs by the two priors (with the Jacobian of the floor's transform),
+# computed here. With
 # the smooth of the initial state (smooth_options(init = TRUE)), the
 # selection and floor smooths' raw weights at 0 are checked against the
 # model without them (the same smooth of the initial state, a constant floor
@@ -106,6 +112,20 @@ stopifnot(n_free == length(unlist(
   built_one$model$dag$example_parameters(free = TRUE))))
 set.seed(seed)
 free <- rnorm(n_free, 0, free_sd)
+
+# The log prior density of the floor where u_f is 0, with greta's Jacobian,
+# at its free state, the logit floor l, for the smooth options `smooth` (or
+# "beta_moments"): with the half-normal prior on f0 = plogis(l)
+# (smooth_floor_log_prior()), plus log f0 + log(1 - f0); with the other,
+# N(l; the logit moments of Beta(floor_prior)), the free state being l itself
+floor_free_log_prior <- function(l, smooth) {
+  if (is.list(smooth) && smooth_floor_prior_family(smooth) == "half_normal") {
+    f0 <- plogis(l)
+    return(smooth_floor_log_prior(f0, smooth) + log(f0) + log1p(-f0))
+  }
+  prior <- logit_beta_moments(model_options$floor_prior)
+  dnorm(l, prior$mean, prior$sd, log = TRUE)
+}
 
 # the free-state elements of a variable
 free_columns <- function(model, name) {
@@ -399,11 +419,37 @@ if (smooth_on(model_options)) {
               smooth$kernel, toString(smooth$m), nrow(smooth$indices),
               if (smooth_floor_on(model_options)) smooth$floor_intercepts else
                 "none"))
-  # each smooth has mean 0 over the modelled cells
+  # each smooth has mean 0 over the cells of the bioassays it applies to:
+  # every modelled cell, or for a smooth of the pyrethroids and DDT, the
+  # cells with their bioassays (smooth_centre()); and the smooth from the
+  # basis with its column of ones and the weights with their centring term
+  # is the smooth from the centred basis functions
   basis_cells <- prediction_basis(model_options, map_rows$cell)
   u_cells <- lapply(parameters$smooth_weights, function(w) {
     c(w %*% t(basis_cells))
   })
+  class_cells <- unique(df$cell[df$insecticide_class %in% smooth_classes])
+  centre_rows <- function(kind) {
+    if (identical(smooth[[kind]], "class") &&
+        !is.null(smooth$class_column_means)) {
+      which(map_rows$cell %in% class_cells)
+    } else {
+      seq_len(nrow(map_rows))
+    }
+  }
+  coords_cells <- smooth_cell_coords(map_rows$cell, smooth$crs)
+  centring_difference <- max(vapply(kinds, function(kind) {
+    w <- parameters$smooth_weights[[kind]]
+    centred <- smooth_centred_basis(smooth, coords_cells, kind)
+    max(abs(u_cells[[kind]] - c(w[, seq_len(ncol(centred)), drop = FALSE] %*%
+                                  t(centred))))
+  }, numeric(1)))
+  cat(sprintf("smooths: with the centring term vs from the centred basis: max abs diff %.3g; centred over %s\n",
+              centring_difference,
+              paste(sprintf("%s %d cells", kinds, vapply(kinds, function(kind) {
+                length(centre_rows(kind))
+              }, integer(1))), collapse = ", ")))
+  stopifnot(centring_difference < 1e-12)
   for (kind in kinds) {
     scale <- if (kind == "init") {
       sprintf("sd 1 (fixed), loadings %s", paste(sprintf(
@@ -412,14 +458,16 @@ if (smooth_on(model_options)) {
     } else {
       sprintf("sd %.3f", trace[1, paste0("smooth_sd_", kind)])
     }
-    cat(sprintf("smooth %s: %s, range %.0f km%s; at the cells, mean %.2g, range %.3f to %.3f\n",
+    cat(sprintf("smooth %s: %s, range %.0f km%s; at the cells, mean %.2g (over the cells it is centred on %.2g), range %.3f to %.3f\n",
                 kind, scale,
                 smooth_range_km(trace, model_options, kind),
                 if (smooth_range_fixed(smooth)) " (fixed)" else "",
-                mean(u_cells[[kind]]), min(u_cells[[kind]]),
-                max(u_cells[[kind]])))
+                mean(u_cells[[kind]]), mean(u_cells[[kind]][centre_rows(kind)]),
+                min(u_cells[[kind]]), max(u_cells[[kind]])))
   }
-  stopifnot(all(abs(vapply(u_cells, mean, numeric(1))) < 1e-12))
+  stopifnot(all(vapply(kinds, function(kind) {
+    abs(mean(u_cells[[kind]][centre_rows(kind)])) < 1e-12
+  }, logical(1))))
   shear <- isTRUE(smooth$shear)
   if (shear) {
     cat(sprintf("smooth shear: b %.3f\n", trace[1, "smooth_shear"]))
@@ -460,13 +508,23 @@ if (smooth_on(model_options)) {
                            names(built_base$variables))
   free_base <- numeric(length(unlist(
     built_base$model$dag$example_parameters(free = TRUE))))
+  # the kdr model's floor intercepts take the free state of the floor at a
+  # flat smooth (floor_flat, V5f), which is its logit, the same value
+  flat_to_base <- !init_on && "floor_flat" %in% names(built$variables)
   for (name in setdiff(names(attr(columns_base, "targets")), base_slopes)) {
+    own <- if (flat_to_base && name == "floor_intercept") "floor_flat" else
+      name
     free_base[columns_base[[attr(columns_base, "targets")[[name]]]]] <-
-      free_zero[free_columns(built$model, name)]
+      free_zero[free_columns(built$model, own)]
   }
   trace_zero <- built$model$dag$trace_values(matrix(free_zero, nrow = 1))
   rates <- smooth_prior_rates(smooth)
   expected <- -length(base_slopes) * dnorm(0, log = TRUE)
+  if (flat_to_base) {
+    logit_f0 <- free_zero[free_columns(built$model, "floor_flat")]
+    expected <- expected + sum(floor_free_log_prior(logit_f0, smooth) -
+                                 floor_free_log_prior(logit_f0, "beta_moments"))
+  }
   for (kind in zeroed) {
     sd <- trace_zero[1, paste0("smooth_sd_", kind)]
     expected <- expected + nrow(smooth$indices) * dnorm(0, log = TRUE) +
@@ -640,6 +698,48 @@ if (smooth_on(model_options)) {
               sd_prior_difference))
   stopifnot(abs(sd_prior_difference) < 1e-6)
   rm(built_other)
+
+  # The model with the other prior of the floor where u_f is 0
+  # (smooth_options(floor_intercept_prior = )), at the same free state: the
+  # half-normal prior's floor_flat and the other's floor_intercept have the
+  # same free state, the logit floor l, so the log density differs by the
+  # priors alone: log N(f0; 0, s^2) - log P(0 < f0 < 1) + log f0 + log(1 -
+  # f0) (greta's Jacobian of f0 = plogis(l)) against log N(l; the logit
+  # moments of Beta(floor_prior)), computed here (floor_free_log_prior())
+  if (floor_on) {
+    options_floor <- model_options
+    half_normal <- smooth_floor_prior_family(smooth) == "half_normal"
+    options_floor$smooth$floor_intercept_prior <- if (half_normal) {
+      "beta_moments"
+    } else {
+      list(family = "half_normal", scale = 0.05)
+    }
+    built_floor <- build(df, options_floor)
+    columns_floor <- free_state_columns(built_floor$model)
+    targets_floor <- attr(columns_floor, "targets")
+    floor_name <- function(half) if (half) "floor_flat" else "floor_intercept"
+    free_floor <- numeric(length(free))
+    for (name in names(targets_floor)) {
+      own <- if (name == floor_name(!half_normal)) floor_name(half_normal) else
+        name
+      free_floor[columns_floor[[targets_floor[[name]]]]] <-
+        free[free_columns(built$model, own)]
+    }
+    logit_f0 <- free[free_columns(built$model, floor_name(half_normal))]
+    prior_difference <- sum(
+      floor_free_log_prior(logit_f0, smooth) -
+        floor_free_log_prior(logit_f0, options_floor$smooth))
+    floor_prior_difference <- log_density(built$model, free) -
+      log_density(built_floor$model, free_floor) - prior_difference
+    cat(sprintf("smooth floor prior: %s vs %s at f0 %s, greta log density: diff %.4f, analytic %.4f, residual %.3g\n",
+                deparse(smooth$floor_intercept_prior),
+                deparse(options_floor$smooth$floor_intercept_prior),
+                paste(sprintf("%.3f", plogis(logit_f0)), collapse = ", "),
+                prior_difference + floor_prior_difference, prior_difference,
+                floor_prior_difference))
+    stopifnot(abs(floor_prior_difference) < 1e-6)
+    rm(built_floor)
+  }
 
   if (floor_on) {
     cat(sprintf("smooth floor (%s): floor where u_f is 0 %s\n",

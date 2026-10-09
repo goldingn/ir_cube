@@ -102,13 +102,14 @@ key_parameters <- function(chain) {
       out[[sprintf("exp(%s)", name)]] <- exp(m[, name])
     }
     # the kdr-dependent floor at the mean kdr, or the floor of the latent
-    # smooths where u_f is 0, per class with an intercept per class
-    if (grepl("^floor_intercept", name)) {
-      index <- if (name == "floor_intercept") "" else
+    # smooths where u_f is 0, per class with an intercept per class: from its
+    # logit, floor_intercept, or itself, floor_flat (V5f)
+    if (grepl("^floor_(intercept|flat)", name)) {
+      index <- if (name %in% c("floor_intercept", "floor_flat")) "" else
         sprintf("[%s]", fit$classes[as.integer(sub("^.*\\[(\\d+),.*$", "\\1",
                                                     name))])
       out[[paste0(if (smooth) "floor_at_u0" else "floor_at_k0", index)]] <-
-        plogis(m[, name])
+        if (grepl("^floor_flat", name)) m[, name] else plogis(m[, name])
     }
   }
   # the latent smooths' sd, range in km (none when it is fixed, which is no

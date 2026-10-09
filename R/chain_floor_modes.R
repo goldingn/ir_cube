@@ -16,7 +16,9 @@
 # kdr-dependent floor (#47), the floor is that at the mean kdr,
 # plogis(floor_intercept) (floor_at_k0), one per class with floor = "class"
 # (floor NA, and a mode per class in class order); with the latent smooths
-# (V5), that where u_f is 0 (floor_at_u0), and the chain's mean sd and range
+# (V5), that where u_f is 0 (floor_at_u0; the variable floor_flat with the
+# prior of V5f, smooth_options(floor_intercept_prior = )), and the chain's
+# mean sd and range
 # (in km; none for a fixed range, which is no variable) of each smooth and
 # shear loading, and the loadings per type of the smooth of the initial state
 # (smooth_options(init = TRUE)), also for a model without a floor.
@@ -25,7 +27,7 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
   floor_columns <- c(intersect(c("mortality_floor", "other_floor",
                                  "arabiensis_floor"),
                                colnames(draws[[1]])),
-                     grep("^floor_intercept", colnames(draws[[1]]),
+                     grep("^floor_(intercept|flat)", colnames(draws[[1]]),
                           value = TRUE))
   smooth_columns <- grep("^smooth_(sd_|inv_range_|shear$|loading_)",
                          colnames(draws[[1]]), value = TRUE)
@@ -46,7 +48,7 @@ chain_floor_modes <- function(model, draws, n_per_chain = 60,
     chain_draws <- as.matrix(draws[[chain]])
     floors <- colMeans(floor_values(chain_draws[, floor_columns,
                                                 drop = FALSE]))
-    names(floors) <- sub("^floor_intercept",
+    names(floors) <- sub("^floor_(intercept|flat)",
                          if (length(smooth_columns) > 0) "floor_at_u0" else
                            "floor_at_k0", names(floors))
     row <- data.frame(chain = chain,

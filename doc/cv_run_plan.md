@@ -98,15 +98,19 @@ afterwards, or the real fold will be skipped.
 
 ### The default model (#47)
 
-Since #47 the defaults of `dynamical_model_options()` are V5h: population
-d½ 270; a mortality floor per insecticide class, its prior matched to
-Beta(1, 4); latent smooths (`smooth_options()`, `R/latent_smooth.R`) of the
-strength of selection, for every class, and of the logit floor, for the
-pyrethroids and DDT, at a range fixed at 1,500 km, each sd with a half-normal
-prior of scale 0.5; and the beta-binomial likelihood. Before, they were no
-floor and no smooths (#37). The pod jobs give the options in full
+Since #47 the defaults of `dynamical_model_options()` are V5f: population
+d½ 270; a mortality floor per insecticide class, shifted by a latent smooth
+of the logit floor for the pyrethroids and DDT, centred over the cells with
+their bioassays, the floor at a flat smooth with a half-normal prior of scale
+0.05; a latent smooth of the strength of selection for every class, centred
+over every modelled cell; both smooths at a range fixed at 1,500 km
+(`smooth_options()`, `R/latent_smooth.R`), each sd with a half-normal prior
+of scale 0.5; and the beta-binomial likelihood. V5h, the default before it,
+centred both smooths over every modelled cell and put a logit-normal prior
+on the floor intercepts; before V5h the defaults were no floor and no
+smooths (#37). The pod jobs give the options in full
 (`IR_CUBE_MODEL_OPTIONS`) all the same. Its folds, and the two-stage model on
-them, are run as in `doc/v5h_cv_runbook.md`.
+them, are run as in `doc/v5f_cv_runbook.md`.
 
 ### Sampling settings (#25)
 

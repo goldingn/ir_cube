@@ -93,7 +93,7 @@ report("basis: %s kernel, m = (%d, %d), %d functions, half-widths (%.0f, %.0f) k
 
 coords <- smooth_cell_coords(cells, smooth$crs)
 distance <- as.matrix(dist(coords))
-basis <- smooth_basis_at(smooth, coords)
+basis <- smooth_centred_basis(smooth, coords)
 omega <- hsgp_frequencies(smooth$indices, smooth$half_width)
 kernel <- function(d, rho) {
   ell <- rho / 2

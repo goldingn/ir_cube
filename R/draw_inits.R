@@ -8,17 +8,18 @@
 #   Rscript R/draw_inits.R <fit file> <prefix> [variable]
 #
 # e.g. Rscript R/draw_inits.R \
-#        outputs/pod_jobs/v5h_bb_full/temporary/fitted_model.RData \
-#        temporary/inits_v5h_draw
-# writes temporary/inits_v5h_draw1.RDS, ..., one per chain of the fit (4),
+#        outputs/pod_jobs/v5f_full/temporary/fitted_model.RData \
+#        temporary/inits_v5f_draw
+# writes temporary/inits_v5f_draw1.RDS, ..., one per chain of the fit (4),
 # for
-#   IR_CUBE_INITS=temporary/inits_v5h_draw1.RDS,...,temporary/inits_v5h_draw4.RDS
+#   IR_CUBE_INITS=temporary/inits_v5f_draw1.RDS,...,temporary/inits_v5f_draw4.RDS
 # which starts chain i of a 4-chain run at draw i (dynamical_chain_inits()).
 #
 # Draw i is from chain i of the fit, and the draws are spread along
-# `variable` (default floor_intercept[1,1], the logit floor of the
-# pyrethroids where the floor smooth is 0, along which V5h's 2018 forecasting
-# fold mixed slowest): the chains are ranked by their mean of it, and the
+# `variable` (default floor_flat[1,1], or in fits before V5f
+# floor_intercept[1,1]: the floor of the pyrethroids where the floor smooth
+# is 0, or its logit, along which V5h's 2018 forecasting fold mixed
+# slowest): the chains are ranked by their mean of it, and the
 # chain of rank r gives its draw nearest the (r - 1/2) / n quantile of the
 # pooled draws. The draws are those of the fit's own chains (draws_all_chains
 # if R/drop_stuck_chains.R dropped some), moved to the variables of the
@@ -29,8 +30,7 @@ arguments <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(arguments) %in% 2:3)
 file <- arguments[1]
 prefix <- arguments[2]
-variable <- if (length(arguments) == 3) arguments[3] else
-  "floor_intercept[1,1]"
+variable <- if (length(arguments) == 3) arguments[3] else NA
 
 suppressMessages({
   library(greta)
@@ -47,6 +47,10 @@ draws <- if (exists("draws_all_chains", envir = f, inherits = FALSE)) {
   f$draws
 }
 n_chains <- length(draws)
+if (is.na(variable)) {
+  variable <- intersect(c("floor_flat[1,1]", "floor_intercept[1,1]"),
+                        colnames(draws[[1]]))[1]
+}
 stopifnot(variable %in% colnames(draws[[1]]))
 
 # the draw of each chain: chains ranked by their mean of `variable`, each

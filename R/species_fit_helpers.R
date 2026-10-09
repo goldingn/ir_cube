@@ -11,9 +11,10 @@ source("R/two_stage_helpers.R")
 # The floors of a fit: mortality_floor, or the species model's other_floor and
 # arabiensis_floor, or the intercepts of the kdr-dependent floor or the floor
 # of the latent smooths (floor_intercept, one or one per class: the logit
-# floor at the mean kdr, or where u_f is 0; #47). The scripts
-# treat an intercept as its floor, plogis(floor_intercept) (floor_values(),
-# R/dynamical_model.R), whose free state is the same, qlogis(floor)
+# floor at the mean kdr, or where u_f is 0; #47), or the floor itself where
+# u_f is 0 (floor_flat, V5f). The scripts treat an intercept as its floor,
+# plogis(floor_intercept) (floor_values(), R/dynamical_model.R), whose free
+# state is the same, qlogis(floor), as floor_flat's (on [0, 1])
 floor_names <- c("mortality_floor", "other_floor", "arabiensis_floor")
 
 # A fit's saved options, completed for the current code. Options added since
@@ -98,7 +99,7 @@ load_fit <- function(file, floor_prior = floor_prior_override()) {
 # The floors of `draws` (a greta_mcmc_list) it has
 fit_floor_names <- function(draws) {
   c(intersect(floor_names, colnames(draws[[1]])),
-    grep("^floor_intercept", colnames(draws[[1]]), value = TRUE))
+    grep("^floor_(intercept|flat)", colnames(draws[[1]]), value = TRUE))
 }
 
 # The floor mode of each chain of `draws`: as chain_floor_modes(), "low" or

@@ -21,24 +21,31 @@ source("R/windowed_hmc.R")
 
 # model options ------------------------------------------------------------
 
-# Switches for model terms. The defaults are V5h (#47): population d_half 270
-# in selection_design(); a mortality floor per insecticide class, its prior
-# matched to Beta(1, 4), shifted by a latent smooth for the pyrethroids and
-# DDT; a latent smooth of the strength of selection for every class; both
-# smooths at a fixed range of 1,500 km, each sd with a half-normal prior of
-# scale 0.5 (smooth_options()); and the beta-binomial likelihood. They are
-# not those of the fits before V5h (#37: no floor, no smooths), nor of those
-# before #37 (d_half 50, an estimated floor). A fit's own options are saved
-# with it (model_options), and the scripts that use a fit take them from
-# there (complete_model_options(), R/species_fit_helpers.R).
+# Switches for model terms. The defaults are V5f (#47): population d_half 270
+# in selection_design(); a mortality floor per insecticide class, shifted by
+# a latent smooth for the pyrethroids and DDT, centred over the cells with
+# their bioassays, the floor at a flat smooth with a half-normal prior of
+# scale 0.05; a latent smooth of the strength of selection for every class,
+# centred over every modelled cell; both smooths at a fixed range of 1,500
+# km, each sd with a half-normal prior of scale 0.5 (smooth_options()); and
+# the beta-binomial likelihood. V5h, the default before, centred both
+# smooths over every modelled cell and had a logit-normal prior on the floor
+# intercepts; the fits before V5h had no floor and no smooths (#37), and
+# those before #37 d_half 50 and an estimated floor. A fit's own options are
+# saved with it (model_options), with the smooths' basis and centring, and
+# the scripts that use a fit take them from there (complete_model_options(),
+# R/species_fit_helpers.R).
 #   mortality_floor   TRUE (the default) for an estimated floor on bioassay
 #                     mortality, the mortality of a fully resistant
 #                     population (#14), or FALSE for none
 #   floor_prior       the Beta shape parameters of the prior of the floor:
 #                     Beta(1, 4) by default (Beta(1, 49) before V5h;
-#                     dynamical_variables()); with the smooths, the normal
-#                     prior of each class's logit floor intercept has its
-#                     logit's mean and sd
+#                     dynamical_variables()); for the kdr-dependent floor and
+#                     the smooths' floor with smooth_options(
+#                     floor_intercept_prior = "beta_moments"), the normal
+#                     prior of each logit floor intercept has its logit's
+#                     mean and sd. Unused by the default floor, whose prior
+#                     is smooth_options(floor_intercept_prior = )
 #   init_covariates   names of static covariates of the initial state, from
 #                     init_covariate_names(selection_columns), or NULL for
 #                     none (#19)
@@ -433,11 +440,27 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   }
   # The floor of the latent smooths (V5, #47), in its place too:
   # plogis(floor_intercept + u_f(x)), the intercept per class or one for all
-  # (smooth_options(floor_intercepts = )), with the same prior; the
-  # intercept is the floor where u_f is 0, its mean over the modelled cells
+  # (smooth_options(floor_intercepts = )); the intercept is the logit floor
+  # where u_f is 0, its mean over the cells with bioassays of the classes it
+  # applies to (smooth_centre()). Its prior (smooth_options(
+  # floor_intercept_prior = )): by default (V5f), on the floor itself at a
+  # flat smooth, f0 = plogis(floor_intercept), sampled as floor_flat,
+  #   f0 ~ half-normal(0, 0.05), truncated to [0, 1]:
+  # P(f0 > 0.1) = 0.046, small but not negligible; floors up to ~0.1 are
+  # nearly free and higher floors are penalised (log density 2.8 at 0, 0.8 at
+  # 0.1, -5.2 at 0.2, -15.2 at 0.3), so high floors must come from the smooth
+  # locally.
+  # Or (V5 to V5h) the logit-normal prior of the kdr-dependent floor's
+  # intercept, above
   if (smooth_floor_on(options)) {
-    floor <- list(floor_intercept = floor_intercept(
-      identical(options$smooth$floor_intercepts, "class")))
+    by_class <- identical(options$smooth$floor_intercepts, "class")
+    floor <- if (smooth_floor_flat_on(options)) {
+      list(floor_flat = normal(0, options$smooth$floor_intercept_prior$scale,
+                               dim = if (by_class) n_classes else 1,
+                               truncation = c(0, 1)))
+    } else {
+      list(floor_intercept = floor_intercept(by_class))
+    }
   }
 
   # Coefficients of the standardised initial-state covariates on the logit
@@ -758,7 +781,7 @@ dynamical_terms <- function(v, classes_index, types,
   }
   if (smooth_on(options)) {
     terms$smooth_weights <- smooth_weight_terms(v, options)
-    terms$floor_intercept <- v$floor_intercept
+    terms$floor_intercept <- smooth_floor_intercept(v, options)
     terms$init_loading <- smooth_init_loadings(v, options)
   }
   terms
@@ -937,6 +960,18 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
     stopifnot(!is.null(options), !is.null(classes_index))
     cached <- centre_variables(cached, classes_index, options)
   }
+  # the floor where the floor smooth is 0 in the form the model samples it:
+  # the floor itself, floor_flat, from a cached logit floor_intercept (V5 to
+  # V5h, or the kdr-dependent floor at the mean kdr), or the reverse
+  # (smooth_floor_intercept())
+  if ("floor_flat" %in% names(variables) && is.null(cached$floor_flat) &&
+      !is.null(cached$floor_intercept)) {
+    cached$floor_flat <- plogis(as.matrix(cached$floor_intercept))
+  }
+  if ("floor_intercept" %in% names(variables) &&
+      is.null(cached$floor_intercept) && !is.null(cached$floor_flat)) {
+    cached$floor_intercept <- qlogis(as.matrix(cached$floor_flat))
+  }
   out <- cached[intersect(names(cached), names(variables))]
   # only where the dimensions match (a different selection design changes the
   # number of covariates)
@@ -955,7 +990,9 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
   # multipliers start at no difference between the species, and both species'
   # floors, and the kdr-dependent floor at the mean kdr, at the cached
   # mortality_floor if there is one (so that cached values in either floor
-  # mode, R/floor_mode_inits.R, start there), or else at 0.02 (#47). The
+  # mode, R/floor_mode_inits.R, start there), or else the cached floor of the
+  # first class at a flat smooth (floor_flat, or plogis(floor_intercept)), or
+  # else at 0.02 (#47). The
   # latent smooths start flat (raw weights 0), with sd 0.3 and range 3,000
   # km (with V5's PC priors, the means of sd and 1 / range are 0.33 and 1 /
   # 4,500 km; a fixed range is no variable, so has no start), the shear
@@ -968,6 +1005,8 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
   # draw of a fit with the smooths (R/draw_inits.R) gives them all
   species_floor <- if (!is.null(cached$mortality_floor)) {
     c(cached$mortality_floor)[1]
+  } else if (!is.null(cached$floor_flat)) {
+    c(cached$floor_flat)[1]
   } else {
     0.02
   }
@@ -975,7 +1014,8 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
               gamma_selection = 0, gamma_cost = 0,
               other_floor = species_floor, arabiensis_floor = species_floor,
               setNames(rep(0, length(kdr_slope_names)), kdr_slope_names),
-              floor_intercept = qlogis(species_floor), floor_kdr = 0,
+              floor_intercept = qlogis(species_floor),
+              floor_flat = species_floor, floor_kdr = 0,
               smooth_raw_selection = 0, smooth_sd_selection = 0.3,
               smooth_inv_range_selection = 1 / 3,
               smooth_raw_floor = 0, smooth_sd_floor = 0.3,
@@ -1196,9 +1236,11 @@ dynamical_chain_inits <- function(files, variables, levels, columns,
 
 
 # The floors in the columns of `x` (named), on the floor's scale: as they are
-# for mortality_floor, other_floor and arabiensis_floor, and plogis() of the
+# for mortality_floor, other_floor, arabiensis_floor and the floor of the
+# latent smooths where u_f is 0 (floor_flat, V5f), and plogis() of the
 # intercepts of the kdr-dependent floor or the floor of the latent smooths
-# (floor_intercept, the floor at the mean kdr, or where u_f is 0; #47)
+# with the other prior (floor_intercept, the floor at the mean kdr, or where
+# u_f is 0; #47)
 floor_values <- function(x) {
   intercept <- grepl("^floor_intercept", colnames(x))
   x[, intercept] <- plogis(x[, intercept])
@@ -1304,11 +1346,15 @@ build_dynamical_model <- function(train_df,
     options$kdr$floor_classes <- lookups$levels$classes %in% kdr_floor_classes
   }
   # the basis of the latent smooths (V5), set up for these cells (all of them,
-  # whatever the fold) and recorded in the options for the plain-R
-  # predictions, and the centred basis at each cell_id (NULL without them)
+  # whatever the fold), each smooth centred over the cells of the bioassays it
+  # applies to (of the full data, whatever the fold), and recorded in the
+  # options for the plain-R predictions; and the basis at each cell_id
+  # (smooth_basis_at(); NULL without them)
   if (smooth_on(options)) {
-    options$smooth <- smooth_box(options$smooth, cells,
-                                 lookups$levels$classes)
+    term_class_ids <- which(lookups$levels$classes %in% smooth_classes)
+    options$smooth <- smooth_box(
+      options$smooth, cells, lookups$levels$classes,
+      class_cells = unique(df$cell[df$class_id %in% term_class_ids]))
   }
   basis_cells <- prediction_basis(options, cells)
   # the latent smooth `kind` at rows with cell_id `cell` and class_id `class`

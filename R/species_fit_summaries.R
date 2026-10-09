@@ -84,7 +84,7 @@ print(as.data.frame(select(fit_rows, -file, -options)), digits = 4)
 # the new parameters: medians, 50% and 95% intervals, by fit
 new <- parameters %>%
   filter(group %in% c("multiplier", "floor", "smooth"),
-         !grepl("^floor_intercept", parameter)) %>%
+         !grepl("^floor_(intercept|flat)", parameter)) %>%
   mutate(label = factor(label, levels = rev(names(fits))))
 if (nrow(new) > 0) {
   # no effect, 1, for the multipliers (an empty layer breaks the facets)

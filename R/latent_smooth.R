@@ -18,10 +18,11 @@
 # settings ---------------------------------------------------------------------
 
 # Settings of the latent smooths, for dynamical_model_options(smooth = ).
-# The defaults are V5h's (#47), the default model's: the range fixed at
-# 1,500 km and a half-normal prior of scale 0.5 on each smooth's sd. V5 is
-# smooth_options(range = NULL, sd_prior = c(1, 0.05)), and V5r
-# smooth_options(sd_prior = c(1, 0.05)).
+# The defaults are V5f's (#47), the default model's: the range fixed at
+# 1,500 km, a half-normal prior of scale 0.5 on each smooth's sd, and a
+# half-normal prior of scale 0.05 on the floor at a flat smooth. V5h is
+# smooth_options(floor_intercept_prior = "beta_moments"), V5r that with
+# sd_prior = c(1, 0.05), and V5 that with range = NULL.
 #   selection         the smooth u_s(x) of the strength of selection: the
 #                     cumulative log fitness is multiplied by exp(u_s(x))
 #                     (outer_mortality(), R/dynamical_model.R). TRUE (the
@@ -46,7 +47,17 @@
 #                     floor_intercept + u_f(x)), in place of the constant
 #                     mortality_floor, with or without u_f; floor_intercept is
 #                     the logit floor where u_f is 0, which is u_f's mean
-#                     over the modelled cells
+#                     over the cells it is centred on (smooth_box())
+#   floor_intercept_prior
+#                     the prior of the floor where u_f is 0 (the floor at a
+#                     flat smooth): list(family = "half_normal", scale = s)
+#                     (the default, s = 0.05; V5f) for f0 ~ N(0, s^2)
+#                     truncated to [0, 1], one per intercept, sampled as the
+#                     variable floor_flat, with floor_intercept = logit(f0);
+#                     or "beta_moments" (V5 to V5h, and fits saved without
+#                     the option) for floor_intercept ~ N with the mean and
+#                     sd of the logit of a Beta(floor_prior) variable
+#                     (logit_beta_moments(), R/dynamical_model.R)
 #   kernel            "se" (the default; squared exponential) or "matern52"
 #                     (Matern, smoothness 5/2)
 #   c                 the box's half-widths as multiples of the half-extents
@@ -99,9 +110,10 @@
 #                     the mean logit relative initial state over them
 # build_dynamical_model() adds the basis (smooth_box()): the projection, the
 # box's origin and half-widths, m, the frequency indices of the basis
-# functions and their means over the modelled cells (which centre them); and
-# term_classes, whether each class (in class_id order) is one a "class"
-# smooth applies to
+# functions, their means over all the modelled cells (column_means) and over
+# the cells with bioassays of the pyrethroids or DDT (class_column_means),
+# which centre the smooths (smooth_centre()); and term_classes, whether each
+# class (in class_id order) is one a "class" smooth applies to
 smooth_options <- function(selection = TRUE,
                            floor = "class",
                            shear = FALSE,
@@ -114,6 +126,8 @@ smooth_options <- function(selection = TRUE,
                            range_prior = c(1.5, 0.05),
                            sd_prior = list(family = "half_normal",
                                            scale = 0.5),
+                           floor_intercept_prior = list(family = "half_normal",
+                                                        scale = 0.05),
                            init = FALSE) {
   list(selection = selection,
        floor = floor,
@@ -126,7 +140,46 @@ smooth_options <- function(selection = TRUE,
        basis_range = basis_range,
        range_prior = range_prior,
        sd_prior = sd_prior,
+       floor_intercept_prior = floor_intercept_prior,
        init = init)
+}
+
+# The family of the prior of the floor where the floor smooth is 0
+# (smooth_options(floor_intercept_prior = )): "half_normal", the floor
+# itself, f0 ~ N(0, scale^2) truncated to [0, 1], sampled as floor_flat; or
+# "beta_moments", its logit, floor_intercept, normal with the logit moments
+# of Beta(floor_prior). Options saved before the option have none, and the
+# latter
+smooth_floor_prior_family <- function(smooth) {
+  prior <- smooth[["floor_intercept_prior"]]
+  if (is.list(prior)) prior$family else "beta_moments"
+}
+
+# The log density of the half-normal prior of the floor at a flat smooth
+# (smooth_options(floor_intercept_prior = )) at f0, in plain R, as greta
+# evaluates it: N(f0; 0, scale^2) over its probability on [0, 1]
+smooth_floor_log_prior <- function(f0, smooth) {
+  scale <- smooth$floor_intercept_prior$scale
+  dnorm(f0, 0, scale, log = TRUE) -
+    log(pnorm(1, 0, scale) - pnorm(0, 0, scale))
+}
+
+# whether a model with `options` samples the floor at a flat smooth, f0
+# (floor_flat), with the half-normal prior, rather than its logit
+smooth_floor_flat_on <- function(options) {
+  smooth_floor_on(options) &&
+    smooth_floor_prior_family(options$smooth) == "half_normal"
+}
+
+# The logit floor where the floor smooth is 0, floor_intercept, from the
+# variables `v` of a model with `options`: logit(floor_flat), or the variable
+# floor_intercept. For greta arrays or plain R; NULL without it
+smooth_floor_intercept <- function(v, options) {
+  if (!smooth_floor_flat_on(options)) {
+    return(v$floor_intercept)
+  }
+  f0 <- v$floor_flat
+  if (inherits(f0, "greta_array")) log(f0) - log(1 - f0) else qlogis(f0)
 }
 
 # whether the smooths' range is fixed (smooth_options(range = )). Options
@@ -153,7 +206,8 @@ smooth_classes <- kdr_floor_classes
 
 # the elements build_dynamical_model() adds to the options (smooth_box())
 smooth_basis_elements <- c("crs", "origin", "half_width", "indices",
-                           "column_means", "term_classes")
+                           "column_means", "class_column_means",
+                           "term_classes")
 
 # the projection of the coordinates: the two-stage correction's Albers
 # equal-area conic for Africa (africa_equal_area_crs,
@@ -200,7 +254,8 @@ check_smooth_options <- function(smooth) {
   stopifnot(
     is.list(smooth),
     all(setdiff(names(smooth_options()),
-                c("m", "range", "basis_range", "shear", "init")) %in%
+                c("m", "range", "basis_range", "shear", "init",
+                  "floor_intercept_prior")) %in%
           names(smooth)),
     all(names(smooth) %in% c(names(smooth_options()), smooth_basis_elements)),
     is_kind(smooth$selection), is_kind(smooth$floor),
@@ -225,8 +280,22 @@ check_smooth_options <- function(smooth) {
                                       smooth$basis_range > 0),
     is.numeric(smooth$range_prior), length(smooth$range_prior) == 2,
     all(smooth$range_prior > 0), smooth$range_prior[2] < 1,
-    smooth_sd_prior_valid(smooth$sd_prior))
+    smooth_sd_prior_valid(smooth$sd_prior),
+    smooth_floor_prior_valid(smooth[["floor_intercept_prior"]]))
   invisible(smooth)
+}
+
+# whether `prior` is a valid floor_intercept_prior (smooth_options()): NULL
+# (options saved before it) or "beta_moments", or list(family =
+# "half_normal", scale = s) with 0 < s
+smooth_floor_prior_valid <- function(prior) {
+  if (is.list(prior)) {
+    return(setequal(names(prior), c("family", "scale")) &&
+             identical(prior$family, "half_normal") &&
+             is.numeric(prior$scale) && length(prior$scale) == 1 &&
+             is.finite(prior$scale) && prior$scale > 0)
+  }
+  is.null(prior) || identical(prior, "beta_moments")
 }
 
 # whether `prior` is a valid sd_prior (smooth_options()): c(sd_0, alpha) with
@@ -356,7 +425,8 @@ smooth_mask_range <- function(crs = smooth_crs) {
 }
 
 # The smooth options with the basis added, for the modelled bioassay cells
-# `cells` (mask cells, each once) and the classes `classes` (in class_id
+# `cells` (mask cells, each once), those of them with bioassays of the
+# pyrethroids or DDT, `class_cells`, and the classes `classes` (in class_id
 # order). The box is centred on the cells' midrange, its half-width in each
 # dimension c times their half-extent, or more where the mask reaches beyond
 # that, so that every mask cell can be predicted to. Unless given, m is
@@ -379,7 +449,13 @@ smooth_mask_range <- function(crs = smooth_crs) {
 # narrow for the range. m set at 1,500 km ((17, 14), 164 of 238 kept), as
 # for the fixed range of the defaults (V5r, V5h), is within 2.3% at 1,500 km
 # (0.8% with all 238), but 19% at 1,000 km (R/check_latent_smooth.R).
-smooth_box <- function(smooth, cells, classes) {
+# The means of the basis functions centre the smooths (smooth_centre()):
+# column_means, over every modelled cell, centres a smooth of every class,
+# and class_column_means, over class_cells, a smooth of the pyrethroids and
+# DDT ("class"), each over the cells of the bioassays it applies to. A basis
+# saved before class_column_means (V5 to V5h) centres every smooth over
+# every modelled cell, as those fits did.
+smooth_box <- function(smooth, cells, classes, class_cells) {
   smooth$term_classes <- classes %in% smooth_classes
   if (!is.null(smooth$indices)) {
     return(smooth)
@@ -406,6 +482,9 @@ smooth_box <- function(smooth, cells, classes) {
   smooth$indices <- indices[keep, , drop = FALSE][order(omega[keep]), ,
                                                   drop = FALSE]
   smooth$column_means <- colMeans(hsgp_basis(coords, smooth))
+  stopifnot(length(class_cells) > 0, all(class_cells %in% cells))
+  smooth$class_column_means <- colMeans(hsgp_basis(
+    smooth_cell_coords(class_cells, smooth$crs), smooth))
   smooth
 }
 
@@ -434,16 +513,39 @@ hsgp_basis <- function(coords, smooth) {
   phi
 }
 
-# The centred basis at projected coordinates `coords`: each function less its
-# mean over the modelled bioassay cells, so that each smooth has mean 0 there
-# and does not trade off with the overall strength of selection or the floor
-# intercepts
-smooth_basis_at <- function(smooth, coords) {
-  sweep(hsgp_basis(coords, smooth), 2, smooth$column_means)
+# The centre of the smooth `kind` (of "selection", "floor" and "init"): the
+# means of the basis functions over the cells of the bioassays it applies to
+# (smooth_box()), class_column_means for a smooth of the pyrethroids and DDT
+# ("class") and column_means otherwise, or column_means for every smooth of
+# a basis saved without class_column_means. Centred, a smooth has mean 0
+# over those cells, so it does not trade off with the overall strength of
+# selection or the floor intercepts there
+smooth_centre <- function(smooth, kind) {
+  if (identical(smooth[[kind]], "class") &&
+      !is.null(smooth$class_column_means)) {
+    return(smooth$class_column_means)
+  }
+  smooth$column_means
 }
 
-# The centred basis of a model with `options` at mask cells `cells`, as a
-# cells x basis functions matrix, or NULL without the latent smooths
+# The basis functions at projected coordinates `coords`, centred as the
+# smooth `kind` (smooth_centre()), as a points x basis functions matrix
+smooth_centred_basis <- function(smooth, coords, kind = "selection") {
+  sweep(hsgp_basis(coords, smooth), 2, smooth_centre(smooth, kind))
+}
+
+# The basis at projected coordinates `coords` that the weights of
+# smooth_weight_terms() multiply: the basis functions, uncentred, and a
+# column of ones. Each smooth's weights end with its centring term (minus
+# its weights' product with its centre), so that weights %*% t(basis) is the
+# smooth, centred over its own cells, for every smooth
+smooth_basis_at <- function(smooth, coords) {
+  cbind(hsgp_basis(coords, smooth), 1)
+}
+
+# The basis of a model with `options` at mask cells `cells` (smooth_basis_at()),
+# as a cells x (basis functions + 1) matrix, or NULL without the latent
+# smooths
 prediction_basis <- function(options, cells) {
   if (!smooth_on(options)) {
     return(NULL)
@@ -544,12 +646,17 @@ smooth_range_km <- function(v, options, kind) {
 smooth_shear_prior <- list(mean = 1, sd = 0.5)
 
 # The weights of each smooth of a model with `options`, from its variables
-# `v` (greta arrays, or draws x dim arrays in plain R), as a named list. With
-# the shear, the selection smooth u_s = v_s + b u_f shares the basis, so its
-# weights are those of v_s plus b times the floor's; with `own`, also
-# selection_own, those of v_s alone (for the maps and checks). The weights of
-# the smooth of the initial state are those of u_init, at sd 1, before the
-# loadings of the types (smooth_init_loadings())
+# `v` (greta arrays, or draws x dim arrays in plain R), as a named list, for
+# the basis of smooth_basis_at(): the weights of the basis functions,
+# sqrt(S(omega_j)) beta_j, then the smooth's centring term, minus their
+# product with its centre (smooth_centre()), which multiplies the basis's
+# column of ones. A greta array is (basis functions + 1) x 1, and in plain R
+# the weights are draws x (basis functions + 1). With the shear, the
+# selection smooth u_s = v_s + b u_f shares the basis, so its weights are
+# those of v_s plus b times the floor's; with `own`, also selection_own,
+# those of v_s alone (for the maps and checks). The weights of the smooth of
+# the initial state are those of u_init, at sd 1, before the loadings of the
+# types (smooth_init_loadings())
 smooth_weight_terms <- function(v, options, own = FALSE) {
   out <- list()
   for (kind in smooth_kinds(options)) {
@@ -563,7 +670,13 @@ smooth_weight_terms <- function(v, options, own = FALSE) {
       sd <- rep_len(c(sd), n_draws)
       inv_range <- rep_len(c(inv_range), n_draws)
     }
-    out[[kind]] <- smooth_weights(raw, sd, inv_range, options$smooth)
+    weights <- smooth_weights(raw, sd, inv_range, options$smooth)
+    centre <- smooth_centre(options$smooth, kind)
+    out[[kind]] <- if (inherits(weights, "greta_array")) {
+      rbind(weights, -(matrix(centre, nrow = 1) %*% weights))
+    } else {
+      cbind(weights, -(weights %*% centre))
+    }
   }
   if (smooth_on(options) && isTRUE(options$smooth$shear)) {
     shear <- v$smooth_shear

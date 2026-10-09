@@ -1,7 +1,7 @@
 # The fits of the species model (#47) and its reference, full data only, of
-# V5 with a fixed range, full and forecasting folds, and the
-# cross-validation folds of V5h, the default model. Run on RunPod
-# (docker/README.md), one fit per pod.
+# V5 with a fixed range, full and forecasting folds, and the test fits and
+# cross-validation of V5f, the default model, with the second stage and the
+# maps. Run on RunPod (docker/README.md), one fit per pod.
 #
 #   Rscript R/species_runs.R [code ref] [set]
 #
@@ -9,9 +9,9 @@
 # outputs/species_runs/pods.json, the create-pod body of each
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
-# default, species_runs); for the sets "wb", "v5r", "v5i", "v5h", "cv5h_A",
-# "cv5h_B" and "cv5h_C" (wb_runs, v5r_runs, v5i_runs, v5h_runs and
-# cv5h_runs, below), jobs_<set>.csv and pods_<set>.json. The fits:
+# default, species_runs); for the other sets of run_sets, below ("wb",
+# "v5r", "v5i", "v5h", "v5f", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
 #   sp_v1         V1: the species model, no floors
@@ -46,7 +46,12 @@
 # Otherwise the default options of the time (#37: d_half 270, reversion
 # estimated, no floor, no smooths, the beta-binomial likelihood), which each
 # option string sets where it does not set them itself (pre_v5h_defaults), so
-# that a rerun under the defaults of V5h (#47) is the same fit. The fits
+# that a rerun under the later defaults (V5h, V5f; #47) is the same model;
+# V5's options give the logit-normal prior of its floor intercepts
+# (floor_intercept_prior = "beta_moments"), as do V5r's, V5i's and V5h's.
+# A rerun of a model with the floor smooth centres it over the cells with
+# bioassays of the pyrethroids or DDT, not over every modelled cell as these
+# fits did (their saved bases rebuild them as they were). The fits
 # with floors start chains 1-2 from the low-floor mode and 3-4 from the
 # high-floor mode (IR_CUBE_INITS, dynamical_chain_inits(); with the species
 # model, both species' floors start at the cached floor, and with the kdr or
@@ -110,7 +115,8 @@ v5_smooth <- function(selection, floor, shear = "FALSE") {
                 "smooth = smooth_options(selection = %s, floor = %s,",
                 "shear = %s, floor_intercepts = \"class\", kernel = \"se\",",
                 "c = 2, range = NULL, basis_range = 1,",
-                "range_prior = c(1.5, 0.05), sd_prior = c(1, 0.05))"),
+                "range_prior = c(1.5, 0.05), sd_prior = c(1, 0.05),",
+                "floor_intercept_prior = \"beta_moments\")"),
           selection, floor, shear)
 }
 species_runs <- data.frame(
@@ -188,6 +194,7 @@ v5r_options <- function(likelihood) {
                 "smooth = smooth_options(selection = TRUE, floor = \"class\",",
                 "shear = FALSE, floor_intercepts = \"class\", kernel = \"se\",",
                 "c = 2, range = 1.5, basis_range = 1.5,",
+                "floor_intercept_prior = \"beta_moments\",",
                 "sd_prior = c(1, 0.05)), likelihood = \"%s\")"),
           likelihood)
 }
@@ -254,109 +261,156 @@ v5h_runs <- data.frame(
   job = v5r_fits$job,
   row.names = NULL)
 
-# The sets "cv5h_A", "cv5h_B" and "cv5h_C" (cv5h_runs()): the complete
-# cross-validation of V5h, the default model since #47, its options in full
-# in each option string (cv5h_options, which must equal
-# dynamical_model_options() at the commit run): the five folds of
-# R/run_validation_folds.R,
-#   cv5h_<variant>_blocks1, _blocks2  spatial blocks 1 and 2
-#   cv5h_<variant>_interp             spatial interpolation
-#   cv5h_<variant>_fc2014, _fc2018    forecasting from 2014 and from 2018
-# in three variants of the starts and the warmup, against the slow mixing of
-# v5h_bb_fc2018, whose chains sat at different pyrethroid floor levels and
-# drifted slowly towards each other, along a ridge where the floor level
-# trades off with the floor smooth, some countries' initial states and the
-# nets effects:
-#   A  chain i from draw i of the full fit v5h_bb_full, one draw from each of
-#      its chains, spread along the pyrethroid floor intercept
-#      (R/draw_inits.R: temporary/inits_v5h_draw1.RDS to draw4.RDS), 2,000
-#      warmup and 1,500 samples
-#   B  every chain from the low-floor initial values, as the v5h fits, 4,000
-#      warmup and 1,500 samples
-#   C  the starts of A and the warmup of B
-# A and C have one init file per chain, so they need 4 chains (or a multiple
-# of 4). The warmup and samples are in each JOB (run_pod_job.sh's --warmup
-# and --samples: folds do not read IR_CUBE_MCMC_SETTINGS). The options, the
-# init files and the job names are set in one place, below, each overridable
-# from the environment, so that after a change to the model the sets are
-# remade by R/draw_inits.R (on the new full fit) and this script, given the
-# commit (doc/v5h_cv_runbook.md):
-#   CV5H_OPTIONS  the options, in full (default v5h_options)
-#   CV5H_INITS    the prefix of the init files of one draw per chain, as
-#                 R/draw_inits.R writes them (default
-#                 temporary/inits_v5h_draw)
-#   CV5H_NAME     the prefix of the job names (default cv5h), which must be
-#                 free on the volume
-# Before creating the pods, R/draw_inits.R and irpod sync, which uploads the
-# init files. On
-# the default pod (cpu5c, 8 vCPU, $0.28/h), v5h_bb_fc2014 took 0.95 h from
-# start to saved fold and v5h_bb_full 1.54 h, at 2,000 + 1,500 (v5h_bb_fc2018
-# took 2.4 h on cpu3c): about 1-1.6 h a fold for A and 1.5-2.5 h for B and C
-# (5,500 iterations against 3,500), plus 5-25 minutes of image pull; about
-# $2.50 for A's five pods and $3.50-4 for B's or C's.
-cv5h_options <- Sys.getenv("CV5H_OPTIONS", v5h_options)
-cv5h_draw_inits <- paste(sprintf("%s%i.RDS",
-                                 Sys.getenv("CV5H_INITS",
-                                            "temporary/inits_v5h_draw"),
+# The set "v5f" (v5f_runs): V5f, the default model since #47, V5h with the
+# floor smooth centred over the cells with bioassays of the pyrethroids or
+# DDT (smooth_centre(), R/latent_smooth.R) and the floor at a flat smooth
+# with a half-normal prior of scale 0.05 (smooth_options(
+# floor_intercept_prior = )), its options in full (v5f_options, which must
+# equal dynamical_model_options() at the commit run): the full fit and the
+# temporal forecasting fold from 2018, to test the model before the
+# cross-validation,
+#   v5f_full, v5f_fc2018
+# every chain from the low-floor initial values (each class's floor at a
+# flat smooth starting at the cached floor, 0.0015; dynamical_inits()), 2,000
+# warmup and 1,500 samples. On the default pod (cpu5c, 8 vCPU, $0.28/h),
+# V5h's took 1.54 h (full) and 2.4 h (2018 fold, on cpu3c), with the image
+# pull about 1.8-2.7 h and $0.50-0.75 a pod.
+#
+# The sets "cv5f" and "cv5f_warm" (cv5f_runs()): the cross-validation of
+# V5f, the five folds of R/run_validation_folds.R,
+#   cv5f_blocks1, cv5f_blocks2  spatial blocks 1 and 2
+#   cv5f_interp                 spatial interpolation
+#   cv5f_fc2014, cv5f_fc2018    forecasting from 2014 and from 2018
+# from the low-floor initial values, as the test jobs; and as a fallback, if
+# the test fold does not converge, cv5f_warm_<fold>, chain i from draw i of
+# the full fit v5f_full (R/draw_inits.R: temporary/inits_v5f_draw1.RDS to
+# draw4.RDS, one draw from each of its chains, spread along the pyrethroid
+# floor at a flat smooth), so 4 chains. About 1-1.6 h a fold (V5h's 2014
+# fold took 0.95 h), plus the pull: about $2.50 for five pods.
+#
+# The sets "ts_cv5f" and "ts_cv5f_warm" (cv5f_two_stage()): the two-stage
+# model on each fold of the set, with docker/two_stage_fold.sh, run by --in
+# in the fold's job directory once the fold is done; and the set "maps_v5f"
+# (v5f_maps): the two-stage maps of the full fit, with
+# docker/two_stage_maps.sh. Both scripts must be on the volume, in ts_v5f/,
+# and take the commit the launcher is given (the second stage's, with the
+# map draws of #43), not the folds'. On cpu3c pods of 16 vCPU and 32 GB
+# ($0.48/h): about 20-60 minutes a fold (the October two-stage folds of PR
+# #43 took 20-58), and about 6 h for the maps (doc/v5f_cv_runbook.md).
+#
+# The options, the initial values and the job names are set in one place,
+# below, each overridable from the environment, so that after another change
+# to the model the sets are remade by this script, given the commit:
+#   CV5F_OPTIONS  the options, in full (default v5f_options)
+#   CV5F_NAME     the prefix of the fold jobs' names (default cv5f), which
+#                 must be free on the volume
+#   CV5F_FULL     the full fit: its job name in "v5f" (default v5f_full), and
+#                 the fit "maps_v5f" maps and "cv5f_warm" draws from
+#   CV5F_INITS    the prefix of the warm start's init files, as
+#                 R/draw_inits.R writes them (default temporary/inits_v5f_draw)
+v5f_options <- Sys.getenv("CV5F_OPTIONS", paste(
+  "dynamical_model_options(mortality_floor = TRUE, floor_prior = c(1, 4),",
+  "smooth = smooth_options(selection = TRUE, floor = \"class\",",
+  "shear = FALSE, floor_intercepts = \"class\", kernel = \"se\", c = 2,",
+  "range = 1.5, basis_range = 1.5,",
+  "sd_prior = list(family = \"half_normal\", scale = 0.5),",
+  "floor_intercept_prior = list(family = \"half_normal\", scale = 0.05)),",
+  "likelihood = \"beta_binomial\")"))
+cv5f_name <- Sys.getenv("CV5F_NAME", "cv5f")
+v5f_full_name <- Sys.getenv("CV5F_FULL", "v5f_full")
+low_floor_inits <- "temporary/inits_floor_low.RDS"
+cv5f_draw_inits <- paste(sprintf("%s%i.RDS",
+                                 Sys.getenv("CV5F_INITS",
+                                            "temporary/inits_v5f_draw"),
                                  1:4),
                          collapse = ",")
-cv5h_name <- Sys.getenv("CV5H_NAME", "cv5h")
-cv5h_folds <- data.frame(
+v5f_runs <- data.frame(
+  name = c(v5f_full_name, "v5f_fc2018"),
+  label = c("V5f_full", "V5f_fc2018"),
+  options = v5f_options,
+  inits = low_floor_inits,
+  job = c("full", "fold temporal_forecasting 2018"))
+cv5f_folds <- data.frame(
   fold = c("blocks1", "blocks2", "interp", "fc2014", "fc2018"),
   job = c("fold spatial_blocks 1", "fold spatial_blocks 2",
           "fold spatial_interpolation all",
           "fold temporal_forecasting 2014", "fold temporal_forecasting 2018"))
-cv5h_variants <- data.frame(
-  variant = c("A", "B", "C"),
-  inits = c(cv5h_draw_inits, "temporary/inits_floor_low.RDS",
-            cv5h_draw_inits),
-  warmup = c(2000L, 4000L, 4000L))
-cv5h_runs <- function(variant) {
-  settings <- cv5h_variants[cv5h_variants$variant == variant, ]
-  stopifnot(nrow(settings) == 1)
+cv5f_runs <- function(warm = FALSE) {
+  prefix <- if (warm) paste0(cv5f_name, "_warm") else cv5f_name
   data.frame(
-    name = sprintf("%s_%s_%s", cv5h_name, variant, cv5h_folds$fold),
-    label = sprintf("V5h_%s_%s", variant, cv5h_folds$fold),
-    options = cv5h_options,
-    inits = settings$inits,
-    job = sprintf("%s --warmup %d --samples 1500", cv5h_folds$job,
-                  settings$warmup),
+    name = sprintf("%s_%s", prefix, cv5f_folds$fold),
+    label = sprintf("V5f%s_%s", if (warm) "_warm" else "", cv5f_folds$fold),
+    options = v5f_options,
+    inits = if (warm) cv5f_draw_inits else low_floor_inits,
+    job = cv5f_folds$job,
     row.names = NULL)
 }
+ts_script_dir <- "/workspace/ir_cube/ts_v5f"
+cv5f_two_stage <- function(warm = FALSE) {
+  runs <- cv5f_runs(warm)
+  data.frame(name = paste0("ts_", runs$name),
+             label = paste0("two_stage_", runs$label), options = "",
+             inits = "",
+             job = sprintf("--in %s -- bash %s/two_stage_fold.sh %s {ref}",
+                           runs$name, ts_script_dir,
+                           sub("^fold ", "", cv5f_folds$job)),
+             cpu = "cpu3c", vcpu = 16L)
+}
+v5f_maps <- data.frame(name = paste0("maps_", v5f_full_name),
+                       label = "two_stage_maps", options = "", inits = "",
+                       job = sprintf("--in %s -- bash %s/two_stage_maps.sh {ref}",
+                                     v5f_full_name, ts_script_dir),
+                       cpu = "cpu3c", vcpu = 16L)
 
 # the sets of fits, by name
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
-                 v5i = v5i_runs, v5h = v5h_runs, cv5h_A = cv5h_runs("A"),
-                 cv5h_B = cv5h_runs("B"), cv5h_C = cv5h_runs("C"))
+                 v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
+                 cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
+                 ts_cv5f = cv5f_two_stage(),
+                 ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
+                 maps_v5f = v5f_maps)
 
 # One row per pod job, with its environment (docker/README.md): the full fit,
-# or the fold in the runs' column job, if they have one
+# or the fold in the runs' column job, if they have one, with --threads; or a
+# command run by --in, with the code ref in place of {ref}; and the pod's CPU
+# type and vCPUs (columns cpu and vcpu of the runs, or cpu5c and 8)
 species_run_jobs <- function(code_ref, threads = 8, runs = species_runs) {
   jobs <- runs
   if (is.null(jobs$job)) jobs$job <- "full"
-  jobs$JOB <- sprintf("%s %s --threads %d", jobs$name, jobs$job, threads)
+  if (is.null(jobs$cpu)) jobs$cpu <- "cpu5c"
+  if (is.null(jobs$vcpu)) jobs$vcpu <- 8L
+  inside <- startsWith(jobs$job, "--in ")
+  jobs$JOB <- ifelse(inside,
+                     paste(jobs$name, gsub("{ref}", code_ref, jobs$job,
+                                           fixed = TRUE)),
+                     sprintf("%s %s --threads %d", jobs$name, jobs$job,
+                             threads))
   jobs$CODE_REF <- code_ref
   jobs$IR_CUBE_MODEL_OPTIONS <- jobs$options
   jobs$IR_CUBE_INITS <- jobs$inits
   jobs[, c("name", "label", "JOB", "CODE_REF", "IR_CUBE_MODEL_OPTIONS",
-           "IR_CUBE_INITS")]
+           "IR_CUBE_INITS", "cpu", "vcpu")]
 }
 
 # The create-pod body of a job (the body of the RunPod connector's create-pod,
-# or POST /v2/pods): the image, the default pod (cpu5c, 8 vCPU, 16 GB) in
-# EU-RO-1 with the network volume at /workspace, and the job's environment
-# (docker/README.md), with the code from the fork, which has the commits of
-# this branch; IR_CUBE_INITS only when it is set
-species_run_pod_body <- function(job, vcpu = 8) {
+# or POST /v2/pods): the image, the job's pod (by default cpu5c, 8 vCPU, 16
+# GB) in EU-RO-1 with the network volume at /workspace, and the job's
+# environment (docker/README.md), with the code from the fork, which has the
+# commits of this branch; IR_CUBE_MODEL_OPTIONS and IR_CUBE_INITS only when
+# they are set (an --in job takes its fit's options, and stops if they are
+# set to anything else)
+species_run_pod_body <- function(job, vcpu = job$vcpu) {
   env <- list(JOB = job$JOB, CODE_REF = job$CODE_REF,
-              CODE_REPO = "goldingn/ir_cube",
-              IR_CUBE_MODEL_OPTIONS = job$IR_CUBE_MODEL_OPTIONS)
+              CODE_REPO = "goldingn/ir_cube")
+  if (nzchar(job$IR_CUBE_MODEL_OPTIONS)) {
+    env$IR_CUBE_MODEL_OPTIONS <- job$IR_CUBE_MODEL_OPTIONS
+  }
   if (nzchar(job$IR_CUBE_INITS)) {
     env$IR_CUBE_INITS <- job$IR_CUBE_INITS
   }
   list(name = gsub("_", "-", job$name),
        image = "ghcr.io/goldingn/ir_cube-runpod:latest",
-       cpu = list(id = "cpu5c", vcpuCount = vcpu),
+       cpu = list(id = job$cpu, vcpuCount = vcpu),
        cloud = "SECURE",
        dataCenterIds = list("EU-RO-1"),
        mounts = list(network = list(list(volumeId = "0f6xjzaxch",
@@ -377,11 +431,12 @@ if (sys.nframe() == 0) {
   # each fit's options must pass the model's checks (definitions only; no
   # data or python)
   source("R/dynamical_model.R")
-  for (expression in runs$options) {
+  for (expression in runs$options[nzchar(runs$options)]) {
     check_dynamical_model_options(eval(str2lang(expression)))
   }
-  # the cross-validation of the default model has the defaults in full
-  if (startsWith(set, "cv5h_")) {
+  # the test fits and cross-validation of the default model have the
+  # defaults in full
+  if (set %in% c("v5f", "cv5f", "cv5f_warm")) {
     stopifnot(vapply(runs$options, function(expression) {
       identical(eval(str2lang(expression)), dynamical_model_options())
     }, logical(1)))

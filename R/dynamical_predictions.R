@@ -165,10 +165,12 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   floor_intercept      draws x 1 or classes, and
 #   floor_kdr            draws, the kdr-dependent floor (#47; NULL without
 #                        it; kdr_floor_value()); floor_intercept is that of
-#                        the floor of the latent smooths too
+#                        the floor of the latent smooths too (with the
+#                        half-normal prior of V5f, logit(floor_flat))
 #   smooth_weights       the weights of the latent smooths' basis functions
-#                        (V5; smooth_weight_terms()), a list of draws x basis
-#                        functions, named by smooth, empty without them
+#                        and centring terms (V5; smooth_weight_terms()), a
+#                        list of draws x (basis functions + 1), named by
+#                        smooth, empty without them
 #   init_loading         draws x n_types, the loadings lambda of the smooth of
 #                        the initial state (smooth_options(init = TRUE); NULL
 #                        without it)
@@ -199,6 +201,12 @@ dynamical_parameter_draws <- function(fold,
             kdr_on(options) ==
               any(kdr_slope_names %in% names(v)),
             smooth_on(options) == any(grepl("^smooth_raw_", names(v))))
+  # the logit floor where u_f is 0, from the floor itself where the model
+  # samples that (floor_flat, V5f; smooth_floor_intercept()), as a variable
+  # for the scripts that read it there
+  if (smooth_floor_flat_on(options)) {
+    v$floor_intercept <- smooth_floor_intercept(v, options)
+  }
 
   reversion <- !isFALSE(options$reversion)
   terms <- dynamical_terms_draws(
@@ -300,7 +308,7 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
 #               standardised kdr at each cell, cells x kdr_bands()
 #               (prediction_kdr())
 #   basis       with the latent smooths (V5) only, and needed there: their
-#               centred basis at each cell, cells x basis functions
+#               basis at each cell, cells x (basis functions + 1)
 #               (prediction_basis()); with the smooth of the initial state,
 #               lambda[k] u_init(x) is added to logit_init
 # Returns a list named by years_keep of draws x cells logit mortality.
@@ -481,7 +489,7 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
   cell_country <- dynamical_lookups(df)$cell_country_lookup
   stopifnot(!anyNA(cell_country[rows$cell_id]))
   # the standardised kdr at each cell_id, NULL without the kdr covariate, and
-  # the centred basis of the latent smooths, NULL without them
+  # the basis of the latent smooths, NULL without them
   mask_cells <- df$cell[match(seq_len(max(df$cell_id)), df$cell_id)]
   kdr_cells <- prediction_kdr(parameters$options, mask_cells)
   basis_cells <- prediction_basis(parameters$options, mask_cells)
