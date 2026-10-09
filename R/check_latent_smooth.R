@@ -54,8 +54,8 @@ cat(sprintf("basis range %.0f km; range %s\n", 1000 * basis_range,
             } else {
               "estimated"
             }))
-cat(sprintf("priors: 1 / range ~ Exponential(%.3f), sd ~ Exponential(%.3f) (range in 1,000 km)\n",
-            rates$range, rates$sd))
+cat(sprintf("priors: 1 / range ~ Exponential(%.3f) (range in 1,000 km), %s\n",
+            rates$range, smooth_sd_prior_label(smooth)))
 
 # the exact kernel at distance d, for sd 1 and range rho
 kernel <- function(d, rho) {

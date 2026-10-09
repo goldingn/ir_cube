@@ -527,12 +527,14 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # smooth_prior_rates(): exponential, on the inverse range because in two
   # dimensions the prior of the range rho is the density of 1 / rho for an
   # exponential 1 / rho. With the defaults, P(rho < 1,500 km) = 0.05 and
-  # P(sd > 1) = 0.05; and with the shear, its loading b ~ N(1, 0.5)
-  # (smooth_shear_prior). With a fixed range (smooth_options(range = )),
-  # there is no inverse range variable. The smooth of the initial state
-  # (smooth_options(init = TRUE)) has its sd fixed at 1, and in its place a
-  # loading lambda >= 0 per type, each with the sd's prior, so each type's
-  # sd of the field
+  # P(sd > 1) = 0.05; with smooth_options(sd_prior = list(family =
+  # "half_normal", scale = s)), sd ~ N(0, s^2) truncated to sd > 0 in place
+  # of the sd's PC prior (smooth_sd_prior_distribution()); and with the
+  # shear, its loading b ~ N(1, 0.5) (smooth_shear_prior). With a fixed range
+  # (smooth_options(range = )), there is no inverse range variable. The
+  # smooth of the initial state (smooth_options(init = TRUE)) has its sd
+  # fixed at 1, and in its place a loading lambda >= 0 per type, each with
+  # the sd's prior, so each type's sd of the field
   smooths <- list()
   if (smooth_on(options)) {
     rates <- smooth_prior_rates(options$smooth)
@@ -541,9 +543,11 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
       smooths[[names[["raw"]]]] <- normal(0, 1,
                                           dim = nrow(options$smooth$indices))
       if (kind == "init") {
-        smooths[[names[["loading"]]]] <- exponential(rates$sd, dim = n_types)
+        smooths[[names[["loading"]]]] <- smooth_sd_prior_distribution(
+          options$smooth, dim = n_types)
       } else {
-        smooths[[names[["sd"]]]] <- exponential(rates$sd)
+        smooths[[names[["sd"]]]] <- smooth_sd_prior_distribution(
+          options$smooth)
       }
       if (!smooth_range_fixed(options$smooth)) {
         smooths[[names[["inv_range"]]]] <- exponential(rates$range)

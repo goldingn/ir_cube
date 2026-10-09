@@ -24,7 +24,10 @@
 # intercepts (by class: V4_class) and its slopes at 0, in greta and in plain
 # R: both are then the model with a constant floor per class (or one floor,
 # or none). With the shear, the model with its loading b at 0 is checked
-# against the same smooths without the shear, in greta and in plain R. With
+# against the same smooths without the shear, in greta and in plain R. The
+# model with the other prior of the smooths' sds (PC or half-normal,
+# smooth_options(sd_prior = )) is checked against it at the same free state,
+# in greta: the log density differs by the two priors at the sds. With
 # the smooth of the initial state (smooth_options(init = TRUE)), the
 # selection and floor smooths' raw weights at 0 are checked against the
 # model without them (the same smooth of the initial state, a constant floor
@@ -463,7 +466,7 @@ if (smooth_on(model_options)) {
   for (kind in zeroed) {
     sd <- trace_zero[1, paste0("smooth_sd_", kind)]
     expected <- expected + nrow(smooth$indices) * dnorm(0, log = TRUE) +
-      dexp(sd, rates$sd, log = TRUE) + log(sd)
+      smooth_sd_log_prior(sd, smooth) + log(sd)
     if (!smooth_range_fixed(smooth)) {
       inv_range <- trace_zero[1, paste0("smooth_inv_range_", kind)]
       expected <- expected + dexp(inv_range, rates$range, log = TRUE) +
@@ -595,6 +598,45 @@ if (smooth_on(model_options)) {
     stopifnot(weights_plain < 1e-12)
     rm(built_estimated)
   }
+
+  # The model with the other prior of the smooths' sds (the PC prior's
+  # default, c(1, 0.05), for the half-normal, or the half-normal with scale
+  # 0.5 for the PC prior), at the same free state: in greta, the log density
+  # differs by the two priors' log densities at each sd (and loading of the
+  # smooth of the initial state) only, the free state being log sd in both
+  sd_names <- vapply(kinds, function(kind) {
+    smooth_variable_names(kind)[[if (kind == "init") "loading" else "sd"]]
+  }, "")
+  options_other <- model_options
+  options_other$smooth$sd_prior <-
+    if (smooth_sd_prior_family(smooth) == "half_normal") c(1, 0.05) else
+      list(family = "half_normal", scale = 0.5)
+  built_other <- build(df, options_other)
+  columns_other <- free_state_columns(built_other$model)
+  targets_other <- attr(columns_other, "targets")
+  stopifnot(setequal(names(targets_other), names(attr(free_state_columns(
+    built$model), "targets"))))
+  free_other <- numeric(length(free))
+  for (name in names(targets_other)) {
+    free_other[columns_other[[targets_other[[name]]]]] <-
+      free[free_columns(built$model, name)]
+  }
+  sds <- unlist(lapply(sd_names, function(name) {
+    c(extract_parameter(trace, name))
+  }))
+  prior_difference <- sum(smooth_sd_log_prior(sds, smooth) -
+                            smooth_sd_log_prior(sds, options_other$smooth))
+  sd_prior_difference <- log_density(built$model, free) -
+    log_density(built_other$model, free_other) - prior_difference
+  cat(sprintf("smooth sd prior: %s vs %s at sds %s, greta log density: diff %.4f, analytic %.4f, residual %.3g\n",
+              smooth_sd_prior_label(smooth),
+              smooth_sd_prior_label(options_other$smooth),
+              paste(sprintf("%.3f", sds), collapse = ", "),
+              prior_difference + sd_prior_difference, prior_difference,
+              sd_prior_difference))
+  stopifnot(abs(sd_prior_difference) < 1e-6)
+  rm(built_other)
+
   if (floor_on) {
     cat(sprintf("smooth floor (%s): floor where u_f is 0 %s\n",
                 smooth$floor_intercepts,

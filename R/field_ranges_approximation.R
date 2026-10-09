@@ -159,7 +159,7 @@ summarise_hyper <- function(d) {
       sd_median = median(sd),
       sd_q05 = quantile(sd, 0.05),
       sd_q95 = quantile(sd, 0.95),
-      prior_tail_at_sd_median = exp(-rates$sd * sd_median),
+      prior_tail_at_sd_median = smooth_sd_prior_tail(sd_median, smooth),
       .groups = "drop")
 }
 posterior <- bind_rows(
@@ -256,7 +256,8 @@ range_panel <- ggplot(hyper, aes(x = range_km, colour = series)) +
          600, exp(-rates$range / 0.6)))
 
 sd_panel <- ggplot(hyper, aes(x = sd, colour = series)) +
-  geom_vline(xintercept = smooth$sd_prior[1], linetype = "longdash",
+  geom_vline(xintercept = smooth_sd_prior_quantile(0.95, smooth),
+             linetype = "longdash",
              colour = grey(0.35), linewidth = 0.4) +
   geom_density(linewidth = 0.6, adjust = 1.2) +
   facet_grid(smooth ~ ., scales = "free_y") +
@@ -267,8 +268,8 @@ sd_panel <- ggplot(hyper, aes(x = sd, colour = series)) +
   labs(x = "Marginal sd", y = "Posterior density",
        title = "Posterior sds",
        subtitle = sprintf(
-         "Prior: P(sd > 1) = 0.05 (dashed line); P(sd > 3) = %.1g",
-         exp(-rates$sd * 3)))
+         "Prior: %s (dashed line: its 95%% quantile); P(sd > 3) = %.1g",
+         smooth_sd_prior_label(smooth), smooth_sd_prior_tail(3, smooth)))
 
 ranges_plot <- (error_panel / range_panel / sd_panel) +
   plot_layout(heights = c(1.1, 1.6, 1.4))

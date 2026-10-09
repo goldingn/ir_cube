@@ -67,8 +67,11 @@
 #                     rho (Fuglstad et al. 2019): P(rho < range_prior[1]) =
 #                     range_prior[2], rho in 1,000 km; unused with a fixed
 #                     range
-#   sd_prior          and of its marginal sd: P(sd > sd_prior[1]) =
-#                     sd_prior[2]
+#   sd_prior          the prior of its marginal sd: c(sd_0, alpha) (the
+#                     default, c(1, 0.05)) for the penalised-complexity prior,
+#                     exponential with P(sd > sd_0) = alpha; or list(family =
+#                     "half_normal", scale = s) for sd ~ N(0, s^2) truncated
+#                     to sd > 0 (smooth_sd_prior_family())
 #   init              FALSE (the default), or TRUE for a smooth u_init(x) of
 #                     the logit relative initial state (the position between
 #                     init_frac_min and 1; init_frac_constants(),
@@ -215,9 +218,21 @@ check_smooth_options <- function(smooth) {
                                       smooth$basis_range > 0),
     is.numeric(smooth$range_prior), length(smooth$range_prior) == 2,
     all(smooth$range_prior > 0), smooth$range_prior[2] < 1,
-    is.numeric(smooth$sd_prior), length(smooth$sd_prior) == 2,
-    all(smooth$sd_prior > 0), smooth$sd_prior[2] < 1)
+    smooth_sd_prior_valid(smooth$sd_prior))
   invisible(smooth)
+}
+
+# whether `prior` is a valid sd_prior (smooth_options()): c(sd_0, alpha) with
+# sd_0 > 0 and 0 < alpha < 1, or list(family = "half_normal", scale = s) with
+# s > 0
+smooth_sd_prior_valid <- function(prior) {
+  if (is.list(prior)) {
+    return(setequal(names(prior), c("family", "scale")) &&
+             identical(prior$family, "half_normal") &&
+             is.numeric(prior$scale) && length(prior$scale) == 1 &&
+             is.finite(prior$scale) && prior$scale > 0)
+  }
+  is.numeric(prior) && length(prior) == 2 && all(prior > 0) && prior[2] < 1
 }
 
 
@@ -227,10 +242,74 @@ check_smooth_options <- function(smooth) {
 # smooth's range rho and marginal sd in two dimensions: 1 / rho ~
 # Exponential(range), i.e. density (range) rho^-2 exp(-range / rho), and sd ~
 # Exponential(sd), with P(rho < rho_0) = alpha_rho and P(sd > sd_0) =
-# alpha_sd. Derived for Matern fields; used for the squared exponential too
+# alpha_sd. Derived for Matern fields; used for the squared exponential too.
+# With the half-normal prior of the sd, the sd rate is NA; the
+# smooth_sd_prior_*() functions below handle either prior of the sd
 smooth_prior_rates <- function(smooth) {
   list(range = -log(smooth$range_prior[2]) * smooth$range_prior[1],
-       sd = -log(smooth$sd_prior[2]) / smooth$sd_prior[1])
+       sd = if (smooth_sd_prior_family(smooth) == "pc") {
+         -log(smooth$sd_prior[2]) / smooth$sd_prior[1]
+       } else {
+         NA_real_
+       })
+}
+
+# The family of the prior of each smooth's marginal sd (smooth_options(
+# sd_prior = )): "pc", the penalised-complexity prior, sd ~ Exponential (the
+# default), or "half_normal", sd ~ N(0, scale^2) truncated to sd > 0. V5h's,
+# with scale 0.5, is a standard weakly informative penalising prior for an
+# sd, half-normal with scale 0.5 (Nick's choice), much stricter in the tail
+# than the PC prior, which the data overrode (V5r's sds ran to 4-13): P(sd >
+# 1) = 0.046 under both, but P(sd > 2) = 6e-5 against 0.0025
+smooth_sd_prior_family <- function(smooth) {
+  if (is.list(smooth$sd_prior)) smooth$sd_prior$family else "pc"
+}
+
+# The prior of a smooth's sd as a greta distribution of dimension `dim` (the
+# sd, or the loadings per type of the smooth of the initial state, which
+# have the sd's prior). Either way greta's free state is log sd
+smooth_sd_prior_distribution <- function(smooth, dim = 1) {
+  if (smooth_sd_prior_family(smooth) == "half_normal") {
+    return(normal(0, smooth$sd_prior$scale, dim = dim,
+                  truncation = c(0, Inf)))
+  }
+  exponential(smooth_prior_rates(smooth)$sd, dim = dim)
+}
+
+# The log density of the prior of a smooth's sd at `sd`, in plain R, as greta
+# evaluates it: greta divides a truncated density by the probability of the
+# interval, 1/2 for the half-normal, so its density is 2 N(sd; 0, s^2)
+smooth_sd_log_prior <- function(sd, smooth) {
+  if (smooth_sd_prior_family(smooth) == "half_normal") {
+    return(log(2) + dnorm(sd, 0, smooth$sd_prior$scale, log = TRUE))
+  }
+  dexp(sd, smooth_prior_rates(smooth)$sd, log = TRUE)
+}
+
+# P(sd > x) under the prior of a smooth's sd
+smooth_sd_prior_tail <- function(x, smooth) {
+  if (smooth_sd_prior_family(smooth) == "half_normal") {
+    return(2 * pnorm(-x / smooth$sd_prior$scale))
+  }
+  exp(-smooth_prior_rates(smooth)$sd * x)
+}
+
+# The quantile at probability p of the prior of a smooth's sd
+smooth_sd_prior_quantile <- function(p, smooth) {
+  if (smooth_sd_prior_family(smooth) == "half_normal") {
+    return(smooth$sd_prior$scale * qnorm((1 + p) / 2))
+  }
+  qexp(p, smooth_prior_rates(smooth)$sd)
+}
+
+# A short description of the prior of a smooth's sd, for printed summaries
+smooth_sd_prior_label <- function(smooth) {
+  if (smooth_sd_prior_family(smooth) == "half_normal") {
+    return(sprintf("sd ~ half-normal, scale %g", smooth$sd_prior$scale))
+  }
+  sprintf("sd ~ Exponential(%.3f), P(sd > %g) = %g",
+          smooth_prior_rates(smooth)$sd, smooth$sd_prior[1],
+          smooth$sd_prior[2])
 }
 
 
