@@ -11,11 +11,18 @@ state the price first.
 
 | what | where |
 |---|---|
-| fit and fold code | `goldingn/ir_cube`, branch `weighted-binomial` (`CODE_REF`: its head) |
-| second-stage code | branch `v5h-cv`: `weighted-binomial` merged with `cv-update` (PR #43), for the map draws (`map_draws`, `map_before`) that the #43 scoring reads. Its dynamical code is `weighted-binomial`'s; `stage_one` checks the recomputed draws against each fold's to 1e-6 |
+| fit and fold code | `goldingn/ir_cube`, branch `weighted-binomial` (`CODE_REF`: its head; the test fits at 933f8ae, tag `pod-v5f-933f8ae`) |
+| second-stage code | branch `v5h-cv` (3ff209a, tag `pod-v5h-cv-3ff209a`): `weighted-binomial` merged with `cv-update` (PR #43), for the map draws (`map_draws`, `map_before`) that the #43 scoring reads. Its dynamical code is `weighted-binomial`'s; `stage_one` checks the recomputed draws against each fold's to 1e-6 |
 | options | the defaults, in full in `IR_CUBE_MODEL_OPTIONS` (`v5f_options` in `R/species_runs.R`) |
 | initial values | `temporary/inits_floor_low.RDS` (each class's floor at a flat smooth starts at its floor, 0.0015). The warm start, a fallback: `temporary/inits_v5f_draw1.RDS` to `draw4.RDS`, one draw of `v5f_full` per chain (`R/draw_inits.R`). `irpod sync` uploads them |
 | scripts on the volume | `ts_v5f/two_stage_fold.sh`, `ts_v5f/two_stage_maps.sh`: copies of `docker/two_stage_fold.sh` and `docker/two_stage_maps.sh` |
+
+The branch `latent-smooths` has the same model without the experiments of
+#47 that V5f does not use (the species model, the kdr covariate, the
+weighted binomial likelihood, the smooth of the initial state and the
+shear); its option string has no `likelihood` or `shear`, and it reads the
+string of these runs (`job.options`) by dropping them
+(`model_options_from_string()`, `R/dynamical_model.R`).
 
 The pod bodies come from the launcher, which checks that the options equal
 `dynamical_model_options()` at the commit it is run at:
