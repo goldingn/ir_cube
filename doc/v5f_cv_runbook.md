@@ -115,26 +115,65 @@ delete the pod.
 
 ## 3. Two-stage maps of the full fit
 
-One pod: cpu3c, 16 vCPU, 32 GB, $0.48/h, no `IR_CUBE_MODEL_OPTIONS`:
+Three pods, at the same time, each with a third of the maps: cpu3c, 16 vCPU,
+32 GB, $0.48/h, no `IR_CUBE_MODEL_OPTIONS` (`pods_maps_v5f.json`):
+
+| job | maps (`TS_OUTPUTS`) | fits |
+|---|---|---|
+| `maps_v5f_full_a` | `llin_effective` | Deltamethrin; Permethrin, Alpha-cypermethrin |
+| `maps_v5f_full_b` | Bendiocarb, Lambda-cyhalothrin, Fenitrothion | Bendiocarb; Lambda-cyhalothrin, Fenitrothion |
+| `maps_v5f_full_c` | DDT, Pirimiphos-methyl, Malathion | DDT; Pirimiphos-methyl, Malathion |
+
+e.g.
 
 ```
-JOB="maps_v5f_full --in v5f_full -- bash /workspace/ir_cube/ts_v5f/two_stage_maps.sh <V5H_CV_REF>"
+JOB="maps_v5f_full_a --in v5f_full -- env TS_PART=a TS_OUTPUTS=llin_effective bash /workspace/ir_cube/ts_v5f/two_stage_maps.sh <V5H_CV_REF>"
 ```
 
-It needs only the full fit, so it can run beside the folds. The script works
-in `ts_v5f/maps_v5f_full/` (the `--in` writes only its markers and log in
-`jobs/v5f_full/`): `prepare` (minutes, 7 GB), `fit` of the nine types in two
-queues (7-20 min and 8-14 GB each; about 1.3 h), `map` of the six types not
-in LLINs and of `llin_effective`, one at a time with 4 workers (about 20 GB;
-on the Linux box 22-30 min a type and 81 min for `llin_effective`; about 4
-h), and `figures`. About 6 h, $3. `TS_STEPS` (e.g. `"map figures"`) resumes
-from a step. The outputs add about 10 GB to the 50 GB volume (fits 4.3 GB, 720
-rasters). Fetch them with
+They need only the full fit, so they can run beside the folds. Each works in
+`ts_v5f/maps_v5f_full_<part>/` (`TS_PART`; the `--in` writes only its
+markers and log, `maps_v5f_full_<part>.*`, in `jobs/v5f_full/`): `prepare`
+(minutes, 7 GB), after which it deletes the other types' dynamical draws;
+`fit` of its three types in two queues (the largest in one, the other two
+in the other; 8-14 GB each); and `map` of its outputs, one at a time with 4
+workers (about 20 GB). By the Linux box's times of October (fits 6-19 min a
+type; maps 22-30 min a type, 81 min for `llin_effective`), pod a takes
+about 23 min of fits and 81 of map, b 16 and 76, c 18 and 77: with the
+pull, about 2-2.5 h and $1-1.20 each, $3.30 for the three. `TS_STEPS` (e.g.
+`"map"`) resumes from a step, with the job's `TS_PART` and `TS_OUTPUTS`. The
+pods do not make the figures, which need every type (below).
+
+The outputs add about 9 GB to the 50 GB volume (fits 4.3 GB, 720 rasters
+2.7 GB, the dynamical draws under 1 GB); on 9 October 41 GB of it were in
+use, before the folds' outputs. Check the space first:
 
 ```bash
-s3 sync s3://0f6xjzaxch/ir_cube/ts_v5f/maps_v5f_full/ outputs/pod_jobs/maps_v5f_full/ \
-  --exclude 'R/*' --exclude 'tmb/*' --exclude 'data' --exclude 'data/*' --exclude 'temporary/*'
+s3 ls --recursive --summarize s3://0f6xjzaxch/ir_cube/ | tail -2
 ```
+
+When all three are done, fetch them and merge them, in the worktree of
+step 4. Each work directory holds only its own types' draws, fits and maps
+(and the map summary of each of its outputs), so they merge without
+overlap:
+
+```bash
+for p in a b c; do
+  s3 sync s3://0f6xjzaxch/ir_cube/ts_v5f/maps_v5f_full_$p/ outputs/pod_jobs/maps_v5f_full_$p/ \
+    --exclude 'R/*' --exclude 'tmb/*' --exclude 'data' --exclude 'data/*' --exclude 'temporary/*'
+done
+mkdir -p outputs/two_stage
+for p in a b c; do
+  cp -r outputs/pod_jobs/maps_v5f_full_$p/outputs/two_stage/maps \
+    outputs/pod_jobs/maps_v5f_full_$p/outputs/two_stage/ir_maps outputs/two_stage/
+done
+ls outputs/two_stage/maps/*/fit.rds | wc -l          # 9
+ls outputs/two_stage/ir_maps | wc -l                  # 10: the nine types and llin_effective
+Rscript R/two_stage_maps.R figures                    # figures/two_stage/
+```
+
+The figures read each type's `hyperparameters.csv` and its rasters (the
+yearly `ir_maps/<type>/`, `dynamical_mortality.tif`, `correction_mean.tif`),
+and the data, not the fit.
 
 ## Totals
 
@@ -143,11 +182,12 @@ s3 sync s3://0f6xjzaxch/ir_cube/ts_v5f/maps_v5f_full/ outputs/pod_jobs/maps_v5f_
 | test fits and forecasting folds | 3 × cpu5c 8 | 1.2-2.7 h | $1.50-2 |
 | spatial folds | 3 × cpu5c 8 | 1.2-1.9 h | about $1.50 |
 | two-stage folds | 5 × cpu3c 16 | 0.5-1.3 h | about $2.40 |
-| two-stage maps | 1 × cpu3c 16 | about 6 h | about $3 |
+| two-stage maps | 3 × cpu3c 16 | 2-2.5 h | about $3.30 |
 
-About $9 in all. With the spatial folds and the maps started once the test
-fits are done, and each second stage once its fold is, about 9 h of wall
-time from the test fits' start, most of it the maps.
+About $9 in all. With the spatial folds and the maps started once the
+test fits are done, and each second stage once its fold is, about 6 h of
+wall time from the test fits' start, set by the spatial folds and their
+second stage; the maps end before them.
 
 ## 4. Afterwards, locally
 
@@ -163,8 +203,9 @@ section 3), with the current data:
 2. `outputs/two_stage/fit_summary.csv`: the rows of the five folds' own
    `fit_summary.csv` (each holds only its fold's), bound together.
 3. For the maps: `outputs/two_stage/maps/` and `outputs/two_stage/ir_maps/`
-   from the fetched work directory, and the full fit as
-   `temporary/fitted_model.RData`.
+   merged from the three fetched work directories (step 3; into a worktree
+   without earlier maps), their figures (`R/two_stage_maps.R figures`), and
+   the full fit as `temporary/fitted_model.RData`.
 4. The run order of `doc/cv_run_plan.md`, section 3 (#43):
    `fig_illustrate_bioassay_variability.R` (the rho tables),
    `run_validation_folds.R` (the nulls only, once the folds are in place),

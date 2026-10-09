@@ -295,11 +295,13 @@ v5h_runs <- data.frame(
 # model on each fold of the set, with docker/two_stage_fold.sh, run by --in
 # in the fold's job directory once the fold is done; and the set "maps_v5f"
 # (v5f_maps): the two-stage maps of the full fit, with
-# docker/two_stage_maps.sh. Both scripts must be on the volume, in ts_v5f/,
+# docker/two_stage_maps.sh, on three pods (maps_v5f_full_a, _b and _c), each
+# with a third of the maps. Both scripts must be on the volume, in ts_v5f/,
 # and take the commit the launcher is given (the second stage's, with the
 # map draws of #43), not the folds'. On cpu3c pods of 16 vCPU and 32 GB
 # ($0.48/h): about 20-60 minutes a fold (the October two-stage folds of PR
-# #43 took 20-58), and about 6 h for the maps (doc/v5f_cv_runbook.md).
+# #43 took 20-58), and about 2-2.5 h for each third of the maps
+# (doc/v5f_cv_runbook.md).
 #
 # The options, the initial values and the job names are set in one place,
 # below, each overridable from the environment, so that after another change
@@ -378,11 +380,24 @@ cv5f_two_stage <- function(warm = FALSE) {
                            sub("^fold ", "", cv5f_folds$job)),
              cpu = "cpu3c", vcpu = 16L, row.names = NULL)
 }
-v5f_maps <- data.frame(name = paste0("maps_", v5f_full_name),
-                       label = "two_stage_maps", options = "", inits = "",
-                       job = sprintf("--in %s -- bash %s/two_stage_maps.sh {ref}",
-                                     v5f_full_name, ts_script_dir),
-                       cpu = "cpu3c", vcpu = 16L)
+# the maps on three pods, each with the map outputs of one part (TS_OUTPUTS
+# of docker/two_stage_maps.sh) in a work directory of its own (TS_PART,
+# maps_<full fit>_<part>/): the three LLIN types, mapped together as
+# llin_effective, and the six other types in two sets of three, balanced by
+# the times of their fits and maps on the Linux box in October (about 1.6 h
+# each, and llin_effective's 1.7 h)
+v5f_map_parts <- c(a = "llin_effective",
+                   b = "Bendiocarb,Lambda-cyhalothrin,Fenitrothion",
+                   c = "DDT,Pirimiphos-methyl,Malathion")
+v5f_maps <- data.frame(
+  name = sprintf("maps_%s_%s", v5f_full_name, names(v5f_map_parts)),
+  label = sprintf("two_stage_maps_%s", names(v5f_map_parts)),
+  options = "", inits = "",
+  job = sprintf(paste("--in %s -- env TS_PART=%s TS_OUTPUTS=%s",
+                      "bash %s/two_stage_maps.sh {ref}"),
+                v5f_full_name, names(v5f_map_parts), v5f_map_parts,
+                ts_script_dir),
+  cpu = "cpu3c", vcpu = 16L, row.names = NULL)
 
 # the sets of fits, by name
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
