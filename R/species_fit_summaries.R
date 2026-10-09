@@ -1,11 +1,11 @@
-# Summaries of every fetched species run (#47; R/species_runs.R) side by side.
+# Summaries of fits (#47) side by side.
 #
 #   Rscript R/species_fit_summaries.R [<label>=<fitted_model.RData> ...]
 #
-# Finds the runs fetched with `irpod fetch <name>`
-# (outputs/pod_jobs/<name>/temporary/fitted_model.RData), labelled as in
-# species_runs (B_f, V1, ...), and any other fits given as label=file (e.g. a
-# reference fit). Summarises each that has no summary newer than its fit with
+# Finds the fits of the set "v5f" of R/species_runs.R fetched with `irpod
+# fetch <name>` (outputs/pod_jobs/<name>/temporary/fitted_model.RData),
+# labelled as there (V5f_full, ...), and any other fits given as label=file
+# (e.g. a reference fit). Summarises each that has no summary newer than its fit with
 # R/species_fit_summary.R, one process at a time, and writes
 #   outputs/species_runs/summary.csv          parameters x fits: posterior
 #                                             summaries, R-hat, ESS
@@ -37,9 +37,9 @@ figure_dir <- "figures/species_runs"
 dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
 
 fits <- setNames(
-  file.path("outputs/pod_jobs", species_runs$name,
+  file.path("outputs/pod_jobs", v5f_runs$name,
             "temporary/fitted_model.RData"),
-  species_runs$label)
+  v5f_runs$label)
 for (argument in commandArgs(trailingOnly = TRUE)) {
   parts <- strsplit(argument, "=", fixed = TRUE)[[1]]
   stopifnot(length(parts) == 2)

@@ -1,265 +1,23 @@
-# The fits of the species model (#47) and its reference, full data only, of
-# V5 with a fixed range, full and forecasting folds, and the test fits and
-# cross-validation of V5f, the default model, with the second stage and the
-# maps. Run on RunPod (docker/README.md), one fit per pod.
+# The pod jobs of V5f (#47), the default model: its test fits, its
+# cross-validation, the second stage on each fold, and the two-stage maps of
+# its full fit, on RunPod (docker/README.md; doc/v5f_cv_runbook.md), one job
+# per pod.
 #
 #   Rscript R/species_runs.R [code ref] [set]
 #
-# writes outputs/species_runs/jobs.csv, one row per fit, and
-# outputs/species_runs/pods.json, the create-pod body of each
-# (species_run_pod_body()), for the commit to run (a full commit
-# id; default: HEAD, which must be on GitHub), for the set "species" (the
-# default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
-# and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
-#   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
-#                 Beta(1, 4), the prior of the species floors
-#   sp_v1         V1: the species model, no floors
-#   sp_v1_floor   V1f: the species model, a floor for each species, each
-#                 Beta(1, 4)
-#   sp_v2         V2: one trajectory, with the kdr covariate (kdr_options(),
-#                 R/kdr_covariate.R; the "complex" band), no floor
-#   sp_v2_floor   V2f: as V2, the floor estimated with prior Beta(1, 4)
-#   sp_v3         V3: the species model with the kdr covariate, each species
-#                 with its own band and slopes, no floors
-#   sp_v3_floor   V3f: as V3, a floor for each species, each Beta(1, 4)
-#   sp_v4         V4: V2 with the kdr-dependent floor, plogis(floor_intercept
-#                 + floor_kdr k(x)), the intercept's prior matched to
-#                 Beta(1, 4) (kdr_options(floor = TRUE))
-#   sp_v4_class   V4 class: as V4, with an intercept per insecticide class and
-#                 the kdr term for the pyrethroids and DDT only
-#                 (kdr_options(floor = "class"))
-#   sp_v5         V5: no kdr covariate; latent smooths (smooth_options(),
-#                 R/latent_smooth.R; squared exponential, P(range < 1,500
-#                 km) = 0.05, P(sd > 1) = 0.05) of the strength of selection,
-#                 for every class, and of the logit floor, for the
-#                 pyrethroids and DDT, with an intercept per class, its prior
-#                 matched to Beta(1, 4)
-#   sp_v5_shear   V5 shear: as V5, with the selection smooth u_s = v_s + b
-#                 u_f, sharing the floor's u_f through one loading b ~ N(1,
-#                 0.5) (smooth_options(shear = TRUE)); to run with V5
-#   sp_v5_sel     V5 sel: as V5, without the smooth of the floor (a constant
-#                 floor per class)
-#   sp_v5_floor   V5 floor: as V5, without the smooth of selection
-# sp_v5_sel and sp_v5_floor are for comparisons after V5: do not launch them
-# with it.
-# Otherwise the default options of the time (#37: d_half 270, reversion
-# estimated, no floor, no smooths, the beta-binomial likelihood), which each
-# option string sets where it does not set them itself (pre_v5h_defaults), so
-# that a rerun under the later defaults (V5h, V5f; #47) is the same model;
-# V5's options give the logit-normal prior of its floor intercepts
-# (floor_intercept_prior = "beta_moments"), as do V5r's, V5i's and V5h's.
-# A rerun of a model with the floor smooth centres it over the cells with
-# bioassays of the pyrethroids or DDT, not over every modelled cell as these
-# fits did (their saved bases rebuild them as they were). The fits
-# with floors start chains 1-2 from the low-floor mode and 3-4 from the
-# high-floor mode (IR_CUBE_INITS, dynamical_chain_inits(); with the species
-# model, both species' floors start at the cached floor, and with the kdr or
-# smooth floor, its intercepts; dynamical_inits()), and record each chain's
-# floors and log posterior (chain_floor_modes(); with the smooths, their sd
-# and range too); V1 starts from the default initial values. Before creating
-# the pods:
-#   Rscript R/floor_mode_inits.R <r2_main.RData>  # temporary/inits_floor_*.RDS
-#   irpod sync    # uploads them, and data/clean/arabiensis_fraction.tif
-# Then create one pod per element of the json (about 3.7 h and $1.05 per fit
-# on the default pod, by the gradient timing, which is the same with and
-# without the species model; the full fit of 5 October took 6.2 h. The fits
-# with floors took 6.3-6.9 h; V5's gradient takes about 41 ms, and V5
-# shear's 42, against V4_class's 38, at 4 chains and 4 threads, so about
-# 6.7-7.5 h and $2 each; state the price first), and when each is done,
-# `irpod fetch <name>` and delete its pod (it does not delete itself).
-#
-# The set "wb" (wb_runs): the candidate models with the weighted binomial
-# likelihood (#47; dynamical_model_options(likelihood = "weighted_binomial"),
-# R/weighted_binomial.R), rho per type fixed at the replicate estimates
-# (data/clean/bioassay_rho_replicate.csv, which irpod sync uploads), with the
-# default sampler of #48 (centred data-informed hierarchy, 30-60 leapfrog
-# steps, 2,000 warmup and 1,500 samples):
-#   wb_ref        ref_f0: the default options, no floor
-#   wb_bf         B_f, as sp_ref_floor
-#   wb_v3f        V3f, as sp_v3_floor
-#   wb_v4         V4, as sp_v4
-#   wb_v4_class   V4_class, as sp_v4_class
-#   wb_v5         V5, as sp_v5
-# each with the options and initial values of the fit it copies (ref_f0 from
-# the default initial values), and likelihood = "weighted_binomial". Their
-# gradients took 0.87-0.95 times the default beta-binomial model's (4 chains,
-# 8 threads, 8 October 2026), which took 48 ms on the default pod: about
-# 42-46 ms there, and for 3,500 iterations of 45 leapfrog steps, 1.8-2.0 h
-# each, about 2.5 h and $0.70 a pod with setup and saving.
-
-# The options the species and wb fits left at their defaults, at the
-# defaults of the time (#37), before those of V5h (#47)
-pre_v5h_defaults <- list(mortality_floor = FALSE, floor_prior = c(1, 49),
-                         smooth = FALSE, likelihood = "beta_binomial")
-
-# An option string (a call of dynamical_model_options()) with the options in
-# `settings` (a named list of values) added where it does not set them, or
-# with replace = TRUE, set to them whether it does or not
-set_options <- function(expression, settings, replace = FALSE) {
-  call <- str2lang(expression)
-  stopifnot(identical(call[[1]], quote(dynamical_model_options)))
-  for (name in names(settings)) {
-    if (replace || is.null(call[[name]])) call[[name]] <- settings[[name]]
-  }
-  paste(deparse(call, width.cutoff = 500L), collapse = " ")
-}
-
-floor_mode_inits <- paste("temporary/inits_floor_low.RDS",
-                          "temporary/inits_floor_high.RDS", sep = ",")
-species_floors <- "species_options(floors = TRUE, floor_prior = c(1, 4))"
-# the latent smooths of V5, in full, with the smooths on selection and the
-# floor, and the shear, as given; the range estimated
-v5_smooth <- function(selection, floor, shear = "FALSE") {
-  sprintf(paste("mortality_floor = TRUE, floor_prior = c(1, 4),",
-                "smooth = smooth_options(selection = %s, floor = %s,",
-                "shear = %s, floor_intercepts = \"class\", kernel = \"se\",",
-                "c = 2, range = NULL, basis_range = 1,",
-                "range_prior = c(1.5, 0.05), sd_prior = c(1, 0.05),",
-                "floor_intercept_prior = \"beta_moments\")"),
-          selection, floor, shear)
-}
-species_runs <- data.frame(
-  name = c("sp_ref_floor", "sp_v1", "sp_v1_floor", "sp_v2", "sp_v2_floor",
-           "sp_v3", "sp_v3_floor", "sp_v4", "sp_v4_class", "sp_v5",
-           "sp_v5_shear", "sp_v5_sel", "sp_v5_floor"),
-  label = c("B_f", "V1", "V1f", "V2", "V2f", "V3", "V3f", "V4", "V4_class",
-            "V5", "V5_shear", "V5_sel", "V5_floor"),
-  options = vapply(sprintf("dynamical_model_options(%s)", c(
-    "mortality_floor = TRUE, floor_prior = c(1, 4)",
-    "species = species_options(floors = FALSE)",
-    sprintf("species = %s", species_floors),
-    "kdr = kdr_options()",
-    "mortality_floor = TRUE, floor_prior = c(1, 4), kdr = kdr_options()",
-    "species = species_options(floors = FALSE), kdr = kdr_options()",
-    sprintf("species = %s, kdr = kdr_options()", species_floors),
-    paste("mortality_floor = TRUE, floor_prior = c(1, 4),",
-          "kdr = kdr_options(floor = TRUE)"),
-    paste("mortality_floor = TRUE, floor_prior = c(1, 4),",
-          "kdr = kdr_options(floor = \"class\")"),
-    v5_smooth("TRUE", "\"class\""),
-    v5_smooth("TRUE", "\"class\"", shear = "TRUE"),
-    v5_smooth("TRUE", "FALSE"),
-    v5_smooth("FALSE", "\"class\""))),
-    set_options, "", settings = pre_v5h_defaults, USE.NAMES = FALSE),
-  inits = c(floor_mode_inits, "", floor_mode_inits, "", floor_mode_inits, "",
-            floor_mode_inits, floor_mode_inits, floor_mode_inits,
-            floor_mode_inits, floor_mode_inits, floor_mode_inits,
-            floor_mode_inits))
-
-# The candidate models with the weighted binomial likelihood (the set "wb"):
-# the options of each fit it copies, with likelihood = "weighted_binomial"
-weighted_binomial_options <- function(expression) {
-  set_options(expression, list(likelihood = "weighted_binomial"),
-              replace = TRUE)
-}
-wb_copies <- c(wb_bf = "B_f", wb_v3f = "V3f", wb_v4 = "V4",
-               wb_v4_class = "V4_class", wb_v5 = "V5")
-wb_runs <- rbind(
-  data.frame(name = "wb_ref", label = "ref_f0_wb",
-             options = set_options(paste0("dynamical_model_options(",
-                                          "likelihood = \"weighted_binomial\")"),
-                                   pre_v5h_defaults),
-             inits = ""),
-  data.frame(name = names(wb_copies),
-             label = paste0(wb_copies, "_wb"),
-             options = vapply(species_runs$options[match(wb_copies,
-                                                          species_runs$label)],
-                              weighted_binomial_options, ""),
-             inits = species_runs$inits[match(wb_copies, species_runs$label)],
-             row.names = NULL))
-
-# The set "v5r" (v5r_runs): V5 with the range of both smooths fixed at 1,500
-# km (smooth_options(range = 1.5), R/latent_smooth.R; the basis set for it,
-# 164 functions), each smooth's sd estimated with its PC prior, with the
-# beta-binomial (bb) and the weighted binomial (wb) likelihood, the full fit
-# and the temporal forecasting folds from 2014 and 2018 (fc2014, fc2018;
-# R/run_one_fold.R):
-#   v5r_bb_full, v5r_wb_full, v5r_bb_fc2014, v5r_wb_fc2014, v5r_bb_fc2018,
-#   v5r_wb_fc2018
-# The range is fixed because V5's fitted ranges (500-650 km) piled against
-# the basis's limit; 1,500 km is the spatial correlation range of recent
-# pyrethroid mortality (1,230 km [840, 1,800]) and of block plateaus (1,500
-# km [1,100, 2,000]; R/plateau_range.R). Every chain starts from the
-# low-floor initial values: in the V5 fits, the chains from the high-floor
-# ones found a mode 125 log-posterior units lower. With the default sampler
-# of #48. V5r's gradient took 0.98 (bb) and 0.94 (wb) times the default
-# model's (4 chains, 8 threads, 9 October 2026; as wb_v5's, within the
-# timing noise): about 45-47 ms on the default pod, and for 3,500 iterations
-# of 45 leapfrog steps about 2.0 h (wb_ref, at 0.90, sampled in 1.9 h), so
-# about 2.3-2.5 h and $0.70 a pod with setup, predictions and saving.
-v5r_options <- function(likelihood) {
-  sprintf(paste("dynamical_model_options(mortality_floor = TRUE,",
-                "floor_prior = c(1, 4),",
-                "smooth = smooth_options(selection = TRUE, floor = \"class\",",
-                "shear = FALSE, floor_intercepts = \"class\", kernel = \"se\",",
-                "c = 2, range = 1.5, basis_range = 1.5,",
-                "floor_intercept_prior = \"beta_moments\",",
-                "sd_prior = c(1, 0.05)), likelihood = \"%s\")"),
-          likelihood)
-}
-v5r_fits <- data.frame(fit = c("full", "fc2014", "fc2018"),
-                       job = c("full", "fold temporal_forecasting 2014",
-                               "fold temporal_forecasting 2018"))
-v5r_likelihoods <- c(bb = "beta_binomial", wb = "weighted_binomial")
-v5r_runs <- merge(data.frame(short = names(v5r_likelihoods),
-                             likelihood = unname(v5r_likelihoods)),
-                  v5r_fits, by = NULL)
-v5r_runs <- v5r_runs[order(match(v5r_runs$fit, v5r_fits$fit),
-                           match(v5r_runs$short, names(v5r_likelihoods))), ]
-v5r_runs <- data.frame(
-  name = sprintf("v5r_%s_%s", v5r_runs$short, v5r_runs$fit),
-  label = sprintf("V5r_%s_%s", v5r_runs$short, v5r_runs$fit),
-  options = v5r_options(v5r_runs$likelihood),
-  inits = "temporary/inits_floor_low.RDS",
-  job = v5r_runs$job,
-  row.names = NULL)
-
-# The set "v5i" (v5i_runs): V5r with the beta-binomial likelihood and the
-# hierarchy of regions and countries of the initial state replaced by a
-# third smooth, of the logit relative initial state, with a loading per type
-# (smooth_options(init = TRUE), R/latent_smooth.R; the same kernel, basis
-# and fixed range, the field's sd fixed at 1 and each loading with the PC
-# prior of a smooth's sd), within the same limits init_frac_min and with the
-# initial-state covariates; the full fit and the temporal forecasting folds
-# from 2014 and 2018:
-#   v5i_bb_full, v5i_bb_fc2014, v5i_bb_fc2018
-# Every chain starts from the low-floor initial values, as V5r's, the field
-# flat and each loading at 0.3 (dynamical_inits()). With the default sampler
-# of #48. V5i's gradient took 1.00 times V5r's (bb) and 1.02 times the
-# default model's (4 chains, 8 threads, 9 October 2026): about 49 ms on the
-# default pod, and for 3,500 iterations of 45 leapfrog steps about 2.1 h, so
-# about 2.4-2.6 h and $0.70 a pod with setup, predictions and saving.
-v5i_options <- sub("sd_prior = c(1, 0.05))",
-                   "sd_prior = c(1, 0.05), init = TRUE)",
-                   v5r_options("beta_binomial"), fixed = TRUE)
-v5i_runs <- data.frame(
-  name = sprintf("v5i_bb_%s", v5r_fits$fit),
-  label = sprintf("V5i_bb_%s", v5r_fits$fit),
-  options = v5i_options,
-  inits = "temporary/inits_floor_low.RDS",
-  job = v5r_fits$job,
-  row.names = NULL)
-
-# The set "v5h" (v5h_runs): V5r with the beta-binomial likelihood and each
-# smooth's sd with the half-normal prior of scale 0.5 in place of the PC
-# prior (smooth_options(sd_prior = list(family = "half_normal", scale =
-# 0.5)), R/latent_smooth.R), under which V5r's sds ran to 4-13; the full fit
-# and the temporal forecasting folds from 2014 and 2018:
-#   v5h_bb_full, v5h_bb_fc2014, v5h_bb_fc2018
-# Every chain starts from the low-floor initial values, as V5r's. With the
-# default sampler of #48. The model is V5r's but for the prior of two
-# scalars, so about V5r's time and cost, 2.3-2.5 h and $0.70 a pod.
-v5h_options <- sub("sd_prior = c(1, 0.05)",
-                   "sd_prior = list(family = \"half_normal\", scale = 0.5)",
-                   v5r_options("beta_binomial"), fixed = TRUE)
-v5h_runs <- data.frame(
-  name = sprintf("v5h_bb_%s", v5r_fits$fit),
-  label = sprintf("V5h_bb_%s", v5r_fits$fit),
-  options = v5h_options,
-  inits = "temporary/inits_floor_low.RDS",
-  job = v5r_fits$job,
-  row.names = NULL)
+# writes outputs/species_runs/jobs_<set>.csv, one row per job, and
+# outputs/species_runs/pods_<set>.json, the create-pod body of each
+# (species_run_pod_body()), for the commit to run (a full commit id;
+# default: HEAD, which must be on GitHub) and a set of run_sets, below:
+# "v5f" (the default), "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm" or
+# "maps_v5f". The fits of #47 before V5f (the species model, the kdr
+# covariate, the weighted binomial likelihood, V5, V5r, V5i and V5h; the
+# sets "species", "wb", "v5r", "v5i" and "v5h") were launched by this script
+# on the branch weighted-binomial, which keeps them. Before creating the
+# pods, `irpod sync` uploads the initial values (the low-floor ones,
+# temporary/inits_floor_low.RDS, from R/floor_mode_inits.R). Then create
+# one pod per element of the json (state the price first), and when each is
+# done, `irpod fetch <name>` and delete its pod.
 
 # The set "v5f" (v5f_runs): V5f, the default model since #47, V5h with the
 # floor smooth centred over the cells with bioassays of the pyrethroids or
@@ -399,9 +157,8 @@ v5f_maps <- data.frame(
                 ts_script_dir),
   cpu = "cpu3c", vcpu = 16L, row.names = NULL)
 
-# the sets of fits, by name
-run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
-                 v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
+# the sets of jobs, by name
+run_sets <- list(v5f = v5f_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
@@ -411,7 +168,7 @@ run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
 # or the fold in the runs' column job, if they have one, with --threads; or a
 # command run by --in, with the code ref in place of {ref}; and the pod's CPU
 # type and vCPUs (columns cpu and vcpu of the runs, or cpu5c and 8)
-species_run_jobs <- function(code_ref, threads = 8, runs = species_runs) {
+species_run_jobs <- function(code_ref, threads = 8, runs = v5f_runs) {
   jobs <- runs
   if (is.null(jobs$job)) jobs$job <- "full"
   if (is.null(jobs$cpu)) jobs$cpu <- "cpu5c"
@@ -461,10 +218,10 @@ if (sys.nframe() == 0) {
   code_ref <- if (length(arguments) >= 1) arguments[1] else
     system("git rev-parse HEAD", intern = TRUE)
   stopifnot(grepl("^[0-9a-f]{40}$", code_ref))
-  set <- if (length(arguments) >= 2) arguments[2] else "species"
+  set <- if (length(arguments) >= 2) arguments[2] else "v5f"
   stopifnot(set %in% names(run_sets))
   runs <- run_sets[[set]]
-  suffix <- if (set == "species") "" else paste0("_", set)
+  suffix <- paste0("_", set)
   # each fit's options must pass the model's checks (definitions only; no
   # data or python)
   source("R/dynamical_model.R")
@@ -478,8 +235,7 @@ if (sys.nframe() == 0) {
       identical(eval(str2lang(expression)), dynamical_model_options())
     }, logical(1)))
   }
-  inputs <- c(arabiensis_fraction_file, kdr_total_file,
-              if (set %in% c("wb", "v5r")) replicate_rho_file,
+  inputs <- c(character(0),
               unlist(strsplit(runs$inits[nzchar(runs$inits)], ",")))
   missing <- inputs[!file.exists(inputs)]
   if (length(missing) > 0) {
