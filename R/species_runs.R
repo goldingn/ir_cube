@@ -1,5 +1,6 @@
-# The fits of the species model (#47) and its reference, full data only, and
-# of V5 with a fixed range, full and forecasting folds. Run on RunPod
+# The fits of the species model (#47) and its reference, full data only, of
+# V5 with a fixed range, full and forecasting folds, and the
+# cross-validation folds of V5h, the default model. Run on RunPod
 # (docker/README.md), one fit per pod.
 #
 #   Rscript R/species_runs.R [code ref] [set]
@@ -8,9 +9,9 @@
 # outputs/species_runs/pods.json, the create-pod body of each
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
-# default, species_runs); for the sets "wb", "v5r", "v5i" and "v5h"
-# (wb_runs, v5r_runs, v5i_runs, v5h_runs, below), jobs_<set>.csv and
-# pods_<set>.json. The fits:
+# default, species_runs); for the sets "wb", "v5r", "v5i", "v5h", "cv5h_A",
+# "cv5h_B" and "cv5h_C" (wb_runs, v5r_runs, v5i_runs, v5h_runs and
+# cv5h_runs, below), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
 #   sp_v1         V1: the species model, no floors
@@ -253,9 +254,80 @@ v5h_runs <- data.frame(
   job = v5r_fits$job,
   row.names = NULL)
 
+# The sets "cv5h_A", "cv5h_B" and "cv5h_C" (cv5h_runs()): the complete
+# cross-validation of V5h, the default model since #47, its options in full
+# in each option string (cv5h_options, which must equal
+# dynamical_model_options() at the commit run): the five folds of
+# R/run_validation_folds.R,
+#   cv5h_<variant>_blocks1, _blocks2  spatial blocks 1 and 2
+#   cv5h_<variant>_interp             spatial interpolation
+#   cv5h_<variant>_fc2014, _fc2018    forecasting from 2014 and from 2018
+# in three variants of the starts and the warmup, against the slow mixing of
+# v5h_bb_fc2018, whose chains sat at different pyrethroid floor levels and
+# drifted slowly towards each other, along a ridge where the floor level
+# trades off with the floor smooth, some countries' initial states and the
+# nets effects:
+#   A  chain i from draw i of the full fit v5h_bb_full, one draw from each of
+#      its chains, spread along the pyrethroid floor intercept
+#      (R/draw_inits.R: temporary/inits_v5h_draw1.RDS to draw4.RDS), 2,000
+#      warmup and 1,500 samples
+#   B  every chain from the low-floor initial values, as the v5h fits, 4,000
+#      warmup and 1,500 samples
+#   C  the starts of A and the warmup of B
+# A and C have one init file per chain, so they need 4 chains (or a multiple
+# of 4). The warmup and samples are in each JOB (run_pod_job.sh's --warmup
+# and --samples: folds do not read IR_CUBE_MCMC_SETTINGS). The options, the
+# init files and the job names are set in one place, below, each overridable
+# from the environment, so that after a change to the model the sets are
+# remade by R/draw_inits.R (on the new full fit) and this script, given the
+# commit (doc/v5h_cv_runbook.md):
+#   CV5H_OPTIONS  the options, in full (default v5h_options)
+#   CV5H_INITS    the prefix of the init files of one draw per chain, as
+#                 R/draw_inits.R writes them (default
+#                 temporary/inits_v5h_draw)
+#   CV5H_NAME     the prefix of the job names (default cv5h), which must be
+#                 free on the volume
+# Before creating the pods, R/draw_inits.R and irpod sync, which uploads the
+# init files. On
+# the default pod (cpu5c, 8 vCPU, $0.28/h), v5h_bb_fc2014 took 0.95 h from
+# start to saved fold and v5h_bb_full 1.54 h, at 2,000 + 1,500 (v5h_bb_fc2018
+# took 2.4 h on cpu3c): about 1-1.6 h a fold for A and 1.5-2.5 h for B and C
+# (5,500 iterations against 3,500), plus 5-25 minutes of image pull; about
+# $2.50 for A's five pods and $3.50-4 for B's or C's.
+cv5h_options <- Sys.getenv("CV5H_OPTIONS", v5h_options)
+cv5h_draw_inits <- paste(sprintf("%s%i.RDS",
+                                 Sys.getenv("CV5H_INITS",
+                                            "temporary/inits_v5h_draw"),
+                                 1:4),
+                         collapse = ",")
+cv5h_name <- Sys.getenv("CV5H_NAME", "cv5h")
+cv5h_folds <- data.frame(
+  fold = c("blocks1", "blocks2", "interp", "fc2014", "fc2018"),
+  job = c("fold spatial_blocks 1", "fold spatial_blocks 2",
+          "fold spatial_interpolation all",
+          "fold temporal_forecasting 2014", "fold temporal_forecasting 2018"))
+cv5h_variants <- data.frame(
+  variant = c("A", "B", "C"),
+  inits = c(cv5h_draw_inits, "temporary/inits_floor_low.RDS",
+            cv5h_draw_inits),
+  warmup = c(2000L, 4000L, 4000L))
+cv5h_runs <- function(variant) {
+  settings <- cv5h_variants[cv5h_variants$variant == variant, ]
+  stopifnot(nrow(settings) == 1)
+  data.frame(
+    name = sprintf("%s_%s_%s", cv5h_name, variant, cv5h_folds$fold),
+    label = sprintf("V5h_%s_%s", variant, cv5h_folds$fold),
+    options = cv5h_options,
+    inits = settings$inits,
+    job = sprintf("%s --warmup %d --samples 1500", cv5h_folds$job,
+                  settings$warmup),
+    row.names = NULL)
+}
+
 # the sets of fits, by name
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
-                 v5i = v5i_runs, v5h = v5h_runs)
+                 v5i = v5i_runs, v5h = v5h_runs, cv5h_A = cv5h_runs("A"),
+                 cv5h_B = cv5h_runs("B"), cv5h_C = cv5h_runs("C"))
 
 # One row per pod job, with its environment (docker/README.md): the full fit,
 # or the fold in the runs' column job, if they have one
@@ -307,6 +379,12 @@ if (sys.nframe() == 0) {
   source("R/dynamical_model.R")
   for (expression in runs$options) {
     check_dynamical_model_options(eval(str2lang(expression)))
+  }
+  # the cross-validation of the default model has the defaults in full
+  if (startsWith(set, "cv5h_")) {
+    stopifnot(vapply(runs$options, function(expression) {
+      identical(eval(str2lang(expression)), dynamical_model_options())
+    }, logical(1)))
   }
   inputs <- c(arabiensis_fraction_file, kdr_total_file,
               if (set %in% c("wb", "v5r")) replicate_rho_file,
