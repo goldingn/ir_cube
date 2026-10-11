@@ -26,13 +26,22 @@
 #   selection         the smooth u_s(x) of the strength of selection: the
 #                     cumulative log fitness is multiplied by exp(u_s(x))
 #                     (outer_mortality(), R/dynamical_model.R). TRUE (the
-#                     default) for every class, "class" for the pyrethroids
-#                     and DDT only (smooth_classes), FALSE for none
+#                     default) for every class, "class" for the classes
+#                     `classes` only, FALSE for none
 #   floor             the smooth u_f(x) of the logit mortality floor, f =
 #                     plogis(floor_intercept + u_f(x)): "class" (the
-#                     default) for the pyrethroids and DDT only, TRUE for
+#                     default) for the classes `classes` only, TRUE for
 #                     every class, FALSE for none. Needs mortality_floor =
 #                     TRUE
+#   classes           the insecticide classes a "class" smooth applies to:
+#                     the pyrethroids and DDT (the default, smooth_classes;
+#                     kdr gives resistance to both), or "Pyrethroids" for
+#                     smooths of the pyrethroids alone (V5p), whose forecast
+#                     matters most, so that DDT's floor and the other
+#                     classes' selection do not pull theirs. The other
+#                     classes then have no smooth: a flat floor (floor_flat,
+#                     with the floor's prior) and selection by the
+#                     covariates alone
 #   shear             FALSE (the default), or TRUE for a selection smooth that
 #                     shares the floor's: u_s(x) = v_s(x) + b u_f(x), v_s and
 #                     u_f independent smooths and b (smooth_shear) one
@@ -47,7 +56,32 @@
 #                     floor_intercept + u_f(x)), in place of the constant
 #                     mortality_floor, with or without u_f; floor_intercept is
 #                     the logit floor where u_f is 0, which is u_f's mean
-#                     over the cells it is centred on (smooth_box())
+#                     over the cells it is centred on (smooth_box()). Or
+#                     "hierarchical" (with the cloglog link): one floor per
+#                     insecticide type, its mean hazard partially pooled over
+#                     the types of its class and the classes,
+#                       log lambda_bar[type] = log floor_flat +
+#                         floor_sd_class floor_class_raw[class of type] +
+#                         floor_sd_type floor_type_raw[type],
+#                     floor_flat (one) with the half-normal prior of
+#                     floor_intercept_prior, the raw deviations standard
+#                     normal and the two sds half-normal with scale
+#                     floor_hierarchy_scale. The discriminating
+#                     concentrations are set alike for every insecticide
+#                     (twice the LC99.9 of susceptible mosquitoes), so the
+#                     floors of the classes whose data identify them (the
+#                     pyrethroids and DDT) inform the others' (whose
+#                     populations never come near their floors), and each
+#                     pyrethroid has its own. lambda_bar[type] is the mean
+#                     hazard over floor_mean_cells for the types of a class
+#                     with the floor smooth (with floor_mean = "cells"), and
+#                     the flat hazard of the others, so both are the type's
+#                     average floor hazard
+#   floor_hierarchy_scale
+#                     with floor_intercepts = "hierarchical", the scale of
+#                     the half-normal priors of floor_sd_class and
+#                     floor_sd_type, the sds of the log mean hazard between
+#                     classes and between the types of a class (0.5)
 #   floor_intercept_prior
 #                     the prior of the floor where u_f is 0 (the floor at a
 #                     flat smooth): list(family = "half_normal", scale = s)
@@ -144,6 +178,7 @@ smooth_options <- function(selection = TRUE,
                            floor = "class",
                            shear = FALSE,
                            floor_intercepts = "class",
+                           floor_hierarchy_scale = 0.5,
                            kernel = "se",
                            c = 2,
                            m = NULL,
@@ -156,11 +191,13 @@ smooth_options <- function(selection = TRUE,
                                                         scale = 0.05),
                            floor_link = "logit",
                            floor_mean = "prior",
+                           classes = smooth_classes,
                            init = FALSE) {
   list(selection = selection,
        floor = floor,
        shear = shear,
        floor_intercepts = floor_intercepts,
+       floor_hierarchy_scale = floor_hierarchy_scale,
        kernel = kernel,
        c = c,
        m = m,
@@ -171,6 +208,7 @@ smooth_options <- function(selection = TRUE,
        floor_intercept_prior = floor_intercept_prior,
        floor_link = floor_link,
        floor_mean = floor_mean,
+       classes = classes,
        init = init)
 }
 
@@ -263,9 +301,16 @@ smooth_floor_intercept <- function(v, options, weights = NULL) {
   if (smooth_floor_link(options$smooth) == "logit") {
     return(if (greta) log(f0) - log(1 - f0) else qlogis(f0))
   }
-  # the shift of the log hazard, on the classes with the floor smooth
-  has_smooth <- smooth_class_weight(options, "floor",
-                                    seq_along(options$smooth$term_classes))
+  # the log mean hazard of each intercept (each class, or with hierarchical
+  # floors each type), and the shift of the log hazard, on those with the
+  # floor smooth
+  hierarchical <- smooth_floor_hierarchical(options$smooth)
+  log_f0 <- if (hierarchical) smooth_floor_log_hazards(v, options$smooth) else
+    log(f0)
+  has_smooth <- smooth_class_weight(
+    options, "floor",
+    if (hierarchical) options$smooth$type_classes else
+      seq_along(options$smooth$term_classes))
   shift <- if (smooth_floor_mean(options$smooth) == "cells") {
     if (is.null(weights)) weights <- smooth_weight_terms(v, options)$floor
     smooth_floor_log_mean(weights, options$smooth)
@@ -273,9 +318,9 @@ smooth_floor_intercept <- function(v, options, weights = NULL) {
     smooth_sd(v, "floor") ^ 2 * options$smooth$floor_variance / 2
   }
   if (greta) {
-    log(f0) - shift * has_smooth
+    log_f0 - shift * has_smooth
   } else {
-    log(f0) - outer(c(shift), has_smooth)
+    log_f0 - outer(c(shift), has_smooth)
   }
 }
 
@@ -297,15 +342,23 @@ smooth_basis_range <- function(smooth) {
     smooth$range_prior[1]
 }
 
-# the insecticide classes with the smooth terms where a smooth is "class":
-# kdr gives resistance to the pyrethroids and DDT
+# the insecticide classes with the smooth terms where a smooth is "class",
+# by default (smooth_options(classes = )): kdr gives resistance to the
+# pyrethroids and DDT
 smooth_classes <- kdr_floor_classes
+
+# the classes a "class" smooth applies to (smooth_options(classes = )).
+# Options saved before the option have none, and the default
+smooth_term_class_names <- function(smooth) {
+  if (is.list(smooth) && !is.null(smooth[["classes"]])) smooth[["classes"]] else
+    smooth_classes
+}
 
 # the elements build_dynamical_model() adds to the options (smooth_box())
 smooth_basis_elements <- c("crs", "origin", "half_width", "indices",
                            "column_means", "class_column_means",
                            "term_classes", "floor_variance",
-                           "floor_mean_cells")
+                           "floor_mean_cells", "type_classes")
 
 # the projection of the coordinates: the two-stage correction's Albers
 # equal-area conic for Africa (africa_equal_area_crs,
@@ -353,7 +406,8 @@ check_smooth_options <- function(smooth) {
     is.list(smooth),
     all(setdiff(names(smooth_options()),
                 c("m", "range", "basis_range", "shear", "init",
-                  "floor_intercept_prior", "floor_link", "floor_mean")) %in%
+                  "floor_intercept_prior", "floor_link", "floor_mean",
+                  "classes", "floor_hierarchy_scale")) %in%
           names(smooth)),
     all(names(smooth) %in% c(names(smooth_options()), smooth_basis_elements)),
     is_kind(smooth$selection), is_kind(smooth$floor),
@@ -364,7 +418,13 @@ check_smooth_options <- function(smooth) {
     is.null(smooth$shear) || isFALSE(smooth$shear) || isTRUE(smooth$shear),
     !isTRUE(smooth$shear) ||
       (!isFALSE(smooth$selection) && !isFALSE(smooth$floor)),
-    smooth$floor_intercepts %in% c("class", "one"),
+    smooth$floor_intercepts %in% c("class", "one", "hierarchical"),
+    is.null(smooth[["floor_hierarchy_scale"]]) ||
+      (is.numeric(smooth[["floor_hierarchy_scale"]]) &&
+         length(smooth[["floor_hierarchy_scale"]]) == 1 &&
+         smooth[["floor_hierarchy_scale"]] > 0),
+    !smooth_floor_hierarchical(smooth) ||
+      smooth_floor_link(smooth) == "cloglog",
     smooth$kernel %in% names(hsgp_m_factor),
     is.numeric(smooth$c), length(smooth$c) == 1, smooth$c > 1,
     is.null(smooth$m) || (is.numeric(smooth$m) && length(smooth$m) == 2 &&
@@ -384,11 +444,17 @@ check_smooth_options <- function(smooth) {
       smooth[["floor_link"]] %in% c("logit", "cloglog"),
     is.null(smooth[["floor_mean"]]) ||
       smooth[["floor_mean"]] %in% c("prior", "cells"),
+    is.null(smooth[["classes"]]) ||
+      (is.character(smooth[["classes"]]) && length(smooth[["classes"]]) > 0 &&
+         !anyDuplicated(smooth[["classes"]]) &&
+         all(smooth[["classes"]] %in% c("Pyrethroids", "Organophosphates",
+                                        "Carbamates", "Organochlorines"))),
     smooth_floor_mean(smooth) == "prior" ||
       smooth_floor_link(smooth) == "cloglog",
     smooth_floor_link(smooth) == "logit" ||
       (smooth_floor_prior_family(smooth) == "half_normal" &&
-         smooth$floor_intercepts == "class" && smooth_range_fixed(smooth) &&
+         smooth$floor_intercepts %in% c("class", "hierarchical") &&
+         smooth_range_fixed(smooth) &&
          !isFALSE(smooth$floor) && !isTRUE(smooth$shear)))
   invisible(smooth)
 }
@@ -564,7 +630,7 @@ smooth_mask_range <- function(crs = smooth_crs) {
 # saved before class_column_means (V5 to V5h) centres every smooth over
 # every modelled cell, as those fits did.
 smooth_box <- function(smooth, cells, classes, class_cells) {
-  smooth$term_classes <- classes %in% smooth_classes
+  smooth$term_classes <- classes %in% smooth_term_class_names(smooth)
   if (!is.null(smooth$indices)) {
     return(smooth_floor_variance(smooth, class_cells))
   }
@@ -647,8 +713,8 @@ hsgp_basis <- function(coords, smooth) {
 
 # The centre of the smooth `kind` (of "selection", "floor" and "init"): the
 # means of the basis functions over the cells of the bioassays it applies to
-# (smooth_box()), class_column_means for a smooth of the pyrethroids and DDT
-# ("class") and column_means otherwise, or column_means for every smooth of
+# (smooth_box()), class_column_means for a smooth of the classes `classes`
+# ("class"; by default the pyrethroids and DDT) and column_means otherwise, or column_means for every smooth of
 # a basis saved without class_column_means. Centred, a smooth has mean 0
 # over those cells, so it does not trade off with the overall strength of
 # selection or the floor intercepts there
@@ -841,13 +907,42 @@ smooth_init_loadings <- function(v, options) {
 
 # The floor intercept of each class `class` (class_ids): its own, or the one
 # for all
-smooth_intercept_index <- function(options, class) {
+smooth_intercept_index <- function(options, class, type = NULL) {
+  if (smooth_floor_hierarchical(options$smooth)) {
+    stopifnot(!is.null(type), length(type) == length(class))
+    return(type)
+  }
   if (identical(options$smooth$floor_intercepts, "class")) class else
     rep(1L, length(class))
 }
 
+# whether the floors are one per insecticide type, partially pooled
+# (smooth_options(floor_intercepts = "hierarchical"))
+smooth_floor_hierarchical <- function(smooth) {
+  is.list(smooth) && identical(smooth[["floor_intercepts"]], "hierarchical")
+}
+
+# With hierarchical floors, the log mean hazard of each type,
+#   log floor_flat + floor_sd_class floor_class_raw[class of type] +
+#   floor_sd_type floor_type_raw[type],
+# the class of each type in smooth$type_classes (build_dynamical_model()): a
+# greta array (types x 1), or in plain R draws x types
+smooth_floor_log_hazards <- function(v, smooth) {
+  classes <- smooth$type_classes
+  stopifnot(!is.null(classes))
+  if (inherits(v$floor_flat, "greta_array")) {
+    return(log(v$floor_flat) + v$floor_sd_class * v$floor_class_raw[classes] +
+             v$floor_sd_type * v$floor_type_raw)
+  }
+  n_draws <- length(v$floor_flat)
+  class_raw <- matrix(v$floor_class_raw, n_draws)
+  type_raw <- matrix(v$floor_type_raw, n_draws)
+  c(log(v$floor_flat)) + c(v$floor_sd_class) * class_raw[, classes, drop = FALSE] +
+    c(v$floor_sd_type) * type_raw
+}
+
 # Whether each class `class` has the smooth `kind`: every class (TRUE), or
-# the pyrethroids and DDT ("class"), as 1 or 0
+# the classes smooth_options(classes = ) ("class"), as 1 or 0
 smooth_class_weight <- function(options, kind, class) {
   if (isTRUE(options$smooth[[kind]])) {
     return(rep(1, length(class)))

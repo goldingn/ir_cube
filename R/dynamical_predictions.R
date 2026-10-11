@@ -405,7 +405,7 @@ dynamical_trajectories <- function(parameters, k, logit_init, x, years_keep,
     if (smooth_floor_on(parameters$options)) {
       floor <- smooth_floor_value(
         parameters$floor_intercept[
-          , smooth_intercept_index(parameters$options, class)],
+          , smooth_intercept_index(parameters$options, class, k)],
         smooth$floor, link = smooth_floor_link(parameters$options$smooth))
     }
     # the smooth of the initial state, at type k's loading (one per draw)

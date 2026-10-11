@@ -10,7 +10,7 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
 # and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -382,6 +382,74 @@ v5n_runs <- v5n_set(c("0.05", "0.1", "0.2"))
 # The set "v5t": V5n at tighter scales, 0.02, 0.01 and 0.005, after the 2014
 # fold still used the floor at 0.05 (the full fit and both folds at each)
 v5t_runs <- v5n_set(c("0.02", "0.01", "0.005"))
+# The set "v5p" (v5p_runs): V5p, V5n with both smooths of the pyrethroids
+# alone (smooth_options(selection = "class", classes = "Pyrethroids")): in
+# region A, the shared smooths let DDT's floor and the carbamates' selection
+# hold the pyrethroid floor up. The other classes have a flat floor and
+# selection by the covariates alone. The full fit and both forecasting folds
+# at prior scales 0.02, 0.03 and 0.05, tagged v5p<digits> as V5n (v5p02,
+# v5p03, v5p05; v5p025 for 0.025):
+#   v5p02_full, v5p02_fc2018, v5p02_fc2014, ...
+v5p_options <- function(scale) {
+  sub("smooth = smooth_options(selection = TRUE,",
+      "smooth = smooth_options(selection = \"class\", classes = \"Pyrethroids\",",
+      v5n_options(scale), fixed = TRUE)
+}
+v5p_set <- function(scales) do.call(rbind, lapply(scales, function(scale) {
+  digits <- sub("^0\\.", "", scale)
+  tag <- paste0("v5p", if (nchar(digits) < 2) paste0(digits, "0") else digits)
+  data.frame(
+    name = paste0(tag, c("_full", "_fc2018", "_fc2014")),
+    label = paste0(toupper(substr(tag, 1, 1)), substring(tag, 2),
+                   c("_full", "_fc2018", "_fc2014")),
+    options = v5p_options(scale),
+    inits = low_floor_inits,
+    job = c("full", "fold temporal_forecasting 2018",
+            "fold temporal_forecasting 2014"))
+}))
+v5p_runs <- v5p_set(strsplit(Sys.getenv("V5P_SCALES", "0.02,0.03,0.05"), ",")[[1]])
+stopifnot(all(grepl("classes = \"Pyrethroids\"", v5p_runs$options, fixed = TRUE)),
+          all(grepl("selection = \"class\"", v5p_runs$options, fixed = TRUE)),
+          all(grepl("floor_mean = \"cells\"", v5p_runs$options, fixed = TRUE)))
+# The set "hier" (hier_runs): hierarchical floors (smooth_options(
+# floor_intercepts = "hierarchical")), one per insecticide type, partially
+# pooled over the types of a class and the classes, so that the floors the
+# pyrethroids and DDT identify inform the other classes'; the half-normal
+# prior's scale is then on the overall mean hazard. With the current smooths
+# (V5n's: selection for every class, the floor smooth for the pyrethroids and
+# DDT), V5nh, at scales V5NH_SCALES (default 0.05, to compare with V5n05);
+# and with the smooths of the pyrethroids alone (V5p's), V5ph, at scales
+# V5PH_SCALES (default 0.05). The full fit and both forecasting folds of each:
+#   v5nh05_full, v5nh05_fc2018, v5nh05_fc2014, v5ph05_full, ...
+hierarchical_options <- function(options) {
+  stopifnot(grepl("floor_intercepts = \"class\"", options, fixed = TRUE))
+  sub("floor_intercepts = \"class\"", "floor_intercepts = \"hierarchical\"",
+      options, fixed = TRUE)
+}
+scaled_set <- function(prefix, options_of, scales) {
+  do.call(rbind, lapply(scales, function(scale) {
+    digits <- sub("^0\\.", "", scale)
+    tag <- paste0(prefix, if (nchar(digits) < 2) paste0(digits, "0") else digits)
+    data.frame(
+      name = paste0(tag, c("_full", "_fc2018", "_fc2014")),
+      label = paste0(toupper(substr(tag, 1, 1)), substring(tag, 2),
+                     c("_full", "_fc2018", "_fc2014")),
+      options = options_of(scale),
+      inits = low_floor_inits,
+      job = c("full", "fold temporal_forecasting 2018",
+              "fold temporal_forecasting 2014"))
+  }))
+}
+split_scales <- function(name, default) {
+  strsplit(Sys.getenv(name, default), ",")[[1]]
+}
+hier_runs <- rbind(
+  scaled_set("v5nh", function(s) hierarchical_options(v5n_options(s)),
+             split_scales("V5NH_SCALES", "0.05")),
+  scaled_set("v5ph", function(s) hierarchical_options(v5p_options(s)),
+             split_scales("V5PH_SCALES", "0.05")))
+stopifnot(all(grepl("floor_intercepts = \"hierarchical\"", hier_runs$options,
+                    fixed = TRUE)))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
           identical(v5n_runs$name[c(1, 4, 7)],
                     c("v5n05_full", "v5n10_full", "v5n20_full")),
@@ -454,6 +522,7 @@ v5f_maps <- data.frame(
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
                  v5c = v5c_runs, v5n = v5n_runs, v5t = v5t_runs,
+                 v5p = v5p_runs, hier = hier_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),

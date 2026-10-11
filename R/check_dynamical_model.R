@@ -20,7 +20,8 @@
 # density) and in plain R (the predictions), and with the kdr-dependent floor,
 # with its slope at 0 against the constant floor. With the latent smooths
 # (V5, #47), each is checked to have mean 0 over the cells it is centred on
-# (every modelled cell, or for the floor smooth of the pyrethroids and DDT,
+# (every modelled cell, or for a "class" smooth, of the classes
+# smooth_options(classes = ), by default the pyrethroids and DDT,
 # the cells with their bioassays) and to equal the smooth from the centred
 # basis functions, and the model with every raw weight 0 against the kdr
 # model with the same floor intercepts (by class: V4_class) and its slopes
@@ -414,7 +415,7 @@ if (smooth_on(model_options)) {
               paste(sprintf("%s (%s)", kinds,
                             vapply(kinds, function(kind) {
                               if (isTRUE(smooth[[kind]])) "every class" else
-                                "pyrethroids and DDT"
+                                toString(smooth_term_class_names(smooth))
                             }, "")), collapse = ", "),
               smooth$kernel, toString(smooth$m), nrow(smooth$indices),
               if (smooth_floor_on(model_options)) smooth$floor_intercepts else
@@ -428,7 +429,8 @@ if (smooth_on(model_options)) {
   u_cells <- lapply(parameters$smooth_weights, function(w) {
     c(w %*% t(basis_cells))
   })
-  class_cells <- unique(df$cell[df$insecticide_class %in% smooth_classes])
+  class_cells <- unique(df$cell[df$insecticide_class %in%
+                                  smooth_term_class_names(smooth)])
   centre_rows <- function(kind) {
     if (identical(smooth[[kind]], "class") &&
         !is.null(smooth$class_column_means)) {
@@ -500,7 +502,31 @@ if (smooth_on(model_options)) {
     # the floor intercepts: log(floor_flat) less, on the classes the floor
     # smooth applies to, the log mean of exp(u_f) over floor_mean_cells, or
     # half its variance (smooth_floor_intercept())
-    f0 <- trace[1, grep("^floor_flat\\[", colnames(trace))]
+    # the mean hazard of each intercept (each class, or with hierarchical
+    # floors each type, smooth_floor_log_hazards()), and whether it has the
+    # floor smooth
+    if (smooth_floor_hierarchical(smooth)) {
+      v_trace <- lapply(setNames(nm = c("floor_flat", "floor_sd_class",
+                                        "floor_sd_type", "floor_class_raw",
+                                        "floor_type_raw")),
+                        extract_parameter, draws_matrix = trace[1, , drop = FALSE])
+      f0 <- exp(smooth_floor_log_hazards(v_trace, smooth))[1, ]
+      has <- smooth$term_classes[smooth$type_classes]
+      # by hand from the variables, for one type
+      k <- length(f0)
+      f0_k <- v_trace$floor_flat[1] *
+        exp(v_trace$floor_sd_class[1] *
+              v_trace$floor_class_raw[1, smooth$type_classes[k]] +
+              v_trace$floor_sd_type[1] * v_trace$floor_type_raw[1, k])
+      cat(sprintf("hierarchical floors: %d types in %d classes; mean hazards %s; type %d by hand: rel diff %.3g\n",
+                  length(f0), length(unique(smooth$type_classes)),
+                  paste(sprintf("%.3f", f0), collapse = ", "), k,
+                  abs(f0_k / f0[k] - 1)))
+      stopifnot(abs(f0_k / f0[k] - 1) < 1e-12)
+    } else {
+      f0 <- trace[1, grep("^floor_flat\\[", colnames(trace))]
+      has <- smooth$term_classes
+    }
     sd_floor <- trace[1, "smooth_sd_floor"]
     if (smooth_floor_mean(smooth) == "cells") {
       # with the realised mean (V5n, floor_mean = "cells"): the log mean
@@ -509,25 +535,24 @@ if (smooth_on(model_options)) {
       u_mean_cells <- c(parameters$smooth_weights$floor %*%
                           t(smooth_basis_at(smooth, smooth_cell_coords(
                             smooth$floor_mean_cells, smooth$crs))))
-      by_hand <- log(f0) - log(mean(exp(u_mean_cells))) * smooth$term_classes
+      by_hand <- log(f0) - log(mean(exp(u_mean_cells))) * has
       intercept_difference <- max(abs(parameters$floor_intercept[1, ] -
                                         by_hand))
       cat(sprintf("cloglog floor, realised mean: intercepts vs log(floor_flat) - log mean exp(u_f) over %d cells: max abs diff %.3g\n",
                   length(u_mean_cells), intercept_difference))
       stopifnot(intercept_difference < 1e-12)
-      smooth_class <- which(smooth$term_classes)
+      smooth_class <- which(has)
       realised <- vapply(smooth_class, function(k) {
         mean(exp(parameters$floor_intercept[1, k] + u_mean_cells))
       }, numeric(1))
       realised_difference <- max(abs(realised / f0[smooth_class] - 1))
-      cat(sprintf("cloglog floor, realised mean: mean hazard over the cells / floor_flat, classes %s: %s (max rel diff %.3g)\n",
+      cat(sprintf("cloglog floor, realised mean: mean hazard over the cells / floor_flat, intercepts %s: %s (max rel diff %.3g)\n",
                   toString(smooth_class),
                   paste(sprintf("%.6f", realised / f0[smooth_class]), collapse = ", "),
                   realised_difference))
       stopifnot(realised_difference < 1e-12)
     } else {
-      by_hand <- log(f0) - sd_floor ^ 2 * smooth$floor_variance / 2 *
-        smooth$term_classes
+      by_hand <- log(f0) - sd_floor ^ 2 * smooth$floor_variance / 2 * has
       intercept_difference <- max(abs(parameters$floor_intercept[1, ] - by_hand))
       cat(sprintf("cloglog floor: intercepts vs log(floor_flat) - sd^2 v / 2 (v %.4f): max abs diff %.3g\n",
                   smooth$floor_variance, intercept_difference))

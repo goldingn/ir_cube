@@ -458,7 +458,18 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # intercept, above
   if (smooth_floor_on(options)) {
     by_class <- identical(options$smooth$floor_intercepts, "class")
-    floor <- if (smooth_floor_flat_on(options)) {
+    floor <- if (smooth_floor_hierarchical(options$smooth)) {
+      # one floor per type, partially pooled over the types of a class and
+      # the classes (smooth_floor_log_hazards())
+      scale <- options$smooth$floor_hierarchy_scale
+      if (is.null(scale)) scale <- 0.5
+      list(floor_flat = normal(0, options$smooth$floor_intercept_prior$scale,
+                               truncation = c(0, 1)),
+           floor_sd_class = normal(0, scale, truncation = c(0, Inf)),
+           floor_sd_type = normal(0, scale, truncation = c(0, Inf)),
+           floor_class_raw = normal(0, 1, dim = n_classes),
+           floor_type_raw = normal(0, 1, dim = n_types))
+    } else if (smooth_floor_flat_on(options)) {
       list(floor_flat = normal(0, options$smooth$floor_intercept_prior$scale,
                                dim = if (by_class) n_classes else 1,
                                truncation = c(0, 1)))
@@ -1026,7 +1037,8 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
               smooth_raw_floor = 0, smooth_sd_floor = 0.3,
               smooth_inv_range_floor = 1 / 3, smooth_shear = 1,
               smooth_raw_init = 0, smooth_loading_init = 0.3,
-              smooth_inv_range_init = 1 / 3)
+              smooth_inv_range_init = 1 / 3, floor_sd_class = 0.3,
+              floor_sd_type = 0.3, floor_class_raw = 0, floor_type_raw = 0)
   for (name in intersect(names(starts), setdiff(names(variables),
                                                 names(out)))) {
     out[[name]] <- array(starts[[name]], dim(variables[[name]]))
@@ -1356,10 +1368,16 @@ build_dynamical_model <- function(train_df,
   # options for the plain-R predictions; and the basis at each cell_id
   # (smooth_basis_at(); NULL without them)
   if (smooth_on(options)) {
-    term_class_ids <- which(lookups$levels$classes %in% smooth_classes)
+    term_class_ids <- which(lookups$levels$classes %in%
+                              smooth_term_class_names(options$smooth))
     options$smooth <- smooth_box(
       options$smooth, cells, lookups$levels$classes,
       class_cells = unique(df$cell[df$class_id %in% term_class_ids]))
+    # with hierarchical floors, the class of each type, recorded in the
+    # options for the plain-R predictions
+    if (smooth_floor_hierarchical(options$smooth)) {
+      options$smooth$type_classes <- as.integer(classes_index)
+    }
   }
   basis_cells <- prediction_basis(options, cells)
   # the latent smooth `kind` at rows with cell_id `cell` and class_id `class`
@@ -1380,7 +1398,7 @@ build_dynamical_model <- function(train_df,
     if (smooth_floor_on(options)) {
       class <- classes_index[type]
       return(smooth_floor_value(
-        terms$floor_intercept[smooth_intercept_index(options, class)],
+        terms$floor_intercept[smooth_intercept_index(options, class, type)],
         row_smooth("floor", cell, class),
         link = smooth_floor_link(options$smooth)))
     }
