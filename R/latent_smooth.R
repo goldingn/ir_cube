@@ -91,7 +91,17 @@
 #                     of a class's types could rise above a level the prior
 #                     holds low); a class of one type has no deviation.
 #                     floor_sd_type is half-normal with scale
-#                     floor_hierarchy_scale
+#                     floor_hierarchy_scale. Pooled on the log scale, the
+#                     geometric mean can be held low by one type with a
+#                     floor near 0 while the class's other types rise (as
+#                     V5pt's full fit did), so "type_mean" normalises the
+#                     deviations by their arithmetic mean instead:
+#                       lambda_bar[type] = floor_flat[class] exp(d[type]) /
+#                         mean over the class's types of exp(d),
+#                       d = floor_sd_type floor_type_raw,
+#                     so floor_flat is the arithmetic mean of its types' mean
+#                     hazards, no type exceeds (number of types) floor_flat,
+#                     and lowering one raises the others
 #   floor_hierarchy_scale
 #                     with floor_intercepts = "hierarchical", the scale of
 #                     the half-normal priors of floor_sd_class and
@@ -434,7 +444,8 @@ check_smooth_options <- function(smooth) {
     is.null(smooth$shear) || isFALSE(smooth$shear) || isTRUE(smooth$shear),
     !isTRUE(smooth$shear) ||
       (!isFALSE(smooth$selection) && !isFALSE(smooth$floor)),
-    smooth$floor_intercepts %in% c("class", "one", "hierarchical", "type"),
+    smooth$floor_intercepts %in% c("class", "one", "hierarchical", "type",
+                                   "type_mean"),
     is.null(smooth[["floor_hierarchy_scale"]]) ||
       (is.numeric(smooth[["floor_hierarchy_scale"]]) &&
          length(smooth[["floor_hierarchy_scale"]]) == 1 &&
@@ -469,7 +480,8 @@ check_smooth_options <- function(smooth) {
       smooth_floor_link(smooth) == "cloglog",
     smooth_floor_link(smooth) == "logit" ||
       (smooth_floor_prior_family(smooth) == "half_normal" &&
-         smooth$floor_intercepts %in% c("class", "hierarchical", "type") &&
+         smooth$floor_intercepts %in% c("class", "hierarchical", "type",
+                                        "type_mean") &&
          smooth_range_fixed(smooth) &&
          !isFALSE(smooth$floor) && !isTRUE(smooth$shear)))
   invisible(smooth)
@@ -936,13 +948,21 @@ smooth_intercept_index <- function(options, class, type = NULL) {
 # (smooth_options(floor_intercepts = "hierarchical") or "type")
 smooth_floor_by_type <- function(smooth) {
   is.list(smooth) &&
-    isTRUE(smooth[["floor_intercepts"]] %in% c("hierarchical", "type"))
+    isTRUE(smooth[["floor_intercepts"]] %in% c("hierarchical", "type",
+                                               "type_mean"))
 }
 
 # whether the type floors are pooled over the classes too
 # (smooth_options(floor_intercepts = "hierarchical"))
 smooth_floor_hierarchical_classes <- function(smooth) {
   is.list(smooth) && identical(smooth[["floor_intercepts"]], "hierarchical")
+}
+
+# The matrix that averages a vector over the types of each type's class
+# (types x types)
+type_averaging_matrix <- function(classes) {
+  same <- outer(classes, classes, "==")
+  same / rowSums(same)
 }
 
 # The matrix that centres a vector of type deviations within each class:
@@ -965,7 +985,13 @@ smooth_floor_log_hazards <- function(v, smooth) {
   classes <- smooth$type_classes
   stopifnot(!is.null(classes))
   within <- identical(smooth[["floor_intercepts"]], "type")
+  arithmetic <- identical(smooth[["floor_intercepts"]], "type_mean")
   if (inherits(v$floor_flat, "greta_array")) {
+    if (arithmetic) {
+      d <- v$floor_sd_type * v$floor_type_raw
+      return(log(v$floor_flat[classes]) + d -
+               log(type_averaging_matrix(classes) %*% exp(d)))
+    }
     if (within) {
       return(log(v$floor_flat[classes]) +
                v$floor_sd_type * (type_centring_matrix(classes) %*% v$floor_type_raw))
@@ -976,6 +1002,12 @@ smooth_floor_log_hazards <- function(v, smooth) {
   # floor_sd_type has one value per draw
   n_draws <- length(v$floor_sd_type)
   type_raw <- matrix(v$floor_type_raw, n_draws)
+  if (arithmetic) {
+    flat <- matrix(v$floor_flat, n_draws)
+    d <- c(v$floor_sd_type) * type_raw
+    return(log(flat[, classes, drop = FALSE]) + d -
+             log(exp(d) %*% t(type_averaging_matrix(classes))))
+  }
   if (within) {
     flat <- matrix(v$floor_flat, n_draws)
     return(log(flat[, classes, drop = FALSE]) +

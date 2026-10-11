@@ -10,7 +10,7 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
 # and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -467,6 +467,21 @@ v5pt_options <- function(scale) {
 v5pt_runs <- scaled_set("v5pt", v5pt_options,
                         split_scales("V5PT_SCALES", "0.005,0.0075,0.01"))
 v5pt_runs <- v5pt_runs[!grepl("_fc2018$", v5pt_runs$name), ]
+# The set "v5pm" (v5pm_runs): V5pm, V5pt with the type deviations normalised
+# by their arithmetic mean (floor_intercepts = "type_mean"): in V5pt's full
+# fit at 0.005, one pyrethroid (lambda-cyhalothrin) took a floor near 0, which
+# held the geometric mean low while the others' floors were 0.35-0.49. The
+# same scales (V5PM_SCALES), the full fit and the 2014 fold of each:
+#   v5pm005_full, v5pm005_fc2014, v5pm0075_full, ...
+v5pm_options <- function(scale) {
+  sub("floor_intercepts = \"type\"", "floor_intercepts = \"type_mean\"",
+      v5pt_options(scale), fixed = TRUE)
+}
+v5pm_runs <- scaled_set("v5pm", v5pm_options,
+                        split_scales("V5PM_SCALES", "0.005,0.0075,0.01"))
+v5pm_runs <- v5pm_runs[!grepl("_fc2018$", v5pm_runs$name), ]
+stopifnot(all(grepl("floor_intercepts = \"type_mean\"", v5pm_runs$options,
+                    fixed = TRUE)))
 stopifnot(all(grepl("floor_intercepts = \"type\"", v5pt_runs$options,
                     fixed = TRUE)))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
@@ -542,6 +557,7 @@ run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
                  v5c = v5c_runs, v5n = v5n_runs, v5t = v5t_runs,
                  v5p = v5p_runs, hier = hier_runs, v5pt = v5pt_runs,
+                 v5pm = v5pm_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),

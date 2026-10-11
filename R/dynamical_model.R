@@ -458,7 +458,8 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # intercept, above
   if (smooth_floor_on(options)) {
     by_class <- identical(options$smooth$floor_intercepts, "class")
-    floor <- if (identical(options$smooth$floor_intercepts, "type")) {
+    floor <- if (isTRUE(options$smooth$floor_intercepts %in%
+                        c("type", "type_mean"))) {
       # one floor per type, pooled within its class, the deviations summing
       # to zero within each class (smooth_floor_log_hazards())
       scale <- options$smooth$floor_hierarchy_scale
