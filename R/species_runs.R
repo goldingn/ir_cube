@@ -10,7 +10,7 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "v5pk", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
 # and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -500,6 +500,21 @@ v5pr_options <- function(scale) {
 v5pr_runs <- scaled_set("v5pr", v5pr_options,
                         split_scales("V5PR_SCALES", "0.01"))
 v5pr_runs <- v5pr_runs[!grepl("_fc2018$", v5pr_runs$name), ]
+# The set "v5pk" (v5pk_runs): V5pk, V5pr with both smooths' fixed range 1,000
+# km (range = 1, basis_range = 1), short enough to take in all the spatial
+# correlation of recent LLIN-pyrethroid mortality in R/plateau_range.R
+# (1,230 km [840, 1,800]), at the strict and the loose floor scales
+# (V5PK_SCALES, 0.01 and 0.05), the full fit and the 2014 fold of each:
+#   v5pk01_full, v5pk01_fc2014, v5pk05_full, v5pk05_fc2014
+v5pk_options <- function(scale) {
+  options <- v5pr_options(scale)
+  stopifnot(grepl("range = 1.23, basis_range = 1.23", options, fixed = TRUE))
+  sub("range = 1.23, basis_range = 1.23", "range = 1, basis_range = 1",
+      options, fixed = TRUE)
+}
+v5pk_runs <- scaled_set("v5pk", v5pk_options,
+                        split_scales("V5PK_SCALES", "0.01,0.05"))
+v5pk_runs <- v5pk_runs[!grepl("_fc2018$", v5pk_runs$name), ]
 stopifnot(all(grepl("floor_intercepts = \"type\"", v5pt_runs$options,
                     fixed = TRUE)))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
@@ -575,7 +590,7 @@ run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
                  v5c = v5c_runs, v5n = v5n_runs, v5t = v5t_runs,
                  v5p = v5p_runs, hier = hier_runs, v5pt = v5pt_runs,
-                 v5pm = v5pm_runs, v5pr = v5pr_runs,
+                 v5pm = v5pm_runs, v5pr = v5pr_runs, v5pk = v5pk_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
