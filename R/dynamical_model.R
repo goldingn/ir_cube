@@ -458,7 +458,16 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # intercept, above
   if (smooth_floor_on(options)) {
     by_class <- identical(options$smooth$floor_intercepts, "class")
-    floor <- if (smooth_floor_hierarchical(options$smooth)) {
+    floor <- if (identical(options$smooth$floor_intercepts, "type")) {
+      # one floor per type, pooled within its class, the deviations summing
+      # to zero within each class (smooth_floor_log_hazards())
+      scale <- options$smooth$floor_hierarchy_scale
+      if (is.null(scale)) scale <- 0.5
+      list(floor_flat = normal(0, options$smooth$floor_intercept_prior$scale,
+                               dim = n_classes, truncation = c(0, 1)),
+           floor_sd_type = normal(0, scale, truncation = c(0, Inf)),
+           floor_type_raw = normal(0, 1, dim = n_types))
+    } else if (smooth_floor_hierarchical_classes(options$smooth)) {
       # one floor per type, partially pooled over the types of a class and
       # the classes (smooth_floor_log_hazards())
       scale <- options$smooth$floor_hierarchy_scale
@@ -1375,7 +1384,7 @@ build_dynamical_model <- function(train_df,
       class_cells = unique(df$cell[df$class_id %in% term_class_ids]))
     # with hierarchical floors, the class of each type, recorded in the
     # options for the plain-R predictions
-    if (smooth_floor_hierarchical(options$smooth)) {
+    if (smooth_floor_by_type(options$smooth)) {
       options$smooth$type_classes <- as.integer(classes_index)
     }
   }

@@ -76,12 +76,28 @@
 #                     hazard over floor_mean_cells for the types of a class
 #                     with the floor smooth (with floor_mean = "cells"), and
 #                     the flat hazard of the others, so both are the type's
-#                     average floor hazard
+#                     average floor hazard. Or "type" (with the cloglog
+#                     link): one floor per type, pooled within its class
+#                     only,
+#                       log lambda_bar[type] = log floor_flat[class of type] +
+#                         floor_sd_type (floor_type_raw[type] - its mean over
+#                         the types of the class),
+#                     floor_flat one per class with the half-normal prior of
+#                     floor_intercept_prior, as with "class": the type
+#                     deviations sum to zero within each class, so
+#                     floor_flat is the geometric mean of its types' mean
+#                     hazards and the prior binds the class's floor, which its
+#                     types cannot escape together (with free deviations, all
+#                     of a class's types could rise above a level the prior
+#                     holds low); a class of one type has no deviation.
+#                     floor_sd_type is half-normal with scale
+#                     floor_hierarchy_scale
 #   floor_hierarchy_scale
 #                     with floor_intercepts = "hierarchical", the scale of
 #                     the half-normal priors of floor_sd_class and
 #                     floor_sd_type, the sds of the log mean hazard between
-#                     classes and between the types of a class (0.5)
+#                     classes and between the types of a class (0.5); with
+#                     "type", of floor_sd_type's
 #   floor_intercept_prior
 #                     the prior of the floor where u_f is 0 (the floor at a
 #                     flat smooth): list(family = "half_normal", scale = s)
@@ -304,7 +320,7 @@ smooth_floor_intercept <- function(v, options, weights = NULL) {
   # the log mean hazard of each intercept (each class, or with hierarchical
   # floors each type), and the shift of the log hazard, on those with the
   # floor smooth
-  hierarchical <- smooth_floor_hierarchical(options$smooth)
+  hierarchical <- smooth_floor_by_type(options$smooth)
   log_f0 <- if (hierarchical) smooth_floor_log_hazards(v, options$smooth) else
     log(f0)
   has_smooth <- smooth_class_weight(
@@ -418,12 +434,12 @@ check_smooth_options <- function(smooth) {
     is.null(smooth$shear) || isFALSE(smooth$shear) || isTRUE(smooth$shear),
     !isTRUE(smooth$shear) ||
       (!isFALSE(smooth$selection) && !isFALSE(smooth$floor)),
-    smooth$floor_intercepts %in% c("class", "one", "hierarchical"),
+    smooth$floor_intercepts %in% c("class", "one", "hierarchical", "type"),
     is.null(smooth[["floor_hierarchy_scale"]]) ||
       (is.numeric(smooth[["floor_hierarchy_scale"]]) &&
          length(smooth[["floor_hierarchy_scale"]]) == 1 &&
          smooth[["floor_hierarchy_scale"]] > 0),
-    !smooth_floor_hierarchical(smooth) ||
+    !smooth_floor_by_type(smooth) ||
       smooth_floor_link(smooth) == "cloglog",
     smooth$kernel %in% names(hsgp_m_factor),
     is.numeric(smooth$c), length(smooth$c) == 1, smooth$c > 1,
@@ -453,7 +469,7 @@ check_smooth_options <- function(smooth) {
       smooth_floor_link(smooth) == "cloglog",
     smooth_floor_link(smooth) == "logit" ||
       (smooth_floor_prior_family(smooth) == "half_normal" &&
-         smooth$floor_intercepts %in% c("class", "hierarchical") &&
+         smooth$floor_intercepts %in% c("class", "hierarchical", "type") &&
          smooth_range_fixed(smooth) &&
          !isFALSE(smooth$floor) && !isTRUE(smooth$shear)))
   invisible(smooth)
@@ -908,7 +924,7 @@ smooth_init_loadings <- function(v, options) {
 # The floor intercept of each class `class` (class_ids): its own, or the one
 # for all
 smooth_intercept_index <- function(options, class, type = NULL) {
-  if (smooth_floor_hierarchical(options$smooth)) {
+  if (smooth_floor_by_type(options$smooth)) {
     stopifnot(!is.null(type), length(type) == length(class))
     return(type)
   }
@@ -917,26 +933,55 @@ smooth_intercept_index <- function(options, class, type = NULL) {
 }
 
 # whether the floors are one per insecticide type, partially pooled
+# (smooth_options(floor_intercepts = "hierarchical") or "type")
+smooth_floor_by_type <- function(smooth) {
+  is.list(smooth) &&
+    isTRUE(smooth[["floor_intercepts"]] %in% c("hierarchical", "type"))
+}
+
+# whether the type floors are pooled over the classes too
 # (smooth_options(floor_intercepts = "hierarchical"))
-smooth_floor_hierarchical <- function(smooth) {
+smooth_floor_hierarchical_classes <- function(smooth) {
   is.list(smooth) && identical(smooth[["floor_intercepts"]], "hierarchical")
 }
 
-# With hierarchical floors, the log mean hazard of each type,
+# The matrix that centres a vector of type deviations within each class:
+# (I - A) z, A averaging over the types of each type's class (types x types)
+type_centring_matrix <- function(classes) {
+  same <- outer(classes, classes, "==")
+  diag(length(classes)) - same / rowSums(same)
+}
+
+# With floors by type, the log mean hazard of each type: with hierarchical
+# floors,
 #   log floor_flat + floor_sd_class floor_class_raw[class of type] +
 #   floor_sd_type floor_type_raw[type],
+# and with floors pooled within class ("type"),
+#   log floor_flat[class of type] +
+#   floor_sd_type (floor_type_raw[type] - its mean over the class's types),
 # the class of each type in smooth$type_classes (build_dynamical_model()): a
 # greta array (types x 1), or in plain R draws x types
 smooth_floor_log_hazards <- function(v, smooth) {
   classes <- smooth$type_classes
   stopifnot(!is.null(classes))
+  within <- identical(smooth[["floor_intercepts"]], "type")
   if (inherits(v$floor_flat, "greta_array")) {
+    if (within) {
+      return(log(v$floor_flat[classes]) +
+               v$floor_sd_type * (type_centring_matrix(classes) %*% v$floor_type_raw))
+    }
     return(log(v$floor_flat) + v$floor_sd_class * v$floor_class_raw[classes] +
              v$floor_sd_type * v$floor_type_raw)
   }
-  n_draws <- length(v$floor_flat)
-  class_raw <- matrix(v$floor_class_raw, n_draws)
+  # floor_sd_type has one value per draw
+  n_draws <- length(v$floor_sd_type)
   type_raw <- matrix(v$floor_type_raw, n_draws)
+  if (within) {
+    flat <- matrix(v$floor_flat, n_draws)
+    return(log(flat[, classes, drop = FALSE]) +
+             c(v$floor_sd_type) * (type_raw %*% t(type_centring_matrix(classes))))
+  }
+  class_raw <- matrix(v$floor_class_raw, n_draws)
   c(log(v$floor_flat)) + c(v$floor_sd_class) * class_raw[, classes, drop = FALSE] +
     c(v$floor_sd_type) * type_raw
 }

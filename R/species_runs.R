@@ -10,7 +10,7 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
 # and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -450,6 +450,25 @@ hier_runs <- rbind(
              split_scales("V5PH_SCALES", "0.05")))
 stopifnot(all(grepl("floor_intercepts = \"hierarchical\"", hier_runs$options,
                     fixed = TRUE)))
+# The set "v5pt" (v5pt_runs): V5pt, V5p with one floor per type pooled
+# within its class only (smooth_options(floor_intercepts = "type")), the
+# deviations summing to zero within each class, so that the half-normal(s)
+# prior binds each class's floor (the geometric mean of its types'); the
+# sd of the types' log mean hazards half-normal(0.356), for P(two types of a
+# class have floors more than 3 times apart) = 0.05. At strict scales
+# V5PT_SCALES (default 0.005, 0.0075 and 0.01), for the full fit to use the
+# floor and the 2014 fold not to: the full fit and the 2014 fold of each,
+#   v5pt005_full, v5pt005_fc2014, v5pt0075_full, ...
+v5pt_options <- function(scale) {
+  sub("floor_intercepts = \"hierarchical\"",
+      "floor_intercepts = \"type\", floor_hierarchy_scale = 0.356",
+      hierarchical_options(v5p_options(scale)), fixed = TRUE)
+}
+v5pt_runs <- scaled_set("v5pt", v5pt_options,
+                        split_scales("V5PT_SCALES", "0.005,0.0075,0.01"))
+v5pt_runs <- v5pt_runs[!grepl("_fc2018$", v5pt_runs$name), ]
+stopifnot(all(grepl("floor_intercepts = \"type\"", v5pt_runs$options,
+                    fixed = TRUE)))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
           identical(v5n_runs$name[c(1, 4, 7)],
                     c("v5n05_full", "v5n10_full", "v5n20_full")),
@@ -522,7 +541,7 @@ v5f_maps <- data.frame(
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
                  v5c = v5c_runs, v5n = v5n_runs, v5t = v5t_runs,
-                 v5p = v5p_runs, hier = hier_runs,
+                 v5p = v5p_runs, hier = hier_runs, v5pt = v5pt_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),

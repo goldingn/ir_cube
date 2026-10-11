@@ -505,20 +505,39 @@ if (smooth_on(model_options)) {
     # the mean hazard of each intercept (each class, or with hierarchical
     # floors each type, smooth_floor_log_hazards()), and whether it has the
     # floor smooth
-    if (smooth_floor_hierarchical(smooth)) {
-      v_trace <- lapply(setNames(nm = c("floor_flat", "floor_sd_class",
-                                        "floor_sd_type", "floor_class_raw",
-                                        "floor_type_raw")),
-                        extract_parameter, draws_matrix = trace[1, , drop = FALSE])
+    if (smooth_floor_by_type(smooth)) {
+      within <- identical(smooth$floor_intercepts, "type")
+      names_floor <- c("floor_flat", "floor_sd_type", "floor_type_raw",
+                       if (!within) c("floor_sd_class", "floor_class_raw"))
+      v_trace <- lapply(setNames(nm = names_floor), extract_parameter,
+                        draws_matrix = trace[1, , drop = FALSE])
       f0 <- exp(smooth_floor_log_hazards(v_trace, smooth))[1, ]
       has <- smooth$term_classes[smooth$type_classes]
-      # by hand from the variables, for one type
-      k <- length(f0)
-      f0_k <- v_trace$floor_flat[1] *
-        exp(v_trace$floor_sd_class[1] *
-              v_trace$floor_class_raw[1, smooth$type_classes[k]] +
-              v_trace$floor_sd_type[1] * v_trace$floor_type_raw[1, k])
-      cat(sprintf("hierarchical floors: %d types in %d classes; mean hazards %s; type %d by hand: rel diff %.3g\n",
+      # by hand from the variables, for one type (the first of a class with
+      # several types when pooled within class), and with pooling within
+      # class, the deviations summing to zero within each class
+      k <- if (within) which(duplicated(smooth$type_classes))[1] else length(f0)
+      g <- smooth$type_classes[k]
+      f0_k <- if (within) {
+        z <- v_trace$floor_type_raw[1, ]
+        v_trace$floor_flat[1, g] *
+          exp(v_trace$floor_sd_type[1] *
+                (z[k] - mean(z[smooth$type_classes == g])))
+      } else {
+        v_trace$floor_flat[1] *
+          exp(v_trace$floor_sd_class[1] * v_trace$floor_class_raw[1, g] +
+                v_trace$floor_sd_type[1] * v_trace$floor_type_raw[1, k])
+      }
+      if (within) {
+        geometric <- vapply(sort(unique(smooth$type_classes)), function(c) {
+          exp(mean(log(f0[smooth$type_classes == c])))
+        }, numeric(1))
+        geometric_difference <- max(abs(geometric / v_trace$floor_flat[1, ] - 1))
+        cat(sprintf("floors pooled within class: geometric mean of each class's type hazards / floor_flat: max rel diff %.3g\n",
+                    geometric_difference))
+        stopifnot(geometric_difference < 1e-12)
+      }
+      cat(sprintf("floors by type: %d types in %d classes; mean hazards %s; type %d by hand: rel diff %.3g\n",
                   length(f0), length(unique(smooth$type_classes)),
                   paste(sprintf("%.3f", f0), collapse = ", "), k,
                   abs(f0_k / f0[k] - 1)))
