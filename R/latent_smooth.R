@@ -122,10 +122,12 @@
 #                     with floor_intercepts = "hierarchical", the scale of
 #                     the half-normal priors of floor_sd_class and
 #                     floor_sd_type, the sds of the log mean hazard between
-#                     classes and between the types of a class; with "type"
-#                     or "type_mean", of floor_sd_type's. 0.356 by default
-#                     (V5pt on), for P(two types of a class have floors more
-#                     than 3 times apart) = 0.05; 0.5 before
+#                     classes and between the types of a class: one for both,
+#                     or c(class, type) (V5hf, c(0.35, 0.356)); with "type"
+#                     or "type_mean", of floor_sd_type's (the type's of
+#                     two). 0.356 by default (V5pt on), for P(two types of a
+#                     class have floors more than 3 times apart) = 0.05; 0.5
+#                     before
 #   floor_intercept_prior
 #                     the prior of the floor where u_f is 0 (the floor at a
 #                     flat smooth): list(family = "half_normal", scale = s)
@@ -136,7 +138,13 @@
 #                     or "beta_moments" (V5 to V5h, and fits saved without
 #                     the option) for floor_intercept ~ N with the mean and
 #                     sd of the logit of a Beta(floor_prior) variable
-#                     (logit_beta_moments(), R/dynamical_model.R)
+#                     (logit_beta_moments(), R/dynamical_model.R); or, with
+#                     the cloglog link, list(family = "lognormal", median =
+#                     m, sdlog = s) (V5hf) for the hazard floor_flat ~
+#                     LogNormal(log(-log(1 - m)), s), the floor at its
+#                     median m: informative and away from 0, for floors with
+#                     no smooth, learnt where the data show plateaus and
+#                     shared by the hierarchy where they do not
 #   floor_link        how the floor smooth enters the floor: "logit" (V5 to
 #                     V5f), f = plogis(floor_intercept + u_f), u_f centred
 #                     over its cells; or "cloglog" (the default; V5c on), the
@@ -260,7 +268,8 @@ smooth_options <- function(selection = "class",
 
 # The family of the prior of the floor where the floor smooth is 0
 # (smooth_options(floor_intercept_prior = )): "half_normal", the floor
-# itself, f0 ~ N(0, scale^2) truncated to [0, 1], sampled as floor_flat; or
+# itself, f0 ~ N(0, scale^2) truncated to [0, 1], sampled as floor_flat;
+# "lognormal", its hazard with the cloglog link, also floor_flat; or
 # "beta_moments", its logit, floor_intercept, normal with the logit moments
 # of Beta(floor_prior). Options saved before the option have none, and the
 # latter
@@ -273,7 +282,11 @@ smooth_floor_prior_family <- function(smooth) {
 # (smooth_options(floor_intercept_prior = )) at f0, in plain R, as greta
 # evaluates it: N(f0; 0, scale^2) over its probability on [0, 1]
 smooth_floor_log_prior <- function(f0, smooth) {
-  scale <- smooth$floor_intercept_prior$scale
+  prior <- smooth$floor_intercept_prior
+  if (identical(prior$family, "lognormal")) {
+    return(dlnorm(f0, log(-log(1 - prior$median)), prior$sdlog, log = TRUE))
+  }
+  scale <- prior$scale
   dnorm(f0, 0, scale, log = TRUE) -
     log(pnorm(1, 0, scale) - pnorm(0, 0, scale))
 }
@@ -282,7 +295,30 @@ smooth_floor_log_prior <- function(f0, smooth) {
 # (floor_flat), with the half-normal prior, rather than its logit
 smooth_floor_flat_on <- function(options) {
   smooth_floor_on(options) &&
-    smooth_floor_prior_family(options$smooth) == "half_normal"
+    smooth_floor_prior_family(options$smooth) %in% c("half_normal",
+                                                     "lognormal")
+}
+
+# The prior of floor_flat, of dimension `dim` (smooth_options(
+# floor_intercept_prior = )): half-normal(0, scale) truncated to [0, 1], or
+# log-normal at the median hazard of a floor of `median`, -log(1 - median),
+# with sdlog
+smooth_floor_flat_prior <- function(smooth, dim = 1) {
+  prior <- smooth$floor_intercept_prior
+  if (identical(prior$family, "lognormal")) {
+    return(lognormal(log(-log(1 - prior$median)), prior$sdlog, dim = dim))
+  }
+  normal(0, prior$scale, dim = dim, truncation = c(0, 1))
+}
+
+# The scales of the half-normal priors of floor_sd_class and floor_sd_type
+# (smooth_options(floor_hierarchy_scale = )): one for both, or c(class,
+# type); 0.5 for options saved without it
+smooth_floor_hierarchy_scales <- function(smooth) {
+  scale <- smooth[["floor_hierarchy_scale"]]
+  if (is.null(scale)) scale <- 0.5
+  if (length(scale) == 1) scale <- c(scale, scale)
+  setNames(as.numeric(scale), c("class", "type"))
 }
 
 # The link of the floor smooth (smooth_options(floor_link = )): "logit", or
@@ -471,8 +507,8 @@ check_smooth_options <- function(smooth) {
                                    "type_mean"),
     is.null(smooth[["floor_hierarchy_scale"]]) ||
       (is.numeric(smooth[["floor_hierarchy_scale"]]) &&
-         length(smooth[["floor_hierarchy_scale"]]) == 1 &&
-         smooth[["floor_hierarchy_scale"]] > 0),
+         length(smooth[["floor_hierarchy_scale"]]) %in% 1:2 &&
+         all(smooth[["floor_hierarchy_scale"]] > 0)),
     !smooth_floor_by_type(smooth) ||
       smooth_floor_link(smooth) == "cloglog",
     smooth$kernel %in% names(hsgp_m_factor),
@@ -501,8 +537,10 @@ check_smooth_options <- function(smooth) {
                                         "Carbamates", "Organochlorines"))),
     smooth_floor_mean(smooth) == "prior" ||
       smooth_floor_link(smooth) == "cloglog",
+    smooth_floor_prior_family(smooth) != "lognormal" ||
+      smooth_floor_link(smooth) == "cloglog",
     smooth_floor_link(smooth) == "logit" ||
-      (smooth_floor_prior_family(smooth) == "half_normal" &&
+      (smooth_floor_prior_family(smooth) %in% c("half_normal", "lognormal") &&
          smooth$floor_intercepts %in% c("class", "hierarchical", "type",
                                         "type_mean") &&
          smooth_range_fixed(smooth) && !isTRUE(smooth$shear)))
@@ -513,6 +551,13 @@ check_smooth_options <- function(smooth) {
 # (options saved before it) or "beta_moments", or list(family =
 # "half_normal", scale = s) with 0 < s
 smooth_floor_prior_valid <- function(prior) {
+  if (is.list(prior) && identical(prior$family, "lognormal")) {
+    return(setequal(names(prior), c("family", "median", "sdlog")) &&
+             is.numeric(prior$median) && length(prior$median) == 1 &&
+             prior$median > 0 && prior$median < 1 &&
+             is.numeric(prior$sdlog) && length(prior$sdlog) == 1 &&
+             is.finite(prior$sdlog) && prior$sdlog > 0)
+  }
   if (is.list(prior)) {
     return(setequal(names(prior), c("family", "scale")) &&
              identical(prior$family, "half_normal") &&

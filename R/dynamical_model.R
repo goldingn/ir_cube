@@ -471,27 +471,23 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
                         c("type", "type_mean"))) {
       # one floor per type, pooled within its class, the deviations summing
       # to zero within each class (smooth_floor_log_hazards())
-      scale <- options$smooth$floor_hierarchy_scale
-      if (is.null(scale)) scale <- 0.5
-      list(floor_flat = normal(0, options$smooth$floor_intercept_prior$scale,
-                               dim = n_classes, truncation = c(0, 1)),
-           floor_sd_type = normal(0, scale, truncation = c(0, Inf)),
+      scale <- smooth_floor_hierarchy_scales(options$smooth)
+      list(floor_flat = smooth_floor_flat_prior(options$smooth, n_classes),
+           floor_sd_type = normal(0, scale[["type"]], truncation = c(0, Inf)),
            floor_type_raw = normal(0, 1, dim = n_types))
     } else if (smooth_floor_hierarchical_classes(options$smooth)) {
       # one floor per type, partially pooled over the types of a class and
       # the classes (smooth_floor_log_hazards())
-      scale <- options$smooth$floor_hierarchy_scale
-      if (is.null(scale)) scale <- 0.5
-      list(floor_flat = normal(0, options$smooth$floor_intercept_prior$scale,
-                               truncation = c(0, 1)),
-           floor_sd_class = normal(0, scale, truncation = c(0, Inf)),
-           floor_sd_type = normal(0, scale, truncation = c(0, Inf)),
+      scale <- smooth_floor_hierarchy_scales(options$smooth)
+      list(floor_flat = smooth_floor_flat_prior(options$smooth),
+           floor_sd_class = normal(0, scale[["class"]],
+                                   truncation = c(0, Inf)),
+           floor_sd_type = normal(0, scale[["type"]], truncation = c(0, Inf)),
            floor_class_raw = normal(0, 1, dim = n_classes),
            floor_type_raw = normal(0, 1, dim = n_types))
     } else if (smooth_floor_flat_on(options)) {
-      list(floor_flat = normal(0, options$smooth$floor_intercept_prior$scale,
-                               dim = if (by_class) n_classes else 1,
-                               truncation = c(0, 1)))
+      list(floor_flat = smooth_floor_flat_prior(
+        options$smooth, if (by_class) n_classes else 1))
     } else {
       list(floor_intercept = floor_intercept(by_class))
     }

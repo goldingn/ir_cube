@@ -12,7 +12,7 @@
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
 # "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "v5pk", "v5pd", "v5ps", "v5pg", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm",
-# "maps_v5f", "cv5pg", "ts_cv5pg" and "maps_v5pg"), jobs_<set>.csv and
+# "maps_v5f", "cv5pg", "ts_cv5pg", "maps_v5pg" and "v5hf"), jobs_<set>.csv and
 # pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -712,6 +712,48 @@ cv5pg_runs <- data.frame(
 ts_cv5pg <- two_stage_runs(setNames(cv5pg_runs$name, cv5f_folds$fold), "V5pg")
 v5pg_maps <- map_runs(v5pg_default$name, "V5pg")
 
+# The set "v5hf" (v5hf_runs): V5hf, the default with the floor smooth
+# replaced by a hierarchy of floors: one floor per type, the same everywhere,
+# its log mean hazard pooled over the types of a class and over the classes
+# (smooth_options(floor = FALSE, floor_intercepts = "hierarchical")),
+#   log lambda[type] = log floor_flat + floor_sd_class z_class[class] +
+#                      floor_sd_type z_type[type],   z ~ N(0, 1),
+# floor_flat ~ LogNormal(log(-log(1 - 0.15)), 0.5), the centre floor at
+# median 0.15 (90% 0.07-0.31): informative, and not penalised towards 0, so
+# that the forecasting folds, which see no plateau, keep plausible floors;
+# floor_sd_class ~ HN(0.35) (a prior correlation of 0.67 between two classes'
+# log floor hazards; P(more than 2 times apart) 0.13) and floor_sd_type ~
+# HN(0.356). The selection smooth for the pyrethroids and DDT as the
+# default. Plateaus are clear only for the pyrethroids in West Africa (about
+# 20%): floors learnt where there are plateaus and shared through the
+# hierarchy, in place of floors that rise only where a plateau has been seen,
+# for the extrapolation to 2030. The full fit and both forecasting folds, 4
+# chains: two from draws of the default's full fit (R/draw_inits.R), two from
+# its draws with the floor centre raised to a hazard of 0.4 (a floor of
+# 0.33):
+#   v5hf_full, v5hf_fc2014, v5hf_fc2018
+v5hf_options <- v5pg_default$options
+for (change in list(
+  c("floor = \"class\"", "floor = FALSE"),
+  c("floor_intercepts = \"type_mean\"", "floor_intercepts = \"hierarchical\""),
+  c("floor_hierarchy_scale = 0.356", "floor_hierarchy_scale = c(0.35, 0.356)"),
+  c("floor_intercept_prior = list(family = \"half_normal\", scale = 0.005)",
+    paste0("floor_intercept_prior = list(family = \"lognormal\", ",
+           "median = 0.15, sdlog = 0.5)")))) {
+  stopifnot(grepl(change[1], v5hf_options, fixed = TRUE))
+  v5hf_options <- sub(change[1], change[2], v5hf_options, fixed = TRUE)
+}
+v5hf_runs <- data.frame(
+  name = c("v5hf_full", "v5hf_fc2014", "v5hf_fc2018"),
+  label = c("V5hf_full", "V5hf_fc2014", "V5hf_fc2018"),
+  options = v5hf_options,
+  inits = paste(c("temporary/inits_v5pg_draw1.RDS",
+                  "temporary/inits_v5pg_draw2.RDS",
+                  "temporary/inits_v5hf_high3.RDS",
+                  "temporary/inits_v5hf_high4.RDS"), collapse = ","),
+  job = c("full", "fold temporal_forecasting 2014",
+          "fold temporal_forecasting 2018"))
+
 # the sets of fits, by name
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
@@ -723,7 +765,7 @@ run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
                  maps_v5f = v5f_maps,
                  cv5pg = cv5pg_runs, ts_cv5pg = ts_cv5pg,
-                 maps_v5pg = v5pg_maps)
+                 maps_v5pg = v5pg_maps, v5hf = v5hf_runs)
 # The fits before V5pg became the default left some smooth options to the
 # defaults of their time, which V5pg's changed: each gets them explicitly,
 # the floor's hierarchy scale 0.5, the logit link and the floor's mean hazard
