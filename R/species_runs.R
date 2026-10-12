@@ -539,8 +539,9 @@ v5pd_runs <- v5pd_runs[!grepl("_fc2018$", v5pd_runs$name), ]
 # apart to show any modes: six from single draws of distinct modes of the
 # V5pd fits (R/draw_inits.R: v5pd05 chains 1, 3, 4; v5pd02 chains 1, 2, 4)
 # and two cold, flat smooths at either floor mode (inits_floor_low.RDS,
-# inits_floor_high.RDS). The full fit:
-#   v5ps05_full
+# inits_floor_high.RDS), the same in the 2014 fold (as cv5f_warm starts its
+# folds from draws of the full fit). The full fit and the 2014 fold:
+#   v5ps05_full, v5ps05_fc2014
 v5ps_inits <- paste(c(sprintf("temporary/inits_v5pd05_draw%d.RDS", c(1, 3, 4)),
                       sprintf("temporary/inits_v5pd02_draw%d.RDS", c(1, 2, 4)),
                       "temporary/inits_floor_low.RDS",
@@ -550,8 +551,11 @@ v5ps_options <- sub("sd_prior = list(family = \"half_normal\", scale = 0.5)",
                     v5pd_options("0.05"), fixed = TRUE)
 stopifnot(grepl("scale = 0.1)", v5ps_options, fixed = TRUE))
 v5ps_runs <- data.frame(
-  name = "v5ps05_full", label = "V5ps05_full", options = v5ps_options,
-  inits = v5ps_inits, job = "full --chains 8 --warmup 2000 --samples 1000",
+  name = c("v5ps05_full", "v5ps05_fc2014"),
+  label = c("V5ps05_full", "V5ps05_fc2014"), options = v5ps_options,
+  inits = v5ps_inits,
+  job = paste(c("full", "fold temporal_forecasting 2014"),
+              "--chains 8 --warmup 2000 --samples 1000"),
   cpu = "cpu5c", vcpu = 16L, threads = 16L)
 stopifnot(all(grepl("floor_intercepts = \"type\"", v5pt_runs$options,
                     fixed = TRUE)))
