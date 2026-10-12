@@ -10,7 +10,7 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "v5pk", "v5pd", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "v5pk", "v5pd", "v5ps", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
 # and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -530,6 +530,29 @@ v5pd_options <- function(scale) {
 v5pd_runs <- scaled_set("v5pd", v5pd_options,
                         split_scales("V5PD_SCALES", "0.02,0.05"))
 v5pd_runs <- v5pd_runs[!grepl("_fc2018$", v5pd_runs$name), ]
+# The set "v5ps" (v5ps_runs): V5ps, V5pd at 0.05 with each smooth's sd under
+# a half-normal(0.1) prior in place of half-normal(0.5): in the V5pd fits the
+# sds ran to 2-3, the smooths warped where there are no data (coefficients
+# cancelling at the data cells), and the chains split into separate modes,
+# alternative floor and selection maps in a few data-poor countries. With 8
+# chains on a pod of 16 vCPU (2,000 warmup, 1,000 samples each), started
+# apart to show any modes: six from single draws of distinct modes of the
+# V5pd fits (R/draw_inits.R: v5pd05 chains 1, 3, 4; v5pd02 chains 1, 2, 4)
+# and two cold, flat smooths at either floor mode (inits_floor_low.RDS,
+# inits_floor_high.RDS). The full fit:
+#   v5ps05_full
+v5ps_inits <- paste(c(sprintf("temporary/inits_v5pd05_draw%d.RDS", c(1, 3, 4)),
+                      sprintf("temporary/inits_v5pd02_draw%d.RDS", c(1, 2, 4)),
+                      "temporary/inits_floor_low.RDS",
+                      "temporary/inits_floor_high.RDS"), collapse = ",")
+v5ps_options <- sub("sd_prior = list(family = \"half_normal\", scale = 0.5)",
+                    "sd_prior = list(family = \"half_normal\", scale = 0.1)",
+                    v5pd_options("0.05"), fixed = TRUE)
+stopifnot(grepl("scale = 0.1)", v5ps_options, fixed = TRUE))
+v5ps_runs <- data.frame(
+  name = "v5ps05_full", label = "V5ps05_full", options = v5ps_options,
+  inits = v5ps_inits, job = "full --chains 8 --warmup 2000 --samples 1000",
+  cpu = "cpu5c", vcpu = 16L, threads = 16L)
 stopifnot(all(grepl("floor_intercepts = \"type\"", v5pt_runs$options,
                     fixed = TRUE)))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
@@ -605,14 +628,15 @@ run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
                  v5c = v5c_runs, v5n = v5n_runs, v5t = v5t_runs,
                  v5p = v5p_runs, hier = hier_runs, v5pt = v5pt_runs,
-                 v5pm = v5pm_runs, v5pr = v5pr_runs, v5pk = v5pk_runs, v5pd = v5pd_runs,
+                 v5pm = v5pm_runs, v5pr = v5pr_runs, v5pk = v5pk_runs, v5pd = v5pd_runs, v5ps = v5ps_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
                  maps_v5f = v5f_maps)
 
 # One row per pod job, with its environment (docker/README.md): the full fit,
-# or the fold in the runs' column job, if they have one, with --threads; or a
+# or the fold in the runs' column job, if they have one, with --threads (the
+# runs' column threads, or `threads`); or a
 # command run by --in, with the code ref in place of {ref}; and the pod's CPU
 # type and vCPUs (columns cpu and vcpu of the runs, or cpu5c and 8)
 species_run_jobs <- function(code_ref, threads = 8, runs = species_runs) {
@@ -625,7 +649,8 @@ species_run_jobs <- function(code_ref, threads = 8, runs = species_runs) {
                      paste(jobs$name, gsub("{ref}", code_ref, jobs$job,
                                            fixed = TRUE)),
                      sprintf("%s %s --threads %d", jobs$name, jobs$job,
-                             threads))
+                             if (is.null(jobs$threads)) threads else
+                               jobs$threads))
   jobs$CODE_REF <- code_ref
   jobs$IR_CUBE_MODEL_OPTIONS <- jobs$options
   jobs$IR_CUBE_INITS <- jobs$inits
