@@ -518,9 +518,9 @@ v5pk_runs <- v5pk_runs[!grepl("_fc2018$", v5pk_runs$name), ]
 # The set "v5pd" (v5pd_runs): V5pd, V5pm with DDT back in both smooths'
 # classes (smooth_options(classes = c("Pyrethroids", "Organochlorines"))), its
 # floor level its own class's (a one-type class), at the floor scales
-# V5PD_SCALES (0.02 and 0.05), the full fits only, to set against V5pm at the
-# same scales:
-#   v5pd02_full, v5pd05_full
+# V5PD_SCALES (0.02 and 0.05), to set against V5pm at the same scales; the
+# full fit and the 2014 fold of each:
+#   v5pd02_full, v5pd02_fc2014, v5pd05_full, v5pd05_fc2014
 v5pd_options <- function(scale) {
   options <- v5pm_options(scale)
   stopifnot(grepl("classes = \"Pyrethroids\"", options, fixed = TRUE))
@@ -529,7 +529,7 @@ v5pd_options <- function(scale) {
 }
 v5pd_runs <- scaled_set("v5pd", v5pd_options,
                         split_scales("V5PD_SCALES", "0.02,0.05"))
-v5pd_runs <- v5pd_runs[grepl("_full$", v5pd_runs$name), ]
+v5pd_runs <- v5pd_runs[!grepl("_fc2018$", v5pd_runs$name), ]
 stopifnot(all(grepl("floor_intercepts = \"type\"", v5pt_runs$options,
                     fixed = TRUE)))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
