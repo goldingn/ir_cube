@@ -202,7 +202,8 @@ dynamical_parameter_draws <- function(fold,
             species_on(options) == !is.null(v$gamma_selection),
             kdr_on(options) ==
               any(kdr_slope_names %in% names(v)),
-            smooth_on(options) == any(grepl("^smooth_raw_", names(v))))
+            (length(smooth_kinds(options)) > 0) ==
+              any(grepl("^smooth_raw_", names(v))))
   # the logit floor where u_f is 0, from the floor itself where the model
   # samples that (floor_flat, V5f; smooth_floor_intercept()), as a variable
   # for the scripts that read it there

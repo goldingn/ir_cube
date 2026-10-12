@@ -32,8 +32,12 @@
 #                     plogis(floor_intercept + u_f(x)): "class" (the
 #                     default) for the classes `classes` only, TRUE for
 #                     every class, FALSE for none. Needs mortality_floor =
-#                     TRUE
-#   classes           the insecticide classes a "class" smooth applies to:
+#                     TRUE. With selection and floor both FALSE (and no
+#                     init), the model has no smooths but keeps the smooth
+#                     model's floor, its levels and their prior (the
+#                     control of V5pg, R/species_runs.R): the same model
+#                     with the fields at 0
+#   classes          the insecticide classes a "class" smooth applies to:
 #                     the pyrethroids and DDT (the default, smooth_classes;
 #                     kdr gives resistance to both), or "Pyrethroids" for
 #                     smooths of the pyrethroids alone (V5p), whose forecast
@@ -333,6 +337,11 @@ smooth_floor_intercept <- function(v, options, weights = NULL) {
   hierarchical <- smooth_floor_by_type(options$smooth)
   log_f0 <- if (hierarchical) smooth_floor_log_hazards(v, options$smooth) else
     log(f0)
+  # without the floor smooth (the control, smooth_options(floor = FALSE)),
+  # the floor is flat at the mean hazard
+  if (!"floor" %in% smooth_kinds(options)) {
+    return(log_f0)
+  }
   has_smooth <- smooth_class_weight(
     options, "floor",
     if (hierarchical) options$smooth$type_classes else
@@ -439,8 +448,6 @@ check_smooth_options <- function(smooth) {
     is_kind(smooth$selection), is_kind(smooth$floor),
     is.null(smooth[["init"]]) || isFALSE(smooth[["init"]]) ||
       isTRUE(smooth[["init"]]),
-    !isFALSE(smooth$selection) || !isFALSE(smooth$floor) ||
-      isTRUE(smooth[["init"]]),
     is.null(smooth$shear) || isFALSE(smooth$shear) || isTRUE(smooth$shear),
     !isTRUE(smooth$shear) ||
       (!isFALSE(smooth$selection) && !isFALSE(smooth$floor)),
@@ -482,8 +489,7 @@ check_smooth_options <- function(smooth) {
       (smooth_floor_prior_family(smooth) == "half_normal" &&
          smooth$floor_intercepts %in% c("class", "hierarchical", "type",
                                         "type_mean") &&
-         smooth_range_fixed(smooth) &&
-         !isFALSE(smooth$floor) && !isTRUE(smooth$shear)))
+         smooth_range_fixed(smooth) && !isTRUE(smooth$shear)))
   invisible(smooth)
 }
 

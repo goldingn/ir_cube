@@ -586,6 +586,26 @@ v5pg_runs <- data.frame(
 stopifnot(all(mapply(grepl, sprintf("scale = %s), floor_intercept_prior",
                                     v5pg_grid$sd),
                      v5pg_runs$options, fixed = TRUE)))
+# and the control at each s: V5pg with no smooths (smooth_options(selection
+# = FALSE, floor = FALSE)), the same floors, their prior and the rest, the
+# same starts:
+#   v5pg_s01_nosmooth_full, v5pg_s005_nosmooth_full
+v5pg_control <- function(options) {
+  stopifnot(grepl("selection = \"class\"", options, fixed = TRUE),
+            grepl("floor = \"class\"", options, fixed = TRUE))
+  options <- sub("selection = \"class\"", "selection = FALSE", options,
+                 fixed = TRUE)
+  sub("floor = \"class\"", "floor = FALSE", options, fixed = TRUE)
+}
+v5pg_control_tags <- sprintf("v5pg_s%s_nosmooth",
+                             sub("^0\\.", "", unique(v5pg_grid$s)))
+v5pg_runs <- rbind(v5pg_runs, data.frame(
+  name = paste0(v5pg_control_tags, "_full"),
+  label = paste0("V", substring(v5pg_control_tags, 2), "_full"),
+  options = vapply(unique(v5pg_grid$s),
+                   function(s) v5pg_control(v5pd_options(s)), ""),
+  inits = v5pg_runs$inits[1],
+  job = "full"))
 stopifnot(all(grepl("floor_intercepts = \"type\"", v5pt_runs$options,
                     fixed = TRUE)))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
