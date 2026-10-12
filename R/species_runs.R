@@ -10,7 +10,7 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "v5pk", "v5pd", "v5ps", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
+# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "v5pk", "v5pd", "v5ps", "v5pg", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
 # and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
@@ -557,6 +557,35 @@ v5ps_runs <- data.frame(
   job = paste(c("full", "fold temporal_forecasting 2014"),
               "--chains 8 --warmup 2000 --samples 1000"),
   cpu = "cpu5c", vcpu = 16L, threads = 16L)
+# The set "v5pg" (v5pg_runs): V5pg, V5pd with both complexity penalties
+# tightened (V5pd and V5ps ran to floor levels of 0.4-0.6 and smooth sds of
+# 1-3, and their chains split into modes): each combination of the floor
+# scale s (0.01, 0.005) and the half-normal scale of both smooths' sds (0.05,
+# 0.025), full fits only, 4 chains, started apart: from V5pd05 chain 1, from
+# V5pd02 chain 2 (the start of the V5ps 2014 fold's separate chain) and cold
+# at either floor mode:
+#   v5pg_s01_sd05_full, v5pg_s01_sd025_full, v5pg_s005_sd05_full,
+#   v5pg_s005_sd025_full
+v5pg_grid <- expand.grid(sd = c("0.05", "0.025"), s = c("0.01", "0.005"),
+                         stringsAsFactors = FALSE)
+v5pg_tags <- sprintf("v5pg_s%s_sd%s", sub("^0\\.", "", v5pg_grid$s),
+                     sub("^0\\.", "", v5pg_grid$sd))
+v5pg_runs <- data.frame(
+  name = paste0(v5pg_tags, "_full"),
+  label = paste0("V", substring(v5pg_tags, 2), "_full"),
+  options = mapply(function(s, sd) {
+    sub("sd_prior = list(family = \"half_normal\", scale = 0.5)",
+        sprintf("sd_prior = list(family = \"half_normal\", scale = %s)", sd),
+        v5pd_options(s), fixed = TRUE)
+  }, v5pg_grid$s, v5pg_grid$sd, USE.NAMES = FALSE),
+  inits = paste(c("temporary/inits_v5pd05_draw1.RDS",
+                  "temporary/inits_v5pd02_draw2.RDS",
+                  "temporary/inits_floor_low.RDS",
+                  "temporary/inits_floor_high.RDS"), collapse = ","),
+  job = "full")
+stopifnot(all(mapply(grepl, sprintf("scale = %s), floor_intercept_prior",
+                                    v5pg_grid$sd),
+                     v5pg_runs$options, fixed = TRUE)))
 stopifnot(all(grepl("floor_intercepts = \"type\"", v5pt_runs$options,
                     fixed = TRUE)))
 stopifnot(all(grepl("floor_mean = \"cells\"", v5n_runs$options, fixed = TRUE)),
@@ -632,7 +661,7 @@ run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  v5i = v5i_runs, v5h = v5h_runs, v5f = v5f_runs,
                  v5c = v5c_runs, v5n = v5n_runs, v5t = v5t_runs,
                  v5p = v5p_runs, hier = hier_runs, v5pt = v5pt_runs,
-                 v5pm = v5pm_runs, v5pr = v5pr_runs, v5pk = v5pk_runs, v5pd = v5pd_runs, v5ps = v5ps_runs,
+                 v5pm = v5pm_runs, v5pr = v5pr_runs, v5pk = v5pk_runs, v5pd = v5pd_runs, v5ps = v5ps_runs, v5pg = v5pg_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
