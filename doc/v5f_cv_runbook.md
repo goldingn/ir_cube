@@ -1,5 +1,27 @@
 # V5f cross-validation and two-stage maps: runbook (#47)
 
+**V5pg, the default model since 12 October 2026** (V5pg at floor scale
+0.005 and smooth sd scale 0.025; `smooth_options()`, `R/latent_smooth.R`),
+follows the same steps with its own sets (`R/species_runs.R`): `cv5pg`, all
+five dynamical folds (`cv5pg_blocks1`, `cv5pg_blocks2`, `cv5pg_interp`,
+`cv5pg_fc2014`, `cv5pg_fc2018`), each from the four starts of its full fit
+`v5pg_s005_sd025_full` (one init file per chain:
+`inits_v5pd05_draw1.RDS`, `inits_v5pd02_draw2.RDS`, `inits_floor_low.RDS`,
+`inits_floor_high.RDS`); `ts_cv5pg`, the second stage on each; and
+`maps_v5pg`, the maps of `v5pg_s005_sd025_full` on three pods
+(`maps_v5pg_s005_sd025_full_<part>`). There is no separate test set: the
+full fit is the grid's. The second stage and the maps take the code of
+branch `v5pg-cv`, `floor-cloglog` with `cv-update` (PR #43) merged through
+`v5h-cv`, in place of `v5h-cv`:
+
+```bash
+Rscript R/species_runs.R <CODE_REF> cv5pg          # pods_cv5pg.json: the five folds
+Rscript R/species_runs.R <V5PG_CV_REF> ts_cv5pg    # pods_ts_cv5pg.json: the second stage on the five folds
+Rscript R/species_runs.R <V5PG_CV_REF> maps_v5pg   # pods_maps_v5pg.json: the maps of v5pg_s005_sd025_full
+```
+
+The rest of this runbook is V5f's; for V5pg read its job names.
+
 The test fits, the dynamical folds and the two-stage model on each fold of
 V5f, the default model since #47 (V5h with the floor smooth centred over the
 cells with bioassays of the pyrethroids or DDT, and a half-normal prior of

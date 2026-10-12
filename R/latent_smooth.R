@@ -18,16 +18,27 @@
 # settings ---------------------------------------------------------------------
 
 # Settings of the latent smooths, for dynamical_model_options(smooth = ).
-# The defaults are V5f's (#47), the default model's: the range fixed at
-# 1,500 km, a half-normal prior of scale 0.5 on each smooth's sd, and a
-# half-normal prior of scale 0.05 on the floor at a flat smooth. V5h is
-# smooth_options(floor_intercept_prior = "beta_moments"), V5r that with
-# sd_prior = c(1, 0.05), and V5 that with range = NULL.
+# The defaults are V5pg's at floor scale 0.005 and smooth sd scale 0.025
+# (#47; v5pg_s005_sd025 in R/species_runs.R), the default model's: smooths
+# of selection and of the floor for the pyrethroids and DDT only, at the
+# range fixed at 1,500 km, each sd with a half-normal prior of scale 0.025;
+# a floor per insecticide type pooled within its class by the arithmetic
+# mean of its types' hazards; the cloglog floor link, with floor_flat the
+# mean hazard over the cells with pyrethroid or DDT bioassays, under a
+# half-normal prior of scale 0.005. Tight priors, as complexity penalties:
+# looser ones (V5pd, V5ps) let the floors rise to 0.4-0.6 and the smooths'
+# sds to 1-3, and their chains split into modes. V5f, the default before,
+# is smooth_options(selection = TRUE, floor_intercepts = "class",
+# floor_hierarchy_scale = 0.5, sd_prior = list(family = "half_normal",
+# scale = 0.5), floor_intercept_prior = list(family = "half_normal", scale =
+# 0.05), floor_link = "logit", floor_mean = "prior") (v5f_options,
+# R/species_runs.R); V5h that with floor_intercept_prior = "beta_moments",
+# V5r that with sd_prior = c(1, 0.05), and V5 that with range = NULL.
 #   selection         the smooth u_s(x) of the strength of selection: the
 #                     cumulative log fitness is multiplied by exp(u_s(x))
-#                     (outer_mortality(), R/dynamical_model.R). TRUE (the
-#                     default) for every class, "class" for the classes
-#                     `classes` only, FALSE for none
+#                     (outer_mortality(), R/dynamical_model.R). TRUE for
+#                     every class (V5 to V5f), "class" (the default) for the
+#                     classes `classes` only, FALSE for none
 #   floor             the smooth u_f(x) of the logit mortality floor, f =
 #                     plogis(floor_intercept + u_f(x)): "class" (the
 #                     default) for the classes `classes` only, TRUE for
@@ -54,7 +65,7 @@
 #                     between the log selection multiplier and the logit
 #                     floor, so that v_s and u_f are nearly uncorrelated in
 #                     the posterior. Needs both smooths
-#   floor_intercepts  "class" (the default) for one floor_intercept per
+#   floor_intercepts  "class" (V5h to V5n) for one floor_intercept per
 #                     insecticide class, "one" for one for all. With
 #                     mortality_floor = TRUE the floor is plogis(
 #                     floor_intercept + u_f(x)), in place of the constant
@@ -98,8 +109,9 @@
 #                     floor_hierarchy_scale. Pooled on the log scale, the
 #                     geometric mean can be held low by one type with a
 #                     floor near 0 while the class's other types rise (as
-#                     V5pt's full fit did), so "type_mean" normalises the
-#                     deviations by their arithmetic mean instead:
+#                     V5pt's full fit did), so "type_mean" (the default)
+#                     normalises the deviations by their arithmetic mean
+#                     instead:
 #                       lambda_bar[type] = floor_flat[class] exp(d[type]) /
 #                         mean over the class's types of exp(d),
 #                       d = floor_sd_type floor_type_raw,
@@ -110,21 +122,24 @@
 #                     with floor_intercepts = "hierarchical", the scale of
 #                     the half-normal priors of floor_sd_class and
 #                     floor_sd_type, the sds of the log mean hazard between
-#                     classes and between the types of a class (0.5); with
-#                     "type", of floor_sd_type's
+#                     classes and between the types of a class; with "type"
+#                     or "type_mean", of floor_sd_type's. 0.356 by default
+#                     (V5pt on), for P(two types of a class have floors more
+#                     than 3 times apart) = 0.05; 0.5 before
 #   floor_intercept_prior
 #                     the prior of the floor where u_f is 0 (the floor at a
 #                     flat smooth): list(family = "half_normal", scale = s)
-#                     (the default, s = 0.05; V5f) for f0 ~ N(0, s^2)
+#                     (s = 0.005 by default, V5pg; 0.05 in V5f) for f0 ~
+#                     N(0, s^2)
 #                     truncated to [0, 1], one per intercept, sampled as the
 #                     variable floor_flat, with floor_intercept = logit(f0);
 #                     or "beta_moments" (V5 to V5h, and fits saved without
 #                     the option) for floor_intercept ~ N with the mean and
 #                     sd of the logit of a Beta(floor_prior) variable
 #                     (logit_beta_moments(), R/dynamical_model.R)
-#   floor_link        how the floor smooth enters the floor: "logit" (the
-#                     default; V5 to V5f), f = plogis(floor_intercept + u_f),
-#                     u_f centred over its cells; or "cloglog" (V5c), the
+#   floor_link        how the floor smooth enters the floor: "logit" (V5 to
+#                     V5f), f = plogis(floor_intercept + u_f), u_f centred
+#                     over its cells; or "cloglog" (the default; V5c on), the
 #                     floor of a log-normal hazard, f = 1 - exp(-lambda(x)),
 #                     log lambda(x) = log lambda_bar - sd^2 v / 2 + u_f(x),
 #                     u_f uncentred, of marginal variance sd^2 v at the cells
@@ -138,10 +153,10 @@
 #                     Needs floor_intercept_prior "half_normal", one floor
 #                     intercept per class and a fixed range
 #   floor_mean        with the cloglog link, what lambda_bar is the mean of:
-#                     "prior" (the default; V5c), the prior mean of lambda(x),
-#                     as above; or "cells" (V5n), its realised mean over the
-#                     cells with bioassays of the classes the floor smooth
-#                     applies to (floor_mean_cells, smooth_box()),
+#                     "prior" (V5c), the prior mean of lambda(x), as above;
+#                     or "cells" (the default; V5n on), its realised mean over
+#                     the cells with bioassays of the classes the floor
+#                     smooth applies to (floor_mean_cells, smooth_box()),
 #                       lambda(x) = lambda_bar exp(u_f(x)) / mean_c exp(u_f(c)),
 #                     so that the floor smooth's level cancels and the prior
 #                     of floor_flat is on the mean hazard over those cells,
@@ -175,7 +190,8 @@
 #                     range
 #   sd_prior          the prior of its marginal sd: list(family =
 #                     "half_normal", scale = s) for sd ~ N(0, s^2) truncated
-#                     to sd > 0, by default with scale 0.5 (V5h); or c(sd_0,
+#                     to sd > 0, by default with scale 0.025 (V5pg; 0.5 in
+#                     V5h to V5pd); or c(sd_0,
 #                     alpha) for the penalised-complexity prior, exponential
 #                     with P(sd > sd_0) = alpha (V5 and V5r, c(1, 0.05);
 #                     smooth_sd_prior_family())
@@ -204,11 +220,11 @@
 # the cells with bioassays of the pyrethroids or DDT (class_column_means),
 # which centre the smooths (smooth_centre()); and term_classes, whether each
 # class (in class_id order) is one a "class" smooth applies to
-smooth_options <- function(selection = TRUE,
+smooth_options <- function(selection = "class",
                            floor = "class",
                            shear = FALSE,
-                           floor_intercepts = "class",
-                           floor_hierarchy_scale = 0.5,
+                           floor_intercepts = "type_mean",
+                           floor_hierarchy_scale = 0.356,
                            kernel = "se",
                            c = 2,
                            m = NULL,
@@ -216,11 +232,11 @@ smooth_options <- function(selection = TRUE,
                            basis_range = if (is.null(range)) 1 else range,
                            range_prior = c(1.5, 0.05),
                            sd_prior = list(family = "half_normal",
-                                           scale = 0.5),
+                                           scale = 0.025),
                            floor_intercept_prior = list(family = "half_normal",
-                                                        scale = 0.05),
-                           floor_link = "logit",
-                           floor_mean = "prior",
+                                                        scale = 0.005),
+                           floor_link = "cloglog",
+                           floor_mean = "cells",
                            classes = smooth_classes,
                            init = FALSE) {
   list(selection = selection,

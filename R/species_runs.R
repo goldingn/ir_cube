@@ -1,7 +1,8 @@
 # The fits of the species model (#47) and its reference, full data only, of
-# V5 with a fixed range, full and forecasting folds, and the test fits and
-# cross-validation of V5f, the default model, with the second stage and the
-# maps. Run on RunPod (docker/README.md), one fit per pod.
+# V5 with a fixed range, full and forecasting folds, the test fits and
+# cross-validation of V5f, the default model before, and the cross-validation
+# of V5pg, the default model, each with the second stage and the maps. Run on
+# RunPod (docker/README.md), one fit per pod.
 #
 #   Rscript R/species_runs.R [code ref] [set]
 #
@@ -10,8 +11,9 @@
 # (species_run_pod_body()), for the commit to run (a full commit
 # id; default: HEAD, which must be on GitHub), for the set "species" (the
 # default, species_runs); for the other sets of run_sets, below ("wb",
-# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "v5pk", "v5pd", "v5ps", "v5pg", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm"
-# and "maps_v5f"), jobs_<set>.csv and pods_<set>.json. The fits:
+# "v5r", "v5i", "v5h", "v5f", "v5c", "v5n", "v5t", "v5p", "hier", "v5pt", "v5pm", "v5pr", "v5pk", "v5pd", "v5ps", "v5pg", "cv5f", "cv5f_warm", "ts_cv5f", "ts_cv5f_warm",
+# "maps_v5f", "cv5pg", "ts_cv5pg" and "maps_v5pg"), jobs_<set>.csv and
+# pods_<set>.json. The fits:
 #   sp_ref_floor  B_f: one trajectory, the floor estimated with prior
 #                 Beta(1, 4), the prior of the species floors
 #   sp_v1         V1: the species model, no floors
@@ -646,16 +648,21 @@ cv5f_fold_jobs <- function(warm = FALSE) {
   c(jobs, cv5f_test_folds)[cv5f_folds$fold]
 }
 ts_script_dir <- "/workspace/ir_cube/ts_v5f"
-cv5f_two_stage <- function(warm = FALSE) {
-  jobs <- cv5f_fold_jobs(warm)
+# the second stage on the dynamical fold jobs `jobs` (named by fold, in the
+# order of cv5f_folds), labelled with the model `model`
+two_stage_runs <- function(jobs, model) {
+  stopifnot(identical(names(jobs), cv5f_folds$fold))
   data.frame(name = paste0("ts_", jobs),
-             label = paste0("two_stage_V5f", if (warm) "_warm" else "", "_",
-                            cv5f_folds$fold),
+             label = paste0("two_stage_", model, "_", cv5f_folds$fold),
              options = "", inits = "",
              job = sprintf("--in %s -- bash %s/two_stage_fold.sh %s {ref}",
                            jobs, ts_script_dir,
                            sub("^fold ", "", cv5f_folds$job)),
              cpu = "cpu3c", vcpu = 16L, row.names = NULL)
+}
+cv5f_two_stage <- function(warm = FALSE) {
+  two_stage_runs(cv5f_fold_jobs(warm),
+                 paste0("V5f", if (warm) "_warm" else ""))
 }
 # the maps on three pods, each with the map outputs of one part (TS_OUTPUTS
 # of docker/two_stage_maps.sh) in a work directory of its own (TS_PART,
@@ -666,15 +673,44 @@ cv5f_two_stage <- function(warm = FALSE) {
 v5f_map_parts <- c(a = "llin_effective",
                    b = "Bendiocarb,Lambda-cyhalothrin,Fenitrothion",
                    c = "DDT,Pirimiphos-methyl,Malathion")
-v5f_maps <- data.frame(
-  name = sprintf("maps_%s_%s", v5f_full_name, names(v5f_map_parts)),
-  label = sprintf("two_stage_maps_%s", names(v5f_map_parts)),
-  options = "", inits = "",
-  job = sprintf(paste("--in %s -- env TS_PART=%s TS_OUTPUTS=%s",
-                      "bash %s/two_stage_maps.sh {ref}"),
-                v5f_full_name, names(v5f_map_parts), v5f_map_parts,
-                ts_script_dir),
-  cpu = "cpu3c", vcpu = 16L, row.names = NULL)
+# the maps of the full fit job `full`, labelled with the model `model` (none
+# for V5f's)
+map_runs <- function(full, model = "") {
+  data.frame(
+    name = sprintf("maps_%s_%s", full, names(v5f_map_parts)),
+    label = sprintf("two_stage_maps_%s%s", if (nzchar(model)) paste0(model, "_") else "",
+                    names(v5f_map_parts)),
+    options = "", inits = "",
+    job = sprintf(paste("--in %s -- env TS_PART=%s TS_OUTPUTS=%s",
+                        "bash %s/two_stage_maps.sh {ref}"),
+                  full, names(v5f_map_parts), v5f_map_parts,
+                  ts_script_dir),
+    cpu = "cpu3c", vcpu = 16L, row.names = NULL)
+}
+v5f_maps <- map_runs(v5f_full_name)
+
+# The sets "cv5pg", "ts_cv5pg" and "maps_v5pg": the cross-validation of the
+# default model, V5pg at floor scale 0.005 and smooth sd scale 0.025 (its
+# full fit v5pg_s005_sd025_full, whose chains agreed from four starts apart,
+# R-hat 1.03), its second stage and the maps of its full fit, as V5f's
+# (doc/v5f_cv_runbook.md): the five folds of R/run_validation_folds.R, all in
+# "cv5pg",
+#   cv5pg_blocks1, cv5pg_blocks2, cv5pg_interp, cv5pg_fc2014, cv5pg_fc2018
+# each from the full fit's four starts, one per chain, on cpu5c, 8 vCPU; the
+# second stage on each, ts_cv5pg_<fold>; and the maps on three pods,
+# maps_v5pg_s005_sd025_full_<part>. The second stage and the maps take the
+# second-stage code of branch v5pg-cv: this branch with cv-update (PR #43)
+v5pg_default <- v5pg_runs[v5pg_runs$name == "v5pg_s005_sd025_full", ]
+stopifnot(nrow(v5pg_default) == 1)
+cv5pg_runs <- data.frame(
+  name = paste0("cv5pg_", cv5f_folds$fold),
+  label = paste0("V5pg_", cv5f_folds$fold),
+  options = v5pg_default$options,
+  inits = v5pg_default$inits,
+  job = cv5f_folds$job,
+  row.names = NULL)
+ts_cv5pg <- two_stage_runs(setNames(cv5pg_runs$name, cv5f_folds$fold), "V5pg")
+v5pg_maps <- map_runs(v5pg_default$name, "V5pg")
 
 # the sets of fits, by name
 run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
@@ -685,7 +721,42 @@ run_sets <- list(species = species_runs, wb = wb_runs, v5r = v5r_runs,
                  cv5f = cv5f_runs(), cv5f_warm = cv5f_runs(warm = TRUE),
                  ts_cv5f = cv5f_two_stage(),
                  ts_cv5f_warm = cv5f_two_stage(warm = TRUE),
-                 maps_v5f = v5f_maps)
+                 maps_v5f = v5f_maps,
+                 cv5pg = cv5pg_runs, ts_cv5pg = ts_cv5pg,
+                 maps_v5pg = v5pg_maps)
+# The fits before V5pg became the default left some smooth options to the
+# defaults of their time, which V5pg's changed: each gets them explicitly,
+# the floor's hierarchy scale 0.5, the logit link and the floor's mean hazard
+# as its prior mean, where its options do not set them (the defaults since
+# are 0.356, "cloglog" and "cells"), so that every set keeps its model
+smooth_defaults_before_v5pg <- c(floor_hierarchy_scale = "0.5",
+                                 floor_link = "\"logit\"",
+                                 floor_mean = "\"prior\"")
+with_smooth_defaults_before_v5pg <- function(options) {
+  start <- regexpr("smooth = smooth_options(", options, fixed = TRUE)
+  if (start < 0) return(options)
+  open <- start + attr(start, "match.length") - 1
+  chars <- strsplit(options, "")[[1]]
+  depth <- 0
+  for (close in open:length(chars)) {
+    depth <- depth + (chars[close] == "(") - (chars[close] == ")")
+    if (depth == 0) break
+  }
+  inner <- substr(options, open + 1, close - 1)
+  set <- vapply(names(smooth_defaults_before_v5pg), function(name) {
+    grepl(paste0(name, " ="), inner, fixed = TRUE)
+  }, logical(1))
+  if (all(set)) return(options)
+  add <- paste(sprintf("%s = %s", names(smooth_defaults_before_v5pg)[!set],
+                       smooth_defaults_before_v5pg[!set]), collapse = ", ")
+  paste0(substr(options, 1, close - 1), if (nzchar(trimws(inner))) ", ",
+         add, substr(options, close, nchar(options)))
+}
+run_sets <- lapply(run_sets, function(runs) {
+  runs$options <- vapply(runs$options, with_smooth_defaults_before_v5pg, "",
+                         USE.NAMES = FALSE)
+  runs
+})
 
 # One row per pod job, with its environment (docker/README.md): the full fit,
 # or the fold in the runs' column job, if they have one, with --threads (the
@@ -753,9 +824,9 @@ if (sys.nframe() == 0) {
   for (expression in runs$options[nzchar(runs$options)]) {
     check_dynamical_model_options(eval(str2lang(expression)))
   }
-  # the test fits and cross-validation of the default model have the
-  # defaults in full
-  if (set %in% c("v5f", "cv5f", "cv5f_warm")) {
+  # the cross-validation of the default model has the defaults in full (V5f's
+  # sets, of the default before, keep V5f's options in full)
+  if (set %in% c("cv5pg")) {
     stopifnot(vapply(runs$options, function(expression) {
       identical(eval(str2lang(expression)), dynamical_model_options())
     }, logical(1)))

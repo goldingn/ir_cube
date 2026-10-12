@@ -21,17 +21,22 @@ source("R/windowed_hmc.R")
 
 # model options ------------------------------------------------------------
 
-# Switches for model terms. The defaults are V5f (#47): population d_half 270
-# in selection_design(); a mortality floor per insecticide class, shifted by
-# a latent smooth for the pyrethroids and DDT, centred over the cells with
-# their bioassays, the floor at a flat smooth with a half-normal prior of
-# scale 0.05; a latent smooth of the strength of selection for every class,
-# centred over every modelled cell; both smooths at a fixed range of 1,500
-# km, each sd with a half-normal prior of scale 0.5 (smooth_options()); and
-# the beta-binomial likelihood. V5h, the default before, centred both
-# smooths over every modelled cell and had a logit-normal prior on the floor
-# intercepts; the fits before V5h had no floor and no smooths (#37), and
-# those before #37 d_half 50 and an estimated floor. A fit's own options are
+# Switches for model terms. The defaults are V5pg (#47; v5pg_s005_sd025 in
+# R/species_runs.R): population d_half 270 in selection_design(); a
+# mortality floor per insecticide type, 1 - exp(-lambda(x)), its mean hazard
+# pooled within its class (the arithmetic mean of the class's types' mean
+# hazards, floor_flat, with a half-normal prior of scale 0.005) and, for the
+# pyrethroids and DDT, shifted by a latent smooth whose mean over the cells
+# with their bioassays cancels; a latent smooth of the strength of selection
+# for the pyrethroids and DDT; both smooths at a fixed range of 1,500 km,
+# each sd with a half-normal prior of scale 0.025 (smooth_options()); and the
+# beta-binomial likelihood. V5f, the default before, had a floor per class
+# (logit link, half-normal prior of scale 0.05) and the selection smooth for
+# every class, with half-normal priors of scale 0.5 on the smooths' sds; V5h
+# before it centred both smooths over every modelled cell and had a
+# logit-normal prior on the floor intercepts; the fits before V5h had no
+# floor and no smooths (#37), and those before #37 d_half 50 and an
+# estimated floor. A fit's own options are
 # saved with it (model_options), with the smooths' basis and centring, and
 # the scripts that use a fit take them from there (complete_model_options(),
 # R/species_fit_helpers.R).
@@ -71,8 +76,8 @@ source("R/windowed_hmc.R")
 #                     of the mortality floor, in place of the kdr covariate
 #                     (V5, #47), or FALSE for none. Not with the species model
 #                     or the kdr covariate; with mortality_floor = TRUE, the
-#                     floor is per class by default (smooth_options(
-#                     floor_intercepts = )). With
+#                     floor is per type, pooled within its class, by default
+#                     (smooth_options(floor_intercepts = )). With
 #                     smooth_options(init = TRUE), a third smooth, of the
 #                     initial state, with a loading per type, replaces the
 #                     hierarchy of regions and countries (no init_region_*,
@@ -443,8 +448,8 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # (smooth_options(floor_intercepts = )); the intercept is the logit floor
   # where u_f is 0, its mean over the cells with bioassays of the classes it
   # applies to (smooth_centre()). Its prior (smooth_options(
-  # floor_intercept_prior = )): by default (V5f), on the floor itself at a
-  # flat smooth, f0 = plogis(floor_intercept), sampled as floor_flat,
+  # floor_intercept_prior = )): in V5f, on the floor itself at a flat
+  # smooth, f0 = plogis(floor_intercept), sampled as floor_flat,
   #   f0 ~ half-normal(0, 0.05), truncated to [0, 1]:
   # P(f0 > 0.1) = 0.046, small but not negligible; floors up to ~0.1 are
   # nearly free and higher floors are penalised (log density 2.8 at 0, 0.8 at
@@ -454,6 +459,10 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # the mean hazard lambda_bar of the floor 1 - exp(-lambda(x)), with the
   # same prior: for small floors about the mean floor, P(> 0.1) = 0.046, the
   # floor smooth's sd setting only how uneven it is (smooth_floor_intercept()).
+  # By default (V5pg), the cloglog floor per type with floor_flat its class's
+  # mean hazard over the cells with pyrethroid or DDT bioassays (floor_mean =
+  # "cells"), half-normal(0, 0.005): P(> 0.01) = 0.046, so the floors stay
+  # near 0 unless the data demand them, and resistance rises by selection.
   # Or (V5 to V5h) the logit-normal prior of the kdr-dependent floor's
   # intercept, above
   if (smooth_floor_on(options)) {
@@ -589,7 +598,8 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # exponential 1 / rho. With V5's PC priors (smooth_options(range = NULL,
   # sd_prior = c(1, 0.05))), P(rho < 1,500 km) = 0.05 and P(sd > 1) = 0.05;
   # with smooth_options(sd_prior = list(family = "half_normal", scale = s))
-  # (the default, s = 0.5), sd ~ N(0, s^2) truncated to sd > 0 in place of
+  # (the default, s = 0.025; 0.5 in V5h to V5pd), sd ~ N(0, s^2) truncated
+  # to sd > 0 in place of
   # the sd's PC prior (smooth_sd_prior_distribution()); and with the shear,
   # its loading b ~ N(1, 0.5) (smooth_shear_prior). With a fixed range
   # (smooth_options(range = ), the default), there is no inverse range
