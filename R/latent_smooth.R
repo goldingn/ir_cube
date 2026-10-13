@@ -31,9 +31,11 @@ smooth_classes <- c("Pyrethroids", "Organochlorines")
 # 1,500 km [1,100, 2,000] (#47). The lengthscale is rho / 2
 smooth_range <- 1.5
 
-# The box's half-widths as multiples of the half-extents of the modelled
-# bioassay cells, widened where needed to cover every cell of the mask
-smooth_box_factor <- 2
+# The box's half-widths as multiples of the mask's half-extents. At 1.5 the
+# covariance the basis implies at the modelled bioassay cells is within 2.2%
+# of the kernel's (of sd^2, centred or not), as at 1.75 and 2; at 1.3 within
+# 4%, and at 1.2 within 18%
+smooth_box_factor <- 1.5
 
 # The number of basis functions per dimension needed for an accurate
 # approximation of the squared exponential at lengthscale ell, as a multiple
@@ -67,37 +69,22 @@ smooth_cell_coords <- function(cells) {
   project_km(xy[, 1], xy[, 2]) / 1000
 }
 
-# the range of the projected coordinates of every mask cell, cached for the
-# session
-smooth_mask_cache <- new.env()
-smooth_mask_range <- function() {
-  if (is.null(smooth_mask_cache$range)) {
-    mask <- terra::rast("data/clean/raster_mask.tif")
-    smooth_mask_cache$range <- apply(smooth_cell_coords(terra::cells(mask)), 2,
-                                     range)
-  }
-  smooth_mask_cache$range
-}
-
-# The basis of the smooths, for the modelled bioassay cells `cells` (mask
-# cells, each once) and those of them with bioassays of smooth_classes,
-# `class_cells`; `classes` are the class names in class_id order.
-# build_dynamical_model() records it in the model's options (options$smooth),
-# for the plain-R predictions:
-#   origin, half_width  the box: centred on the cells' midrange, its
+# The basis of the smooths, for the mask cells with bioassays of
+# smooth_classes, `class_cells`, and `classes`, the class names in class_id
+# order. build_dynamical_model() records it in the model's options
+# (options$smooth), for the plain-R predictions:
+#   origin, half_width  the box: centred on the mask's midrange, its
 #                       half-width in each dimension smooth_box_factor times
-#                       their half-extent, or more where the mask reaches
-#                       beyond that, so that every mask cell can be predicted
+#                       the mask's half-extent (prediction_mask_coords()), so
+#                       the same for every fold and data update
 #   range               the smooths' range, smooth_range
 #   indices             the frequency indices of the basis functions, ordered
 #                       by frequency. m per dimension is smooth_m_factor L /
-#                       ell, rounded up, at the range's lengthscale ((17, 14)
-#                       for the October 2026 data); of the m[1] x m[2]
-#                       products of the one-dimensional eigenfunctions, only
-#                       those with frequency up to the lower of the two
-#                       dimensions' highest are kept (164), as the spectral
-#                       density is isotropic. The covariance the basis implies
-#                       at the modelled cells is within 2.3% of the kernel's
+#                       ell, rounded up, at the range's lengthscale (13, 15);
+#                       of the m[1] x m[2] products of the one-dimensional
+#                       eigenfunctions, only those with frequency up to the
+#                       lower of the two dimensions' highest are kept (134),
+#                       as the spectral density is isotropic
 #   class_column_means  the basis functions' means over class_cells, which
 #                       centre the selection smooth: it has mean 0 there, so it
 #                       does not trade off with the overall strength of
@@ -105,17 +92,14 @@ smooth_mask_range <- function() {
 #   floor_mean_basis    the basis at class_cells, sorted, over which the floor
 #                       smooth's mean hazard is taken (floor_log_hazard())
 #   term_classes        whether each class has the smooths
-smooth_basis <- function(cells, class_cells, classes) {
-  stopifnot(length(class_cells) > 0, all(class_cells %in% cells))
-  coords <- smooth_cell_coords(cells)
-  lower <- apply(coords, 2, min)
-  upper <- apply(coords, 2, max)
-  smooth <- list(origin = (lower + upper) / 2)
-  mask_range <- smooth_mask_range()
-  reach <- pmax(abs(mask_range[1, ] - smooth$origin),
-                abs(mask_range[2, ] - smooth$origin))
-  smooth$half_width <- pmax(smooth_box_factor * (upper - lower) / 2, reach)
-  smooth$range <- smooth_range
+smooth_basis <- function(class_cells, classes) {
+  stopifnot(length(class_cells) > 0)
+  mask <- prediction_mask_coords() / 1000
+  lower <- apply(mask, 2, min)
+  upper <- apply(mask, 2, max)
+  smooth <- list(origin = (lower + upper) / 2,
+                 half_width = smooth_box_factor * (upper - lower) / 2,
+                 range = smooth_range)
   m <- ceiling(smooth_m_factor * smooth$half_width / (smooth$range / 2))
   indices <- as.matrix(expand.grid(x = seq_len(m[1]), y = seq_len(m[2])))
   omega <- hsgp_frequencies(indices, smooth$half_width)

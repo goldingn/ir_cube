@@ -207,7 +207,7 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   # and the chains split into modes.
   floor <- list(
     floor_flat = normal(0, floor_hazard_scale, dim = n_classes,
-                        truncation = c(0, 1)),
+                        truncation = c(0, Inf)),
     floor_sd_type = normal(0, floor_type_sd_scale, truncation = c(0, Inf)),
     floor_type_raw = normal(0, 1, dim = n_types))
 
@@ -680,14 +680,12 @@ build_dynamical_model <- function(train_df,
     colnames(centre) <- colnames(x_cells)
     options$init_covariate_centre <- centre
   }
-  # the basis of the latent smooths, set up for these cells (all of them,
-  # whatever the fold), with the cells with bioassays of smooth_classes (of
-  # the full data, whatever the fold), over which the selection smooth is
-  # centred and the floor's mean hazard is taken (smooth_basis()), recorded in
-  # the options for the plain-R predictions
+  # the basis of the latent smooths, with the cells with bioassays of
+  # smooth_classes (of the full data, whatever the fold), over which the
+  # selection smooth is centred and the floor's mean hazard is taken
+  # (smooth_basis()), recorded in the options for the plain-R predictions
   smooth_class_ids <- which(lookups$levels$classes %in% smooth_classes)
   options$smooth <- smooth_basis(
-    lookups$cells,
     class_cells = unique(df$cell[df$class_id %in% smooth_class_ids]),
     classes = lookups$levels$classes)
 
