@@ -143,11 +143,13 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   rho_types            draws x n_types, the observation overdispersion
 #   kappa_type           draws x n_types, the reversion kappa (<= 0; NULL for
 #                        none, see reversion_kappa())
-#   smooth_weights       the weights of the latent smooths' basis functions
-#                        and centring terms, list(selection, floor) of draws x
-#                        (basis functions + 1) (smooth_terms())
+#   smooth_weights_selection, smooth_weights_floor
+#                        draws x basis functions, the weights of the latent
+#                        smooths' basis functions, and
+#   selection_offset     draws, the selection smooth's centring
+#                        (smooth_terms(), R/latent_smooth.R; cell_smooths())
 #   floor_log_hazard     draws x n_types, the log floor hazard of each type
-#                        where the floor smooth is 0 (smooth_terms())
+#                        where the floor smooth is 0 (floor_log_hazard())
 #   init_min             n_types, init_frac_min
 #   x_cells_init         the fit's initial-state covariates, one row per
 #                        cell_id (NULL for none)
@@ -176,9 +178,9 @@ dynamical_parameter_draws <- function(fold,
   terms <- dynamical_terms_draws(
     v, classes_index, types,
     terms = c("beta_type", "logit_init_relative", "rho_types",
-              if (reversion) "kappa_type"),
+              if (reversion) "kappa_type", "smooth_weights_selection",
+              "smooth_weights_floor", "selection_offset", "floor_log_hazard"),
     options = options)
-  smooth <- smooth_terms(v, options)
 
   list(effect_type = exp(terms$beta_type),
        logit_init_relative = terms$logit_init_relative,
@@ -189,8 +191,11 @@ dynamical_parameter_draws <- function(fold,
        },
        rho_types = matrix(terms$rho_types, n_draws),
        kappa_type = if (reversion) matrix(terms$kappa_type, n_draws),
-       smooth_weights = smooth$smooth_weights,
-       floor_log_hazard = smooth$floor_log_hazard,
+       smooth_weights_selection = matrix(terms$smooth_weights_selection,
+                                         n_draws),
+       smooth_weights_floor = matrix(terms$smooth_weights_floor, n_draws),
+       selection_offset = c(terms$selection_offset),
+       floor_log_hazard = matrix(terms$floor_log_hazard, n_draws),
        init_min = init_frac_constants(types)$min,
        x_cells_init = select_init_covariates(fold$x_cells_init, options),
        variables = v,
@@ -209,10 +214,11 @@ subset_draws <- function(parameters, draws) {
                    drop = FALSE))
   }
   for (name in c("effect_type", "logit_init_relative", "init_coef",
-                 "rho_types", "kappa_type", "floor_log_hazard")) {
+                 "rho_types", "kappa_type", "smooth_weights_selection",
+                 "smooth_weights_floor", "selection_offset",
+                 "floor_log_hazard")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
-  parameters$smooth_weights <- lapply(parameters$smooth_weights, rows)
   parameters$variables <- lapply(parameters$variables, rows)
   parameters$n_draws <- length(draws)
   parameters
@@ -234,6 +240,16 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
   floored_logit(logit_init, parameters$init_min[k])
 }
 
+# The latent smooths at cells with basis `basis` (prediction_basis()), for
+# the draws of `parameters`, as list(selection, floor), each draws x cells:
+# u_s, centred (smooth_terms()), and u_f. For dynamical_logit_cells(), once
+# for every type at those cells
+cell_smooths <- function(parameters, basis) {
+  list(selection = parameters$smooth_weights_selection %*% t(basis) -
+         parameters$selection_offset,
+       floor = parameters$smooth_weights_floor %*% t(basis))
+}
+
 # The recursion for cells of insecticide type k:
 #   parameters  dynamical_parameter_draws() (or subset_draws())
 #   logit_init  draws x cells, the logit relative initial state at each cell's
@@ -243,15 +259,14 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
 #   years_keep  year indices to return
 #   x_init      cells x initial-state covariates (named columns), for fits
 #               with them
-#   basis       the basis of the latent smooths at each cell, cells x (basis
-#               functions + 1) (prediction_basis())
+#   smooths     the latent smooths at the cells (cell_smooths())
 # Returns a list named by years_keep of draws x cells logit mortality.
 dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
-                                  x_init = NULL, basis) {
+                                  x_init = NULL, smooths) {
   n_cells <- dim(x)[1]
   n_draws <- parameters$n_draws
   stopifnot(ncol(logit_init) == n_cells, nrow(logit_init) == n_draws,
-            max(years_keep) <= dim(x)[2], nrow(basis) == n_cells)
+            max(years_keep) <= dim(x)[2], ncol(smooths$floor) == n_cells)
 
   logit_init <- cell_logit_init(parameters, k, logit_init, x_init)
 
@@ -263,8 +278,8 @@ dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
   multiplier <- 1
   floor_smooth <- NULL
   if (has_smooth) {
-    multiplier <- exp(parameters$smooth_weights$selection %*% t(basis))
-    floor_smooth <- parameters$smooth_weights$floor %*% t(basis)
+    multiplier <- exp(smooths$selection)
+    floor_smooth <- smooths$floor
   }
   floor <- floor_value(parameters$floor_log_hazard[, k], floor_smooth)
 
@@ -301,11 +316,11 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
   if (any(rows$year_id > n_times | rows$year_id < 1)) {
     stop("rows fall outside the covariate years 1..", n_times)
   }
-  cell_country <- dynamical_lookups(df)$cell_country_lookup
+  lookups <- dynamical_lookups(df)
+  cell_country <- lookups$cell_country_lookup
   stopifnot(!anyNA(cell_country[rows$cell_id]))
   # the basis of the latent smooths at each cell_id's mask cell
-  mask_cells <- df$cell[match(seq_len(max(df$cell_id)), df$cell_id)]
-  basis_cells <- prediction_basis(parameters$options, mask_cells)
+  basis_cells <- prediction_basis(parameters$options$smooth, lookups$cells)
 
   # row of x_cell_years for each (cell, year)
   x_row <- matrix(NA_integer_, max(cell_years_index$cell_id), n_times)
@@ -334,7 +349,8 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
                nrow = n_draws),
         x, years_keep,
         x_init = parameters$x_cells_init[cells, , drop = FALSE],
-        basis = basis_cells[cells, , drop = FALSE])
+        smooths = cell_smooths(parameters,
+                               basis_cells[cells, , drop = FALSE]))
       for (t in years_keep) {
         at_t <- target[unique_rows$year_id[target] == t]
         result[, at_t] <- logit[[as.character(t)]][

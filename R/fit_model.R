@@ -13,7 +13,6 @@ source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
 source("R/dynamical_model.R")
-source("R/chain_floor_modes.R")
 
 # set the start of the timeseries considered in modelling (the start of
 # non-negligible levels of resistance) - assume it's before the mass-rollout of
@@ -106,9 +105,6 @@ rhats <- coda::gelman.diag(draws,
                            autoburnin = FALSE,
                            multivariate = FALSE)
 summary(rhats$psrf)
-
-# the mortality-floor mode and log posterior of each chain (#37)
-chain_modes <- chain_floor_modes_safely(m, draws)
 
 # save fitted model to use for plotting and predictions
 save.image(file = "temporary/fitted_model.RData")

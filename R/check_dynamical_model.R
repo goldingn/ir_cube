@@ -184,14 +184,16 @@ x_years <- map_x(covariates, seq_len(nrow(map_rows)),
                  max(map_years) - baseline_year + 1)
 clamp <- function(l) pmin(pmax(l, qlogis(1e-12)), qlogis(1 - 1e-12))
 map_difference <- 0
+map_smooths <- cell_smooths(parameters,
+                            prediction_basis(model_options$smooth,
+                                             map_rows$cell))
 for (k in seq_along(types)) {
   dyn <- dynamical_logit_cells(parameters, k,
                                matrix(logit_init_all[, cell_country_index, k],
                                       1),
                                x_years, map_years - baseline_year + 1,
                                x_init = covariates$init,
-                               basis = prediction_basis(model_options,
-                                                        map_rows$cell))
+                               smooths = map_smooths)
   for (y in map_years) {
     rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
                    year_id = y - baseline_year + 1)

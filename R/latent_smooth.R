@@ -1,5 +1,5 @@
 # The latent spatial smooths and the mortality floor of the dynamical model
-# (#47). Two static surfaces, fitted inside the model, for the classes
+# (#46). Two static surfaces, fitted inside the model, for the classes
 # smooth_classes (the pyrethroids and DDT, to both of which kdr gives
 # resistance):
 #   u_s(x)  the log multiplier of the strength of selection: the cumulative
@@ -8,15 +8,16 @@
 #   u_f(x)  the log hazard of the mortality floor, 1 - exp(-lambda(x))
 # Each is a low-rank Hilbert-space approximate Gaussian process (HSGP; Solin
 # and Sarkka 2020, Riutort-Mayol et al. 2022) with the squared exponential
-# kernel on a box around the modelled bioassay cells, in the Albers
-# equal-area projection of Africa of the two-stage correction, in units of
-# 1,000 km:
+# kernel on a box around Africa, in the Albers equal-area projection of the
+# two-stage correction (R/projection.R), in units of 1,000 km:
 #   u(x) = sum_j sqrt(S(omega_j; sd, rho)) beta_j phi_j(x),  beta_j ~ N(0, 1)
 # with phi_j the eigenfunctions of the Laplacian on the box (Dirichlet
 # boundary), omega_j the square roots of their eigenvalues, and S the
 # kernel's spectral density. The basis at the cells is data; only the
 # weights depend on sd. Functions and settings only; needs sf and terra.
 # Sourced by R/dynamical_model.R.
+
+source("R/projection.R")
 
 
 # settings ---------------------------------------------------------------------
@@ -56,93 +57,75 @@ smooth_sd_scale <- 0.025
 floor_hazard_scale <- 0.005
 floor_type_sd_scale <- 0.356
 
-# the projection of the coordinates: the two-stage correction's Albers
-# equal-area conic for Africa (africa_equal_area_crs,
-# R/two_stage_correction.R), in km
-smooth_crs <- paste(
-  "+proj=aea +lat_1=20 +lat_2=-23 +lat_0=0 +lon_0=25",
-  "+x_0=0 +y_0=0 +ellps=WGS84 +units=km +no_defs"
-)
-
 
 # the basis --------------------------------------------------------------------
 
-# Projected coordinates, in 1,000 km, of longitudes and latitudes
-smooth_coords <- function(lon, lat, crs = smooth_crs) {
-  xy <- sf::sf_project(from = "+proj=longlat +datum=WGS84 +no_defs",
-                       to = crs, pts = cbind(lon, lat))
-  xy / 1000
-}
-
 # Projected coordinates, in 1,000 km, of mask cells `cells` (cell numbers of
 # data/clean/raster_mask.tif)
-smooth_cell_coords <- function(cells, crs = smooth_crs) {
+smooth_cell_coords <- function(cells) {
   xy <- terra::xyFromCell(terra::rast("data/clean/raster_mask.tif"), cells)
-  smooth_coords(xy[, 1], xy[, 2], crs)
+  project_km(xy[, 1], xy[, 2]) / 1000
 }
 
 # the range of the projected coordinates of every mask cell, cached for the
 # session
 smooth_mask_cache <- new.env()
-smooth_mask_range <- function(crs = smooth_crs) {
-  if (is.null(smooth_mask_cache[[crs]])) {
+smooth_mask_range <- function() {
+  if (is.null(smooth_mask_cache$range)) {
     mask <- terra::rast("data/clean/raster_mask.tif")
-    smooth_mask_cache[[crs]] <- apply(
-      smooth_cell_coords(terra::cells(mask), crs), 2, range)
+    smooth_mask_cache$range <- apply(smooth_cell_coords(terra::cells(mask)), 2,
+                                     range)
   }
-  smooth_mask_cache[[crs]]
+  smooth_mask_cache$range
 }
 
 # The basis of the smooths, for the modelled bioassay cells `cells` (mask
 # cells, each once) and those of them with bioassays of smooth_classes,
-# `class_cells`; `classes` are the class names in class_id order and
-# `classes_index` the class of each type. build_dynamical_model() records it
-# in the model's options (options$smooth), for the plain-R predictions:
-#   crs, origin, half_width  the box: centred on the cells' midrange, its
+# `class_cells`; `classes` are the class names in class_id order.
+# build_dynamical_model() records it in the model's options (options$smooth),
+# for the plain-R predictions:
+#   origin, half_width  the box: centred on the cells' midrange, its
 #                       half-width in each dimension smooth_box_factor times
 #                       their half-extent, or more where the mask reaches
 #                       beyond that, so that every mask cell can be predicted
+#   range               the smooths' range, smooth_range
 #   indices             the frequency indices of the basis functions, ordered
 #                       by frequency. m per dimension is smooth_m_factor L /
-#                       ell, rounded up, at the fixed range's lengthscale
-#                       ((17, 14) for the October 2026 data); of the m[1] x
-#                       m[2] products of the one-dimensional eigenfunctions,
-#                       only those with frequency up to the lower of the two
+#                       ell, rounded up, at the range's lengthscale ((17, 14)
+#                       for the October 2026 data); of the m[1] x m[2]
+#                       products of the one-dimensional eigenfunctions, only
+#                       those with frequency up to the lower of the two
 #                       dimensions' highest are kept (164), as the spectral
 #                       density is isotropic. The covariance the basis implies
 #                       at the modelled cells is within 2.3% of the kernel's
-#                       at the fixed range
 #   class_column_means  the basis functions' means over class_cells, which
 #                       centre the selection smooth: it has mean 0 there, so it
 #                       does not trade off with the overall strength of
 #                       selection
-#   floor_mean_cells    class_cells, sorted, over which the floor smooth's
-#                       mean hazard is taken (floor_log_hazard())
+#   floor_mean_basis    the basis at class_cells, sorted, over which the floor
+#                       smooth's mean hazard is taken (floor_log_hazard())
 #   term_classes        whether each class has the smooths
-#   type_classes        the class of each type
-smooth_basis <- function(cells, class_cells, classes, classes_index) {
+smooth_basis <- function(cells, class_cells, classes) {
   stopifnot(length(class_cells) > 0, all(class_cells %in% cells))
-  smooth <- list(crs = smooth_crs)
-  coords <- smooth_cell_coords(cells, smooth$crs)
+  coords <- smooth_cell_coords(cells)
   lower <- apply(coords, 2, min)
   upper <- apply(coords, 2, max)
-  smooth$origin <- (lower + upper) / 2
-  mask_range <- smooth_mask_range(smooth$crs)
+  smooth <- list(origin = (lower + upper) / 2)
+  mask_range <- smooth_mask_range()
   reach <- pmax(abs(mask_range[1, ] - smooth$origin),
                 abs(mask_range[2, ] - smooth$origin))
   smooth$half_width <- pmax(smooth_box_factor * (upper - lower) / 2, reach)
-  m <- ceiling(smooth_m_factor * smooth$half_width / (smooth_range / 2))
+  smooth$range <- smooth_range
+  m <- ceiling(smooth_m_factor * smooth$half_width / (smooth$range / 2))
   indices <- as.matrix(expand.grid(x = seq_len(m[1]), y = seq_len(m[2])))
   omega <- hsgp_frequencies(indices, smooth$half_width)
   omega_max <- min(pi * m / (2 * smooth$half_width))
   keep <- omega <= omega_max * (1 + 1e-12)
   smooth$indices <- indices[keep, , drop = FALSE][order(omega[keep]), ,
                                                   drop = FALSE]
-  smooth$class_column_means <- colMeans(hsgp_basis(
-    smooth_cell_coords(class_cells, smooth$crs), smooth))
-  smooth$floor_mean_cells <- sort(class_cells)
+  smooth$class_column_means <- colMeans(prediction_basis(smooth, class_cells))
+  smooth$floor_mean_basis <- prediction_basis(smooth, sort(class_cells))
   smooth$term_classes <- classes %in% smooth_classes
-  smooth$type_classes <- as.integer(classes_index)
   smooth
 }
 
@@ -171,69 +154,59 @@ hsgp_basis <- function(coords, smooth) {
   phi
 }
 
-# The basis that the smooths' weights (smooth_weights()) multiply, at mask
-# cells `cells`, for a model with `options` (options$smooth, set by
-# build_dynamical_model()): the basis functions and a column of ones, as a
-# cells x (basis functions + 1) matrix
-prediction_basis <- function(options, cells) {
-  smooth <- options$smooth
-  if (is.null(smooth$indices)) {
-    stop("the options have no basis; build_dynamical_model() adds it")
-  }
-  cbind(hsgp_basis(smooth_cell_coords(cells, smooth$crs), smooth), 1)
+# The basis functions at mask cells `cells`, for the basis `smooth`
+# (options$smooth), as a cells x basis functions matrix
+prediction_basis <- function(smooth, cells) {
+  hsgp_basis(smooth_cell_coords(cells), smooth)
 }
 
 
 # the smooths and the floor ----------------------------------------------------
 
 # The square root of the squared exponential's spectral density in two
-# dimensions at angular frequencies `omega`, at marginal sd 1 and the fixed
-# range (Rasmussen and Williams 2006, section 4.2, in angular frequency, with
-# k(r) = (2 pi)^-2 int S(w) exp(i w.r) dw):
+# dimensions at angular frequencies `omega`, at marginal sd 1 and range
+# `range` (Rasmussen and Williams 2006, section 4.2, in angular frequency,
+# with k(r) = (2 pi)^-2 int S(w) exp(i w.r) dw):
 #   S(w) = sd^2 2 pi ell^2 exp(-ell^2 w^2 / 2),  ell = rho / 2
-smooth_sqrt_spectral <- function(omega) {
-  ell <- smooth_range / 2
+smooth_sqrt_spectral <- function(omega, range) {
+  ell <- range / 2
   ell * sqrt(2 * pi) * exp(-ell ^ 2 * omega ^ 2 / 4)
 }
 
-# The weights of the selection and floor smooths, from the model's variables
-# `v` (greta arrays, or draws x dim arrays in plain R), as list(selection,
-# floor), for the basis of prediction_basis(): the weights sqrt(S(omega_j))
-# beta_j of the basis functions, then a centring term, minus their product
-# with the smooth's centre, which multiplies the basis's column of ones. The
-# selection smooth is centred over the cells with bioassays of smooth_classes
-# (class_column_means); the floor smooth is not centred, its level cancelling
-# in floor_log_hazard(). A greta array is (basis functions + 1) x 1, and in
-# plain R the weights are draws x (basis functions + 1)
-smooth_weights <- function(v, smooth) {
+# The terms of the latent smooths and the floor, from the variables `v`, as
+# greta arrays or one draw in plain R (vectors as vectors), for the basis
+# `smooth` (options$smooth), and the class of each type, classes_index:
+#   smooth_weights_selection, smooth_weights_floor
+#                       the weights sqrt(S(omega_j)) beta_j of the basis
+#                       functions, so that a smooth at points with basis phi
+#                       is phi %*% weights
+#   selection_offset    the selection smooth's mean over the cells with
+#                       bioassays of smooth_classes, which it is centred on:
+#                       u_s = phi %*% weights - selection_offset, so that it
+#                       does not trade off with the overall strength of
+#                       selection
+#   floor_log_hazard    the log floor hazard of each type where the floor
+#                       smooth is 0 (floor_log_hazard())
+smooth_terms <- function(v, smooth, classes_index) {
   spectral <- smooth_sqrt_spectral(hsgp_frequencies(smooth$indices,
-                                                    smooth$half_width))
-  centres <- list(selection = smooth$class_column_means,
-                  floor = numeric(length(spectral)))
-  out <- list()
-  for (kind in names(centres)) {
-    raw <- v[[paste0("smooth_raw_", kind)]]
-    sd <- v[[paste0("smooth_sd_", kind)]]
-    centre <- centres[[kind]]
-    if (inherits(raw, "greta_array")) {
-      weights <- raw * (sd * spectral)
-      out[[kind]] <- rbind(weights, -(matrix(centre, nrow = 1) %*% weights))
-    } else {
-      n_draws <- length(sd)
-      weights <- matrix(raw, nrow = n_draws) *
-        outer(c(sd), spectral)
-      out[[kind]] <- cbind(weights, -(weights %*% centre))
-    }
-  }
-  out
+                                                    smooth$half_width),
+                                   smooth$range)
+  weights_selection <- v$smooth_raw_selection * (v$smooth_sd_selection *
+                                                    spectral)
+  weights_floor <- v$smooth_raw_floor * (v$smooth_sd_floor * spectral)
+  list(smooth_weights_selection = weights_selection,
+       smooth_weights_floor = weights_floor,
+       selection_offset = t(smooth$class_column_means) %*% weights_selection,
+       floor_log_hazard = floor_log_hazard(v, smooth, classes_index,
+                                           weights_floor))
 }
 
-# The log of each type's floor hazard where the floor smooth is 0, as a greta
-# array (types x 1), or in plain R draws x types, from the variables `v` and
-# the floor smooth's weights (smooth_weights()). Each type has a floor
+# The log of each type's floor hazard where the floor smooth is 0, from the
+# variables `v` (greta arrays, or one draw in plain R) and the floor smooth's
+# weights. Each type has a floor
 #   f(x) = 1 - exp(-lambda(x)),  log lambda(x) = log hazard + u_f(x)
 # with u_f only for the types of smooth_classes, whose mean hazard over the
-# cells floor_mean_cells is lambda_bar, the type's:
+# cells of floor_mean_basis is lambda_bar, the type's:
 #   lambda(x) = lambda_bar exp(u_f(x)) / mean_c exp(u_f(c))
 # so that the floor smooth's level cancels and the prior of the class's mean
 # hazard is on the realised mean over those cells, whatever the smooth does;
@@ -246,29 +219,15 @@ smooth_weights <- function(v, smooth) {
 # class of one type has its floor_flat. Pooled on the log scale instead, one
 # type with a floor near 0 could hold the class's mean low while its other
 # types rose
-floor_log_hazard <- function(v, smooth, floor_weights) {
-  classes <- smooth$type_classes
-  same <- outer(classes, classes, "==")
+floor_log_hazard <- function(v, smooth, classes_index, floor_weights) {
+  same <- outer(classes_index, classes_index, "==")
   averaging <- same / rowSums(same)
-  has_smooth <- as.numeric(smooth$term_classes[classes])
-  basis <- prediction_basis(list(smooth = smooth), smooth$floor_mean_cells)
-  if (inherits(v$floor_flat, "greta_array")) {
-    d <- v$floor_sd_type * v$floor_type_raw
-    log_lambda_bar <- log(v$floor_flat[classes]) + d -
-      log(averaging %*% exp(d))
-    u <- basis_product(basis, floor_weights)
-    log_mean <- log(sum(exp(u))) - log(nrow(basis))
-    return(log_lambda_bar - log_mean * has_smooth)
-  }
-  n_draws <- length(v$floor_sd_type)
-  flat <- matrix(v$floor_flat, n_draws)
-  d <- c(v$floor_sd_type) * matrix(v$floor_type_raw, n_draws)
-  log_lambda_bar <- log(flat[, classes, drop = FALSE]) + d -
-    log(exp(d) %*% t(averaging))
-  u <- floor_weights %*% t(basis)
-  u_max <- apply(u, 1, max)
-  log_mean <- u_max + log(rowMeans(exp(u - u_max)))
-  log_lambda_bar - outer(log_mean, has_smooth)
+  d <- v$floor_sd_type * v$floor_type_raw
+  log_lambda_bar <- log(v$floor_flat[classes_index]) + d -
+    log(averaging %*% exp(d))
+  u <- basis_product(smooth$floor_mean_basis, floor_weights)
+  log_mean <- log(sum(exp(u))) - log(nrow(smooth$floor_mean_basis))
+  log_lambda_bar - log_mean * as.numeric(smooth$term_classes[classes_index])
 }
 
 # The floor 1 - exp(-exp(log_hazard + u)), for greta arrays (one element per
@@ -279,12 +238,15 @@ floor_value <- function(log_hazard, u = NULL) {
   if (inherits(eta, "greta_array")) icloglog(eta) else -expm1(-exp(eta))
 }
 
-# The product basis %*% weights of a data matrix `basis` (n x m) and a greta
-# array `weights` (m x 1), as an n x 1 greta array, by one greta op. greta's
+# The product basis %*% weights of a data matrix `basis` (n x m) and weights
+# (m x 1). For a greta array, as an n x 1 greta array by one greta op: greta's
 # %*% would copy the data matrix to every chain's slice of the batch at every
-# evaluation of the density; the einsum of tf_basis_product() broadcasts it
-# instead
+# evaluation of the density, where the einsum of tf_basis_product()
+# broadcasts it
 basis_product <- function(basis, weights) {
+  if (!inherits(weights, "greta_array")) {
+    return(basis %*% weights)
+  }
   op_env <- new.env(parent = globalenv())
   op_env$tf_basis_product <- tf_basis_product
   greta:::op("basis_product", weights,

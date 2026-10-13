@@ -124,6 +124,8 @@ dynamical_lookups <- function(df) {
 
   list(country_region_index = country_region_index,
        cell_country_lookup = cell_country_lookup,
+       # the mask cell of each cell_id
+       cells = in_id_order("cell", "cell_id"),
        levels = levels)
 }
 
@@ -323,6 +325,9 @@ init_covariate_shift <- function(init_coef, options) {
 #   init_coef           n_init_covs x n_types, their coefficients, or NULL
 #   kappa_type          n_types, the per-year change in logit resistance from
 #                       reversion (<= 0), or NULL for none (reversion_kappa())
+#   smooth_weights_selection, smooth_weights_floor, selection_offset,
+#   floor_log_hazard    the latent smooths and the floor (smooth_terms(),
+#                       R/latent_smooth.R)
 # and beta_class, which the figure scripts read. logit_init_country is the
 # initial state without covariates, i.e. at a cell whose covariates are all 0
 # (the mean).
@@ -373,27 +378,14 @@ dynamical_terms <- function(v, classes_index, types,
   # observation overdispersion per type
   rho_types <- inv_logit(v$logit_rho_type)
 
-  list(beta_type = beta_type,
-       logit_init_country = logit_init_country,
-       rho_types = rho_types,
-       logit_init_relative = logit_init_relative,
-       init_coef = v$init_coef,
-       kappa_type = reversion_kappa(v, classes_index, options),
-       beta_class = beta_class)
-}
-
-# The terms of the latent smooths and the floor (R/latent_smooth.R), from the
-# variables `v` (greta arrays, or draws x dim arrays in plain R):
-#   smooth_weights    the weights of the selection and floor smooths
-#                     (smooth_weights())
-#   floor_log_hazard  the log floor hazard of each type where the floor smooth
-#                     is 0 (floor_log_hazard())
-# Apart from dynamical_terms() so that in plain R they are made for every
-# draw at once.
-smooth_terms <- function(v, options) {
-  weights <- smooth_weights(v, options$smooth)
-  list(smooth_weights = weights,
-       floor_log_hazard = floor_log_hazard(v, options$smooth, weights$floor))
+  c(list(beta_type = beta_type,
+         logit_init_country = logit_init_country,
+         rho_types = rho_types,
+         logit_init_relative = logit_init_relative,
+         init_coef = v$init_coef,
+         kappa_type = reversion_kappa(v, classes_index, options),
+         beta_class = beta_class),
+    smooth_terms(v, options$smooth, classes_index))
 }
 
 # The logit of a + (1 - a) ilogit(l), for a floor `a` (conformable with l, or
@@ -587,7 +579,7 @@ dynamical_inits_file <- "temporary/inits_refit.RDS"
 # The cached initial values the fits start from: the files in IR_CUBE_INITS,
 # comma-separated, or dynamical_inits_file if it is unset or empty. With
 # several, the chains are split between them (dynamical_chain_inits()), e.g.
-# to start chains in both mortality-floor modes (#37; R/floor_mode_inits.R)
+# to start chains from different points
 dynamical_inits_files <- function() {
   files <- Sys.getenv("IR_CUBE_INITS")
   if (files == "") dynamical_inits_file else strsplit(files, ",")[[1]]
@@ -693,13 +685,11 @@ build_dynamical_model <- function(train_df,
   # the full data, whatever the fold), over which the selection smooth is
   # centred and the floor's mean hazard is taken (smooth_basis()), recorded in
   # the options for the plain-R predictions
-  cells <- df$cell[match(seq_len(n_unique_cells), df$cell_id)]
   smooth_class_ids <- which(lookups$levels$classes %in% smooth_classes)
   options$smooth <- smooth_basis(
-    cells,
+    lookups$cells,
     class_cells = unique(df$cell[df$class_id %in% smooth_class_ids]),
-    classes = lookups$levels$classes,
-    classes_index = classes_index)
+    classes = lookups$levels$classes)
 
   variables <- dynamical_variables(n_covs = n_covs,
                                    n_classes = n_classes,
@@ -715,23 +705,23 @@ build_dynamical_model <- function(train_df,
                            classes_index = classes_index,
                            types = types,
                            options = options)
-  terms <- c(terms, smooth_terms(variables, options))
   # each latent smooth at every cell_id, n_unique_cells x 1, and whether each
   # type has them (1 or 0)
-  basis_cells <- prediction_basis(options, cells)
-  smooth_cells <- lapply(terms$smooth_weights, function(weights) {
-    basis_product(basis_cells, weights)
-  })
+  basis_cells <- prediction_basis(options$smooth, lookups$cells)
+  selection_cells <- basis_product(basis_cells,
+                                   terms$smooth_weights_selection) -
+    terms$selection_offset
+  floor_cells <- basis_product(basis_cells, terms$smooth_weights_floor)
   type_smooth <- as.numeric(options$smooth$term_classes[classes_index])
   # the log multiplier of selection, u_s(x), at cell-type pairs with cell_ids
   # `cell` and type_ids `type` (0 for the types without it)
   pair_selection <- function(cell, type) {
-    smooth_cells$selection[cell] * type_smooth[type]
+    selection_cells[cell] * type_smooth[type]
   }
   # the floor at rows with cell_ids `cell` and type_ids `type`
   row_floor <- function(cell, type) {
     floor_value(terms$floor_log_hazard[type],
-                smooth_cells$floor[cell] * type_smooth[type])
+                floor_cells[cell] * type_smooth[type])
   }
 
   # predicted mortality (the fraction susceptible) at the (cell_id, type_id,
@@ -756,15 +746,13 @@ build_dynamical_model <- function(train_df,
   all_states <- function() {
     pairs <- expand.grid(cell_id = seq_len(n_unique_cells),
                          type_id = seq_len(n_types))
-    n_pairs <- nrow(pairs)
     states <- closed_form_states(terms, x_cell_years, pairs$cell_id,
                                  pairs$type_id, lookups$cell_country_lookup,
                                  n_times, types, x_init,
                                  log_multiplier = pair_selection(
                                    pairs$cell_id, pairs$type_id))
-    dim(states) <- c(n_pairs * n_times, 1)
-    floor <- row_floor(pairs$cell_id, pairs$type_id)
-    p <- floored_mortality(states, floor[rep(seq_len(n_pairs), n_times)])
+    floor <- row_floor(pairs$cell_id, pairs$type_id) %*% t(rep(1, n_times))
+    p <- floored_mortality(states, floor)
     dim(p) <- c(n_unique_cells, n_types, n_times)
     p
   }

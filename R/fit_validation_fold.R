@@ -13,8 +13,6 @@
 # Because the greta arrays are local to this function they go out of scope when
 # it returns, so the model does not need to be purged by hand between folds.
 
-source("R/chain_floor_modes.R")
-
 fit_fold <- function(train_df,
                      test_df,
                      before_df = NULL,
@@ -57,8 +55,6 @@ fit_fold <- function(train_df,
 
   sampled <- settings$n_samples
   ess <- coda::effectiveSize(draws)
-  # the mortality-floor mode and log posterior of each chain (#37)
-  chain_modes <- chain_floor_modes_safely(built$model, draws)
   report("sampled %d per chain | raw parameter ESS min %.0f median %.0f",
          sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE))
 
@@ -158,7 +154,6 @@ fit_fold <- function(train_df,
        p_draws_before = p_draws_before,
        before_df = before_df,
        convergence = convergence,
-       chain_modes = chain_modes,
        ess = ess,
        ess_p = ess_p,
        ess_rho = ess_rho,

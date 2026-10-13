@@ -1,21 +1,16 @@
-# Check a fitted fold or full fit for chains in different posterior modes, and
-# for stuck chains, and say which chains to drop (R/drop_stuck_chains.R).
+# Check a fitted fold or full fit for stuck chains, and say which chains to
+# drop (R/drop_stuck_chains.R).
 #
-#   Rscript R/chain_mode_check.R <name> <file> <output dir> [threshold]
+#   Rscript R/chain_mode_check.R <name> <file> <output dir>
 #
 # <file> is a saved fold (outputs/cv_draws/dynamical__*.rds) or a full fit
-# (temporary/fitted_model.RData). The constrained refit has two modes in the
-# mortality floor, near 0.25-0.32 and near 0.001-0.002; where chains found
-# both, the low-floor chains had a log posterior about 59-60 higher
-# (doc/cv_run_plan.md, "Constrained refit"). So when the chains' mean floors
-# differ by more than `threshold` (default 0.05), the chains whose mean floor
-# is more than `threshold` above the lowest are marked to drop. Stuck chains
-# (under half their draws distinct, as stuck_chains()) are marked too.
+# (temporary/fitted_model.RData). Stuck chains (under half their draws
+# distinct, as stuck_chains()) are marked to drop.
 #
 # Writes to <output dir>:
-#   <name>.csv         one row: chains, per-chain mean floor, chains to drop,
-#                      and rank Rhat, bulk and tail ESS (posterior) over every
-#                      parameter, with all chains and with the kept chains
+#   <name>.csv         one row: chains, chains to drop, and rank Rhat, bulk
+#                      and tail ESS (posterior) over every parameter, with all
+#                      chains and with the kept chains
 #   <name>_spread.csv  the parameters whose per-chain means disagree most,
 #                      (max - min of the chain means) / mean within-chain sd
 #   <name>.drop        the chains to drop, comma-separated (empty if none),
@@ -32,7 +27,6 @@ arguments <- commandArgs(trailingOnly = TRUE)
 name <- arguments[1]
 file <- arguments[2]
 output_dir <- arguments[3]
-threshold <- if (length(arguments) > 3) as.numeric(arguments[4]) else 0.05
 dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
 
 already_dropped <- integer(0)
@@ -60,18 +54,10 @@ invisible(gc())
 n_chains <- length(chains)
 parameters <- colnames(chains[[1]])
 
-floor_column <- grep("^mortality_floor", parameters, value = TRUE)[1]
-floor_means <- vapply(chains, function(x) mean(x[, floor_column]), numeric(1))
-floor_split <- diff(range(floor_means)) > threshold
-high_floor <- if (floor_split) {
-  which(floor_means - min(floor_means) > threshold)
-} else {
-  integer(0)
-}
 stuck <- which(vapply(chains, function(x) {
   nrow(unique(x)) / nrow(x) < 0.5
 }, logical(1)))
-drop <- sort(unique(c(high_floor, stuck)))
+drop <- stuck
 keep <- setdiff(seq_len(n_chains), drop)
 
 # per-chain means against the within-chain sd
@@ -119,13 +105,9 @@ kept_chains <- if (length(drop) > 0) diagnostics(keep) else all_chains
 row <- data.frame(
   fit = name, file = file, chains = n_chains,
   draws_per_chain = nrow(chains[[1]]), parameters = length(parameters),
-  floor_per_chain = paste(sprintf("%.4f", floor_means), collapse = ", "),
-  floor_split = floor_split,
-  high_floor_chains = paste(high_floor, collapse = ","),
   stuck_chains = paste(stuck, collapse = ","),
   drop = paste(drop, collapse = ","),
   already_dropped = paste(already_dropped, collapse = ","),
-  floor_kept = mean(floor_means[keep]),
   rhat_all = as.numeric(all_chains[["rhat"]]),
   worst_all = all_chains[["worst"]],
   rhat_kept = as.numeric(kept_chains[["rhat"]]),

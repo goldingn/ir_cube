@@ -29,8 +29,7 @@ Running order of scripts:
 9.  fit_model_glm.R
 10. fit_model.R
 11. chain_mode_check.R, then drop_stuck_chains.R with DROP_CHAINS from
-    its `.drop` file: leaves out chains in the minor mortality-floor mode
-    (#37)
+    its `.drop` file: leaves out stuck chains
 12. illustrate_validation.R
 13. mtm_ir_explore.R
 14. ploidy_demo.R

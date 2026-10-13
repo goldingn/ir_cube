@@ -14,7 +14,8 @@
 #     maps);
 #   - at every 4th mask cell (SENS_MAP_THIN in the environment) with a
 #     country, in 2025, mean and SD over n_all draws (default 100);
-# and the posterior mean and SD of the key parameters: the mortality floor,
+# and the posterior mean and SD of the key parameters: the mean floor hazard
+# per class and the sd of the types' about it, the latent smooths' sds,
 # reversion per class, and the initial-state and selection coefficients
 # (init_coef, beta_overall) averaged over types, per covariate. Draws are
 # paired_draw_index()'s, so chains dropped by R/drop_stuck_chains.R stay out.
@@ -89,8 +90,13 @@ if (identical(mode, "predict")) {
   }
   columns <- colnames(draws_matrix)
   pick <- function(pattern) columns[grepl(pattern, columns)]
-  if (length(pick("^mortality_floor"))) {
-    add_parameter("mortality_floor", draws_matrix[, pick("^mortality_floor")[1]])
+  floor_flat <- pick("^floor_flat\\[")
+  for (j in seq_along(floor_flat)) {
+    add_parameter(sprintf("floor_flat[%s]", classes[j]),
+                  draws_matrix[, floor_flat[j]])
+  }
+  for (name in c("floor_sd_type", "smooth_sd_selection", "smooth_sd_floor")) {
+    add_parameter(name, draws_matrix[, name])
   }
   reversion <- pick("^reversion_rate\\[")
   for (j in seq_along(reversion)) {
@@ -175,6 +181,9 @@ if (identical(mode, "predict")) {
       ok <- chunk[!is.na(country_index[rows[chunk]])]
       if (length(ok) == 0) next
       x <- map_x(covariates, rows[ok], max(keep) - baseline_year + 1)
+      smooths <- cell_smooths(
+        d$parameters,
+        prediction_basis(d$parameters$options$smooth, cells[rows[ok]]))
       for (k in seq_along(types)) {
         dyn <- dynamical_logit_cells(
           d$parameters, k,
@@ -182,7 +191,7 @@ if (identical(mode, "predict")) {
                  d$parameters$n_draws),
           x, keep - baseline_year + 1,
           x_init = covariates$init[rows[ok], , drop = FALSE],
-          basis = prediction_basis(d$parameters$options, cells[rows[ok]]))
+          smooths = smooths)
         for (j in seq_along(keep)) {
           p <- plogis(dyn[[j]])
           mean_out[ok, k, j] <- colMeans(p)
