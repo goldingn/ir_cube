@@ -145,9 +145,8 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #                        none, see reversion_kappa())
 #   smooth_weights_selection, smooth_weights_floor
 #                        draws x basis functions, the weights of the latent
-#                        smooths' basis functions, and
-#   selection_offset     draws, the selection smooth's centring
-#                        (smooth_terms(), R/latent_smooth.R; cell_smooths())
+#                        smooths' basis functions (smooth_terms(),
+#                        R/latent_smooth.R; cell_smooths())
 #   floor_log_hazard     draws x n_types, the log floor hazard of each type
 #                        where the floor smooth is 0 (floor_log_hazard())
 #   init_min             n_types, init_frac_min
@@ -179,7 +178,7 @@ dynamical_parameter_draws <- function(fold,
     v, classes_index, types,
     terms = c("beta_type", "logit_init_relative", "rho_types",
               if (reversion) "kappa_type", "smooth_weights_selection",
-              "smooth_weights_floor", "selection_offset", "floor_log_hazard"),
+              "smooth_weights_floor", "floor_log_hazard"),
     options = options)
 
   list(effect_type = exp(terms$beta_type),
@@ -194,7 +193,6 @@ dynamical_parameter_draws <- function(fold,
        smooth_weights_selection = matrix(terms$smooth_weights_selection,
                                          n_draws),
        smooth_weights_floor = matrix(terms$smooth_weights_floor, n_draws),
-       selection_offset = c(terms$selection_offset),
        floor_log_hazard = matrix(terms$floor_log_hazard, n_draws),
        init_min = init_frac_constants(types)$min,
        x_cells_init = select_init_covariates(fold$x_cells_init, options),
@@ -215,8 +213,7 @@ subset_draws <- function(parameters, draws) {
   }
   for (name in c("effect_type", "logit_init_relative", "init_coef",
                  "rho_types", "kappa_type", "smooth_weights_selection",
-                 "smooth_weights_floor", "selection_offset",
-                 "floor_log_hazard")) {
+                 "smooth_weights_floor", "floor_log_hazard")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
   parameters$variables <- lapply(parameters$variables, rows)
@@ -242,11 +239,9 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
 
 # The latent smooths at cells with basis `basis` (prediction_basis()), for
 # the draws of `parameters`, as list(selection, floor), each draws x cells:
-# u_s, centred (smooth_terms()), and u_f. For dynamical_logit_cells(), once
-# for every type at those cells
+# u_s and u_f. For dynamical_logit_cells(), once for every type at those cells
 cell_smooths <- function(parameters, basis) {
-  list(selection = parameters$smooth_weights_selection %*% t(basis) -
-         parameters$selection_offset,
+  list(selection = parameters$smooth_weights_selection %*% t(basis),
        floor = parameters$smooth_weights_floor %*% t(basis))
 }
 
@@ -271,17 +266,12 @@ dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
   logit_init <- cell_logit_init(parameters, k, logit_init, x_init)
 
   # the multiplier of the cumulative log fitness, exp(u_s(x)), and the floor,
-  # draws x cells, with the latent smooths for the types of smooth_classes;
-  # without them, a multiplier of 1 and the flat floor, one per draw
-  has_smooth <- parameters$options$smooth$term_classes[
-    parameters$classes_index[k]]
-  multiplier <- 1
-  floor_smooth <- NULL
-  if (has_smooth) {
-    multiplier <- exp(smooths$selection)
-    floor_smooth <- smooths$floor
-  }
-  floor <- floor_value(parameters$floor_log_hazard[, k], floor_smooth)
+  # draws x cells, the latent smooths at 0 for the types without them
+  has_smooth <- as.numeric(parameters$options$smooth$term_classes[
+    parameters$classes_index[k]])
+  multiplier <- exp(smooths$selection * has_smooth)
+  floor <- floor_value(parameters$floor_log_hazard[, k] +
+                         smooths$floor * has_smooth)
 
   effect <- matrix(parameters$effect_type[, , k], nrow = n_draws)
   kappa <- parameters$kappa_type[, k]

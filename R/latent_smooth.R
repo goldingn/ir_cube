@@ -86,9 +86,11 @@ smooth_cell_coords <- function(cells) {
 #                       lower of the two dimensions' highest are kept (134),
 #                       as the spectral density is isotropic
 #   class_column_means  the basis functions' means over class_cells, which
-#                       centre the selection smooth: it has mean 0 there, so it
+#                       hsgp_basis() then subtracts, centring both smooths
+#                       there: the selection smooth has mean 0 there, so it
 #                       does not trade off with the overall strength of
-#                       selection
+#                       selection, and the floor smooth's level cancels in
+#                       floor_log_hazard() anyway
 #   floor_mean_basis    the basis at class_cells, sorted, over which the floor
 #                       smooth's mean hazard is taken (floor_log_hazard())
 #   term_classes        whether each class has the smooths
@@ -122,7 +124,9 @@ hsgp_frequencies <- function(indices, half_width) {
 
 # The basis functions at projected coordinates `coords` (points x 2, in 1,000
 # km), as a points x basis functions matrix: phi_j(x) = prod_d sqrt(1 / L_d)
-# sin(pi j_d (x_d + L_d) / (2 L_d)), x relative to the box's origin
+# sin(pi j_d (x_d + L_d) / (2 L_d)), x relative to the box's origin, less
+# their means over the cells with bioassays of smooth_classes once
+# smooth_basis() has them (class_column_means)
 hsgp_basis <- function(coords, smooth) {
   x <- sweep(matrix(coords, ncol = 2), 2, smooth$origin)
   L <- smooth$half_width
@@ -134,6 +138,9 @@ hsgp_basis <- function(coords, smooth) {
     phi <- phi * sin(outer(x[, d] + L[d],
                            pi * smooth$indices[, d] / (2 * L[d]))) /
       sqrt(L[d])
+  }
+  if (!is.null(smooth$class_column_means)) {
+    phi <- sweep(phi, 2, smooth$class_column_means)
   }
   phi
 }
@@ -163,12 +170,7 @@ smooth_sqrt_spectral <- function(omega, range) {
 #   smooth_weights_selection, smooth_weights_floor
 #                       the weights sqrt(S(omega_j)) beta_j of the basis
 #                       functions, so that a smooth at points with basis phi
-#                       is phi %*% weights
-#   selection_offset    the selection smooth's mean over the cells with
-#                       bioassays of smooth_classes, which it is centred on:
-#                       u_s = phi %*% weights - selection_offset, so that it
-#                       does not trade off with the overall strength of
-#                       selection
+#                       (hsgp_basis()) is phi %*% weights
 #   floor_log_hazard    the log floor hazard of each type where the floor
 #                       smooth is 0 (floor_log_hazard())
 smooth_terms <- function(v, smooth, classes_index) {
@@ -180,7 +182,6 @@ smooth_terms <- function(v, smooth, classes_index) {
   weights_floor <- v$smooth_raw_floor * (v$smooth_sd_floor * spectral)
   list(smooth_weights_selection = weights_selection,
        smooth_weights_floor = weights_floor,
-       selection_offset = t(smooth$class_column_means) %*% weights_selection,
        floor_log_hazard = floor_log_hazard(v, smooth, classes_index,
                                            weights_floor))
 }
@@ -214,11 +215,9 @@ floor_log_hazard <- function(v, smooth, classes_index, floor_weights) {
   log_lambda_bar - log_mean * as.numeric(smooth$term_classes[classes_index])
 }
 
-# The floor 1 - exp(-exp(log_hazard + u)), for greta arrays (one element per
-# row) or plain R (log_hazard one per draw, u draws x cells, giving draws x
-# cells; or one per draw without u)
-floor_value <- function(log_hazard, u = NULL) {
-  eta <- if (is.null(u)) log_hazard else log_hazard + u
+# The floor 1 - exp(-exp(eta)) at the log hazard eta, for greta arrays or
+# plain R
+floor_value <- function(eta) {
   if (inherits(eta, "greta_array")) icloglog(eta) else -expm1(-exp(eta))
 }
 

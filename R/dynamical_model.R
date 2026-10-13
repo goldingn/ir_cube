@@ -325,7 +325,7 @@ init_covariate_shift <- function(init_coef, options) {
 #   init_coef           n_init_covs x n_types, their coefficients, or NULL
 #   kappa_type          n_types, the per-year change in logit resistance from
 #                       reversion (<= 0), or NULL for none (reversion_kappa())
-#   smooth_weights_selection, smooth_weights_floor, selection_offset,
+#   smooth_weights_selection, smooth_weights_floor,
 #   floor_log_hazard    the latent smooths and the floor (smooth_terms(),
 #                       R/latent_smooth.R)
 # and beta_class, which the figure scripts read. logit_init_country is the
@@ -707,8 +707,7 @@ build_dynamical_model <- function(train_df,
   # type has them (1 or 0)
   basis_cells <- prediction_basis(options$smooth, lookups$cells)
   selection_cells <- basis_product(basis_cells,
-                                   terms$smooth_weights_selection) -
-    terms$selection_offset
+                                   terms$smooth_weights_selection)
   floor_cells <- basis_product(basis_cells, terms$smooth_weights_floor)
   type_smooth <- as.numeric(options$smooth$term_classes[classes_index])
   # the log multiplier of selection, u_s(x), at cell-type pairs with cell_ids
@@ -718,8 +717,8 @@ build_dynamical_model <- function(train_df,
   }
   # the floor at rows with cell_ids `cell` and type_ids `type`
   row_floor <- function(cell, type) {
-    floor_value(terms$floor_log_hazard[type],
-                floor_cells[cell] * type_smooth[type])
+    floor_value(terms$floor_log_hazard[type] +
+                  floor_cells[cell] * type_smooth[type])
   }
 
   # predicted mortality (the fraction susceptible) at the (cell_id, type_id,
