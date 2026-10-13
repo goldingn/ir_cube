@@ -154,7 +154,9 @@ m <- dynamical_logit_cells(dynamical$parameters, k,
                            matrix(dynamical$logit_init[, pixel_country, k],
                                   n_draws),
                            map_x(covariates, seq_len(n_pix), n_years_all),
-                           seq_len(n_years_all), x_init = covariates$init)
+                           seq_len(n_years_all), x_init = covariates$init,
+                           basis = prediction_basis(dynamical$parameters$options,
+                                                    pixels$cell))
 m <- aperm(simplify2array(m), c(3, 2, 1))
 
 # check: at the sampled pixels' data years, the same draws as at the assays

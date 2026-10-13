@@ -189,7 +189,9 @@ for (k in seq_along(types)) {
                                matrix(logit_init_all[, cell_country_index, k],
                                       1),
                                x_years, map_years - baseline_year + 1,
-                               x_init = covariates$init)
+                               x_init = covariates$init,
+                               basis = prediction_basis(model_options,
+                                                        map_rows$cell))
   for (y in map_years) {
     rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
                    year_id = y - baseline_year + 1)
