@@ -108,13 +108,23 @@ countries' initial states centred and starts from `temporary/inits_refit.RDS`
 
 **Centred selection hierarchy (#48).** Since #48 the model also samples the
 class and type levels of the net use, IRS and population selection effects,
-and the type level of the overdispersion, centred
-(`centred_options_data_informed()`), which the data pin down; the crop
-effects stay non-centred. The steps were 60 to 120 before. Full fits of the
-default model (d_half 270, no floor) on the full data, the same data and
-initial values, 4 chains, 2,000 + 3,000, 8 vCPU RunPod pods (cpu5c, except
-cpu3c at 62 ms per gradient for 15-30); ESS per 1,000 gradients counts the
-sampling iterations at the mean number of steps:
+and the type level of the overdispersion, centred (`n_centred_rows` in
+`R/dynamical_model.R`), which the data pin down; the crop effects stay
+non-centred. In five fits of October 2026 the posterior sd over the prior sd
+was 0.04-0.65 for these columns' type-level effects on the pyrethroids,
+mostly 0.1-1.5 for the other types (up to 3.9 for net use on the
+organophosphates in one fit), 0.2-1.2 for their class-level effects, and
+0.06-0.33 for the types' overdispersion (0.5-1.2 for the classes'); the crop
+columns' type-level effects were mostly 0.8-2.8, prior-dominated, so centred
+they would be funnels. On those fits, the local curvature of the posterior
+predicted a step size about 4 times larger with this centring. The centred
+model's log density equals the non-centred one's less the log Jacobian of
+the change of variables (to within 6e-11), its predictions are identical,
+and its free state round-trips exactly. The steps were 60 to 120 before.
+Full fits of the default model (d_half 270, no floor) on the full data, the
+same data and initial values, 4 chains, 2,000 + 3,000, 8 vCPU RunPod pods
+(cpu5c, except cpu3c at 62 ms per gradient for 15-30); ESS per 1,000
+gradients counts the sampling iterations at the mean number of steps:
 
 | hierarchy, steps | hours | worst rank Rhat | bulk ESS min / median | per 1,000 gradients min / median |
 |---|---|---|---|---|
@@ -123,25 +133,26 @@ sampling iterations at the mean number of steps:
 | **centred, 30-60** (these settings) | 3.00 | 1.00 | 1,208 / 7,217 | 8.95 / 53.5 |
 
 The centred fits' posterior means of the 683 quantities all three share
-(`R/centred_pilot.R`) differ from the non-centred fit's by a median 0.7
+differ from the non-centred fit's by a median 0.7
 Monte Carlo standard errors (at most 3.8) and their sds by a median ratio
 of 1.00. The worst-mixing quantity in all three is `sigma_class` for net use:
 it is set by the type deviations the data barely inform (the
 organophosphates, and bendiocarb and DDT alone in their classes), which
 centred sit in a mild funnel with it.
 
-At 30-60 steps the worst quantity had 0.40 effective samples per draw, so
-1,500 samples (3,000 before #48) should give a minimum bulk ESS of about 600.
+At 30-60 steps the worst quantity had 0.40 effective samples per iteration
+of the four chains (0.10 per draw), so 1,500 samples (3,000 before #48)
+should give a minimum bulk ESS of about 600.
 The warmup stays at 2,000: at 1,000 (+ 1,500, the same pod type), one of the
 four chains ended warmup in that funnel's neck (`sigma_class` for net use at
 0.13, against a posterior median of 0.27) and rejected every proposal while
 sampling, at the step size the other chains adapted (rank Rhat up to 4.6).
 
-At four threads the 2014 forecasting fold took 3.7 h at 3.0 s per iteration
-(2,000 + 2,500, machine loaded to about 8 of 16 cores), so about 4.2 h at
-3,000 samples. The interpolation fold ran 1.5 times slower per iteration than
-the 2014 fold at 15-30 steps, so it should take about 6 h, and the full fit,
-now at the same settings, about as long. It was roughly 62 h per fold with
+Before #48, at 60-120 steps and four threads, the 2014 forecasting fold took
+3.7 h at 3.0 s per iteration (2,000 + 2,500, machine loaded to about 8 of 16
+cores), so about 4.2 h at 3,000 samples. The interpolation fold ran 1.5 times
+slower per iteration than the 2014 fold at 15-30 steps, so it should have
+taken about 6 h, and the full fit, at the same settings, about as long. It was roughly 62 h per fold with
 the greta.dynamics loop.
 
 **Result.** On the 2014 forecasting fold, for the default model, against
@@ -152,9 +163,10 @@ only fold that baseline was run on):
 |---|---|---|---|---|---|
 | `hmc()`, non-centred, 15-30 steps | interpolation | 20,000 | 1.156 | 575 / 83 | 18 / 232 |
 | windowed, centred, 15-30 steps | 2014 | 20,000 | 1.049 | 207 / 0 | 104 / 600 |
-| **these settings** (2,500 samples) | 2014 | 10,000 | 1.013 | 1 / 0 | 361 / 2,723 |
+| windowed, centred, 60-120 steps (2,500 samples) | 2014 | 10,000 | 1.013 | 1 / 0 | 361 / 2,723 |
 
-At 3,000 samples the minimum should reach about 430. These settings were not
+At 3,000 samples, the setting before #48, the minimum should have reached
+about 430. These settings were not
 run on the interpolation fold, which mixed worse than the 2014 fold at every
 setting tried (at 15-30 steps, minimum ESS 33 against 104). The worst-mixing
 parameters are the countries' initial levels for type 7 (`init_country_level[,

@@ -270,10 +270,11 @@ load("temporary/fitted_model.RData", envir = fitted)
 stopifnot(identical(fitted$types, types),
           identical(fitted$classes_index, classes_index),
           identical(colnames(fitted$x_cell_years), colnames(x_cell_years)))
-# the selection effects of 500 draws, from the fit's variables in whichever
-# parameterisation it sampled (dynamical_parameter_draws())
+# the selection effects of 500 draws, from the fit's variables
+# (dynamical_parameter_draws())
 source("R/dynamical_predictions.R")
-fold <- list(draws = fitted$draws, options = fitted$model_options)
+fold <- list(draws = fitted$draws, options = fitted$model_options,
+             x_cells_init = fitted$x_cells_init)
 n_total <- nrow(as.matrix(fitted$draws))
 parameters <- dynamical_parameter_draws(
   fold, classes_index, types,

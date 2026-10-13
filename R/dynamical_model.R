@@ -33,67 +33,15 @@ source("R/windowed_hmc.R")
 #                     against it
 #   reversion         reversion to susceptibility (#24): "estimated" for one
 #                     rate per class, or FALSE for none
-#   centred           which hierarchy levels are sampled centred
-#                     (centred_options()); by default the data-informed levels
-#                     (centred_options_data_informed(); #48). The same model
-#                     either way: it changes only the coordinates HMC moves in
 dynamical_model_options <- function(mortality_floor = FALSE,
                                     init_covariates =
                                       init_covariate_names(selection_columns),
                                     selection_columns = selection_design(),
-                                    reversion = "estimated",
-                                    centred = centred_options_data_informed()) {
+                                    reversion = "estimated") {
   list(mortality_floor = mortality_floor,
        init_covariates = init_covariates,
        selection_columns = selection_columns,
-       reversion = reversion,
-       centred = centred)
-}
-
-# Which levels of the selection and overdispersion hierarchies are sampled
-# centred.
-#
-# A hierarchical effect b ~ N(m, s) can be sampled non-centred, as a standard
-# normal deviation z with b = m + s z (as greta variable z), or centred, as b
-# itself (variable b with prior N(m, s)). The model and its posterior are the
-# same either way; only the coordinates HMC moves in differ. Where the data
-# say little about b (posterior sd near the prior sd s), the centred form is a
-# funnel: as s shrinks, b is squeezed towards m, and no one step size suits
-# both ends. Where the data pin b down (posterior sd much less than s), the
-# non-centred form is the problem: with b fixed by the data, z has to move
-# as (b - m) / s whenever s or m moves, a curved ridge in (s, z) that HMC can
-# only follow with small steps; centred, b sits still and s moves freely.
-#   selection  names of selection design columns (selection_column_names())
-#              whose class and type levels are both centred:
-#                beta_class[c, ] ~ N(beta_overall[c], sigma_overall[c])
-#                beta_type[c, ] ~ N(beta_class[c, class of type],
-#                                   sigma_class[c])
-#              The other columns stay non-centred at both levels. At least
-#              one column must stay non-centred.
-#   rho_type   TRUE to centre the type level of the overdispersion,
-#              logit rho_type ~ N(logit rho_class, rho_sigma_type); the class
-#              level stays non-centred
-centred_options <- function(selection = NULL, rho_type = FALSE) {
-  list(selection = selection,
-       rho_type = rho_type)
-}
-
-# The centring of the data-informed levels (#48): both levels of the net use,
-# IRS and population selection effects, and the overdispersion of the types. In
-# five fits of October 2026 (posterior sd over the prior sd at that level):
-#   - the type-level effects of these columns were 0.04-0.65 for the
-#     pyrethroids and mostly 0.1-1.5 for the other types (up to 3.9 for net
-#     use on the organophosphates in one fit), and their class-level effects
-#     0.2-1.2;
-#   - the types' overdispersion was 0.06-0.33 (the classes' 0.5-1.2);
-#   - the crop columns' type-level effects were mostly 0.8-2.8, i.e.
-#     prior-dominated, so they stay non-centred: centred, they would be
-#     funnels.
-# On those fits, the local curvature of the posterior predicted a step size
-# about 4 times larger with this centring, with no new funnel in the tails.
-centred_options_data_informed <- function(
-    selection = c("nets", "irs", "pop_enc:g_dom")) {
-  centred_options(selection = selection, rho_type = TRUE)
+       reversion = reversion)
 }
 
 check_dynamical_model_options <- function(options) {
@@ -113,38 +61,21 @@ check_dynamical_model_options <- function(options) {
                init_covariate_names(options$selection_columns))))
   # errors on a design selection_design() does not build
   complete_selection_design(options$selection_columns)
-  centred <- options$centred
-  columns <- selection_column_names(options$selection_columns)
-  stopifnot(
-    setequal(names(centred), names(centred_options())),
-    is.null(centred$selection) ||
-      (is.character(centred$selection) && !anyDuplicated(centred$selection)),
-    isFALSE(centred$rho_type) || isTRUE(centred$rho_type))
-  if (!all(centred$selection %in% columns)) {
-    stop("centred selection columns not in the design: ",
-         toString(setdiff(centred$selection, columns)))
-  }
-  if (all(columns %in% centred$selection)) {
-    stop("at least one selection column must stay non-centred")
-  }
   invisible(options)
-}
-
-# Whether each selection effect (row of beta_class and beta_type, column of
-# the selection design) is centred, as a logical vector in design order. All
-# FALSE for options saved before centring was an option.
-centred_selection_rows <- function(options) {
-  columns <- selection_column_names(options$selection_columns)
-  columns %in% options$centred$selection
-}
-
-# Whether the type level of the overdispersion is centred
-centred_rho_type <- function(options) {
-  isTRUE(options$centred$rho_type)
 }
 
 
 # fixed quantities ---------------------------------------------------------
+
+# The number of selection effects (rows of beta_class and beta_type, the first
+# columns of the selection design: net use, IRS and population;
+# selection_column_names()) sampled centred at both levels (#48). A
+# hierarchical effect b ~ N(m, s) can be sampled non-centred, as z with
+# b = m + s z, or centred, as b itself; the posterior is the same. Where the
+# data pin b down, the non-centred form is a curved ridge in (s, z) that HMC
+# follows only with small steps; where they say little, the centred form is a
+# funnel. The data pin these effects down; the crop effects stay non-centred
+n_centred_rows <- 3
 
 # Prior and minimum values for the initial fraction susceptible, per type. The
 # initial state is modelled on the logit of its relative position between
@@ -199,16 +130,12 @@ dynamical_lookups <- function(df) {
 # list of greta arrays. Every element is passed to model(), so every one has
 # named columns in the draws.
 dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
-                                n_countries, types,
+                                n_countries, types, classes_index,
                                 options = dynamical_model_options(),
-                                country_region_index = NULL,
-                                classes_index = NULL) {
+                                country_region_index = NULL) {
 
   init <- init_frac_constants(types)
-  # whether each selection effect (row) is centred (centred_options())
-  centred <- centred_selection_rows(options)
-  stopifnot(length(centred) == n_covs)
-  n_noncentred <- sum(!centred)
+  noncentred <- seq(n_centred_rows + 1, n_covs)
 
   variables <- list(
     # initial fractions susceptible: a prior logit-mean per type, and IID
@@ -216,63 +143,51 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     init_region_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
     init_country_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
     init_region_raw = normal(0, 1, dim = c(n_regions, n_types)),
-    # hierarchical regression coefficients: overall -> class -> type, with
-    # the standard normal deviations of the non-centred rows at each level
-    # (all rows unless some are centred, below)
+    # hierarchical regression coefficients: overall -> class -> type, with the
+    # standard normal deviations of the non-centred rows at each level
     beta_overall = normal(0, 1, dim = n_covs),
-    beta_class_raw = normal(0, 1, dim = c(n_noncentred, n_classes)),
-    beta_type_raw = normal(0, 1, dim = c(n_noncentred, n_types)),
+    beta_class_raw = normal(0, 1, dim = c(length(noncentred), n_classes)),
+    beta_type_raw = normal(0, 1, dim = c(length(noncentred), n_types)),
     sigma_overall = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
     sigma_class = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
     logit_init_mean = normal(qlogis(init$relative_prior), 1, dim = n_types)
   )
 
-  # The centred rows of the selection effects (centred_options()): the class
-  # and type effects themselves, beta_class_centred (n_centred x n_classes)
-  # and beta_type_centred (n_centred x n_types), with the priors the
-  # non-centred rows imply,
+  # The centred rows of the selection effects (n_centred_rows): the class and
+  # type effects themselves, with the priors the non-centred rows imply,
   #   beta_class[c, ] ~ N(beta_overall[c], sigma_overall[c])
   #   beta_type[c, ] ~ N(beta_class[c, class of type], sigma_class[c])
-  # so the model is the same. The mean and sd of each row are repeated
-  # across its columns.
-  if (any(centred)) {
-    rows <- which(centred)
-    n_centred <- length(rows)
-    class_mean <- sweep(zeros(n_centred, n_classes), 1,
-                        variables$beta_overall[rows], FUN = "+")
-    class_sd <- sweep(zeros(n_centred, n_classes), 1,
-                      variables$sigma_overall[rows], FUN = "+")
-    variables$beta_class_centred <- normal(class_mean, class_sd)
-    type_mean <- variables$beta_class_centred[, classes_index]
-    type_sd <- sweep(zeros(n_centred, n_types), 1,
-                     variables$sigma_class[rows], FUN = "+")
-    variables$beta_type_centred <- normal(type_mean, type_sd)
-  }
+  centred <- seq_len(n_centred_rows)
+  class_mean <- sweep(zeros(n_centred_rows, n_classes), 1,
+                      variables$beta_overall[centred], FUN = "+")
+  class_sd <- sweep(zeros(n_centred_rows, n_classes), 1,
+                    variables$sigma_overall[centred], FUN = "+")
+  variables$beta_class_centred <- normal(class_mean, class_sd)
+  type_sd <- sweep(zeros(n_centred_rows, n_types), 1,
+                   variables$sigma_class[centred], FUN = "+")
+  variables$beta_type_centred <- normal(
+    variables$beta_class_centred[, classes_index], type_sd)
 
-  # Observation overdispersion per type, nested in class, on the logit scale
-  # and non-centred (the type level can be centred, below), as the
-  # replicate-assay estimate in R/fig_illustrate_bioassay_variability.R (#20):
-  #   logit rho_type = rho_mu + rho_sigma_class z_class + rho_sigma_type z_type
-  # with the same priors. The prior centre is that of the replicate-assay rho
-  # (0.15); rho here also absorbs misfit of the model, and the class-level rho
-  # of the fits before the refit reached posterior means of 0.24-0.38 despite
-  # a half-normal prior with sd 0.025, so no stronger prior is put on it.
+  # Observation overdispersion per type, nested in class, on the logit scale,
+  # as the replicate-assay estimate in R/fig_illustrate_bioassay_variability.R
+  # (#20):
+  #   logit rho_class = rho_mu + rho_sigma_class z_class
+  #   logit rho_type ~ N(logit rho_class, rho_sigma_type)
+  # with the same priors, the type level centred (as the data pin it down)
+  # and the class level not. The prior centre is that of the replicate-assay
+  # rho (0.15); rho here also absorbs misfit of the model, and the class-level
+  # rho of the fits before the refit reached posterior means of 0.24-0.38
+  # despite a half-normal prior with sd 0.025, so no stronger prior is put on
+  # it.
   rho <- list(
     rho_mu = normal(qlogis(0.15), 1),
     rho_sigma_class = normal(0, 0.5, truncation = c(0, Inf)),
     rho_sigma_type = normal(0, 0.5, truncation = c(0, Inf)),
     rho_class_raw = normal(0, 1, dim = n_classes)
   )
-  # The type level, non-centred, or centred (centred_options()): logit rho of
-  # each type itself, with the prior the non-centred form implies,
-  #   logit rho_type ~ N(logit rho_class, rho_sigma_type)
-  if (centred_rho_type(options)) {
-    logit_rho_class <- logit_rho_classes(rho)
-    rho$logit_rho_type <- normal(logit_rho_class[classes_index],
-                                 rho$rho_sigma_type)
-  } else {
-    rho$rho_type_raw <- normal(0, 1, dim = n_types)
-  }
+  logit_rho_class <- rho$rho_mu + rho$rho_sigma_class * rho$rho_class_raw
+  rho$logit_rho_type <- normal(logit_rho_class[classes_index],
+                               rho$rho_sigma_type)
 
   # Floor on bioassay mortality (#14): predicted mortality f + (1 - f) q_t,
   # f the mortality of a fully resistant population (mechanisms with finite
@@ -404,21 +319,26 @@ dynamical_terms <- function(v, classes_index, types,
   if (is_greta) {
     inv_logit <- greta::ilogit
   } else {
-    v <- plain_variables(v)
+    v <- lapply(v, function(x) {
+      if (length(dim(x)) <= 1 || (is.matrix(x) && ncol(x) == 1)) c(x) else x
+    })
     inv_logit <- stats::plogis
   }
 
-  # selection effects: doubly hierarchical. The non-centred rows from their
-  # standard normal deviations, with the centred rows (variables in their
-  # own right; centred_options()) put back in their places
-  centred <- centred_selection_rows(options)
-  noncentred <- noncentred_selection_effects(v, !centred, classes_index)
-  beta_class <- noncentred$beta_class
-  beta_type <- noncentred$beta_type
-  if (any(centred)) {
-    beta_class <- stack_rows(v$beta_class_centred, beta_class, centred)
-    beta_type <- stack_rows(v$beta_type_centred, beta_type, centred)
-  }
+  # selection effects: doubly hierarchical, the centred rows (n_centred_rows)
+  # variables in their own right, the others from their standard normal
+  # deviations
+  noncentred <- seq(n_centred_rows + 1, length(v$beta_overall))
+  beta_class_sigma <- sweep(v$beta_class_raw, 1, v$sigma_overall[noncentred],
+                            FUN = "*")
+  class_noncentred <- sweep(beta_class_sigma, 1, v$beta_overall[noncentred],
+                            FUN = "+")
+  beta_type_sigma <- sweep(v$beta_type_raw, 1, v$sigma_class[noncentred],
+                           FUN = "*")
+  beta_class <- rbind(v$beta_class_centred, class_noncentred)
+  beta_type <- rbind(v$beta_type_centred,
+                     class_noncentred[, classes_index, drop = FALSE] +
+                       beta_type_sigma)
 
   # initial state: the logit relative position above init_frac_min of each
   # country (#25), its level less the initial-state covariates' effect at the
@@ -432,16 +352,8 @@ dynamical_terms <- function(v, classes_index, types,
     logit_init_relative,
     matrix(init_min, nrow(logit_init_relative), length(types), byrow = TRUE))
 
-  # observation overdispersion per type, its type level non-centred or
-  # centred (centred_options())
-  if (centred_rho_type(options)) {
-    logit_rho_type <- v$logit_rho_type
-  } else {
-    logit_rho_class <- logit_rho_classes(v)
-    logit_rho_type <- logit_rho_class[classes_index] +
-      v$rho_sigma_type * v$rho_type_raw
-  }
-  rho_types <- inv_logit(logit_rho_type)
+  # observation overdispersion per type
+  rho_types <- inv_logit(v$logit_rho_type)
 
   list(beta_type = beta_type,
        logit_init_country = logit_init_country,
@@ -451,62 +363,6 @@ dynamical_terms <- function(v, classes_index, types,
        init_coef = v$init_coef,
        kappa_type = reversion_kappa(v, classes_index, options),
        beta_class = beta_class)
-}
-
-# One draw of the variables in plain R (`v`, a named list of arrays) with
-# vectors as plain vectors, one-column matrices included
-plain_variables <- function(v) {
-  lapply(v, function(x) {
-    if (length(dim(x)) <= 1 || (is.matrix(x) && ncol(x) == 1)) c(x) else x
-  })
-}
-
-# The selection effects of the non-centred rows `rows` (logical, in design
-# order) from their standard normal deviations: beta_class (rows x n_classes)
-# and beta_type (rows x n_types),
-#   beta_class = beta_overall + sigma_overall beta_class_raw
-#   beta_type = beta_class[, class of type] + sigma_class beta_type_raw
-# The hyperparameters are subset only when some rows are centred, so that
-# without centring the model is exactly as before. For greta arrays or plain
-# R.
-noncentred_selection_effects <- function(v, rows, classes_index) {
-  beta_overall <- v$beta_overall
-  sigma_overall <- v$sigma_overall
-  sigma_class <- v$sigma_class
-  if (!all(rows)) {
-    beta_overall <- beta_overall[which(rows)]
-    sigma_overall <- sigma_overall[which(rows)]
-    sigma_class <- sigma_class[which(rows)]
-  }
-  beta_class_sigma <- sweep(v$beta_class_raw, 1, sigma_overall, FUN = "*")
-  beta_class <- sweep(beta_class_sigma, 1, beta_overall, FUN = "+")
-  beta_type_sigma <- sweep(v$beta_type_raw, 1, sigma_class, FUN = "*")
-  beta_type <- beta_class[, classes_index, drop = FALSE] + beta_type_sigma
-  list(beta_class = beta_class, beta_type = beta_type)
-}
-
-# The logit overdispersion of each class, non-centred:
-#   logit rho_class = rho_mu + rho_sigma_class rho_class_raw
-# For greta arrays or plain R.
-logit_rho_classes <- function(v) {
-  v$rho_mu + v$rho_sigma_class * v$rho_class_raw
-}
-
-# The rows of the centred and non-centred selection effects (`centred` and
-# `noncentred`, matrices with the same columns) as one matrix, in design order
-# (`is_centred`, logical over its rows). For greta arrays or plain R. In
-# greta, rbind() is one concat; on the full data, with 4 chains, this and
-# the centred priors added about 0.2 ms to the 150 ms of a gradient, against
-# 1.2 ms filling a matrix of zeros by `[<-` (#48).
-stack_rows <- function(centred, noncentred, is_centred) {
-  stacked <- rbind(centred, noncentred)
-  # the stacked rows' places in design order; the default centred columns
-  # (nets, irs, population) are the first in the design, so need no reordering
-  design_order <- order(c(which(is_centred), which(!is_centred)))
-  if (identical(design_order, seq_along(design_order))) {
-    return(stacked)
-  }
-  stacked[design_order, , drop = FALSE]
 }
 
 # The logit of a + (1 - a) ilogit(l), for a floor `a` (conformable with l, or
@@ -540,12 +396,8 @@ floored_logit <- function(l, a) {
 # (build_dynamical_model()'s lookups$levels), matched to the cached fit's
 # (attribute "levels"), and a level new to the model starts at the mean of the
 # others; `columns` are the columns of the selection design matrix, matched to
-# the cached fit's (attribute "columns"). The cached values are those of the
-# non-centred model; for a model with centred levels (`options`, the model's,
-# as build_dynamical_model() returns them, and `classes_index`), they are
-# moved to the centred variables at the same point (centre_variables()).
-dynamical_inits <- function(cached, variables, levels, columns = NULL,
-                            options = NULL, classes_index = NULL) {
+# the cached fit's (attribute "columns").
+dynamical_inits <- function(cached, variables, levels, columns = NULL) {
   cached_levels <- attr(cached, "levels")
   cached_columns <- attr(cached, "columns")
   if (is.null(cached_levels)) {
@@ -570,25 +422,35 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
   }
   # the selection coefficients, by covariate (row): the cached values where
   # the column is in the cached fit's design, and weak selection (a log effect
-  # of -4, no deviations) for new columns. The cached pop coefficients put on
-  # log population, which is near 0.8 where raw population is near 0, drove p
-  # to 0 and stalled a short run at its initial values
+  # of -4, no deviations) for new columns. The centred effects' rows are the
+  # first n_centred_rows columns, and the deviations' the others. The cached
+  # pop coefficients put on log population, which is near 0.8 where raw
+  # population is near 0, drove p to 0 and stalled a short run at its initial
+  # values
   if (!is.null(columns)) {
     stopifnot(!is.null(cached_columns))
-    selection_starts <- c(beta_overall = -4, beta_class_raw = 0,
-                          beta_type_raw = 0, sigma_overall = 0.5,
-                          sigma_class = 0.5)
+    selection_starts <- c(beta_overall = -4, sigma_overall = 0.5,
+                          sigma_class = 0.5, beta_class_centred = -4,
+                          beta_type_centred = -4, beta_class_raw = 0,
+                          beta_type_raw = 0)
+    centred <- seq_len(n_centred_rows)
+    rows_of <- function(design, name) {
+      if (grepl("_centred$", name)) design[centred] else
+        if (grepl("_raw$", name)) design[-centred] else design
+    }
     for (name in intersect(names(selection_starts), names(cached))) {
       old <- as.matrix(cached[[name]])
-      new <- matrix(selection_starts[[name]], length(columns), ncol(old))
-      shared <- match(columns, cached_columns)
+      old_columns <- rows_of(cached_columns, name)
+      if (nrow(old) != length(old_columns)) {
+        stop("the cached ", name, " is not in this model's variables; ",
+             "remake the cache from a fit of the model, as in fit_model.R")
+      }
+      new_columns <- rows_of(columns, name)
+      new <- matrix(selection_starts[[name]], length(new_columns), ncol(old))
+      shared <- match(new_columns, old_columns)
       new[!is.na(shared), ] <- old[shared[!is.na(shared)], ]
       cached[[name]] <- new
     }
-  }
-  if (any(c("beta_class_centred", "logit_rho_type") %in% names(variables))) {
-    stopifnot(!is.null(options), !is.null(classes_index))
-    cached <- centre_variables(cached, classes_index, options)
   }
   out <- cached[intersect(names(cached), names(variables))]
   # only where the dimensions match (a different selection design changes the
@@ -614,118 +476,14 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL,
 }
 
 
-# The same point in the variables of the model with centred levels
-# (options$centred), from the non-centred model's variables `v` (one draw, or
-# cached posterior means): the centred rows of the selection effects as the
-# effects themselves, in place of their standard normal deviations,
-#   beta_class_centred = beta_overall + sigma_overall beta_class_raw
-#   beta_type_centred = beta_class_centred[, class of type] +
-#                       sigma_class beta_type_raw
-# and, with the type level of the overdispersion centred,
-#   logit_rho_type = logit_rho_class[class of type] +
-#                    rho_sigma_type rho_type_raw
-# in place of rho_type_raw. The new variables are matrices (vectors as one
-# column); a level whose variables are not all in `v` is left as it is.
-# Plain R; the inverse of noncentre_variables().
-centre_variables <- function(v, classes_index, options) {
-  centred <- centred_selection_rows(options)
-  p <- plain_variables(v)
-  selection <- c("beta_overall", "sigma_overall", "sigma_class",
-                 "beta_class_raw", "beta_type_raw")
-  if (any(centred) && all(selection %in% names(v)) &&
-      nrow(p$beta_class_raw) == length(centred)) {
-    all_rows <- rep(TRUE, length(centred))
-    effects <- noncentred_selection_effects(p, all_rows, classes_index)
-    v$beta_class_centred <- effects$beta_class[centred, , drop = FALSE]
-    v$beta_type_centred <- effects$beta_type[centred, , drop = FALSE]
-    v$beta_class_raw <- p$beta_class_raw[!centred, , drop = FALSE]
-    v$beta_type_raw <- p$beta_type_raw[!centred, , drop = FALSE]
-  }
-  rho <- c("rho_mu", "rho_sigma_class", "rho_class_raw", "rho_sigma_type",
-           "rho_type_raw")
-  if (centred_rho_type(options) && all(rho %in% names(v))) {
-    logit_rho_class <- logit_rho_classes(p)
-    logit_rho_type <- logit_rho_class[classes_index] +
-      p$rho_sigma_type * p$rho_type_raw
-    v$logit_rho_type <- as.matrix(logit_rho_type)
-    v$rho_type_raw <- NULL
-  }
-  v
-}
-
-# The same point in the non-centred model's variables, from one draw `v` of
-# the variables of the model with centred levels (options$centred): the
-# standard normal deviations of the centred rows of the selection effects
-# and of the overdispersion of the types,
-#   beta_class_raw = (beta_class - beta_overall) / sigma_overall
-#   beta_type_raw = (beta_type - beta_class[, class of type]) / sigma_class
-#   rho_type_raw = (logit_rho_type - logit_rho_class[class of type]) /
-#                  rho_sigma_type
-# in place of the effects, as matrices (vectors as one column). Plain R; the
-# inverse of centre_variables().
-noncentre_variables <- function(v, classes_index, options) {
-  centred <- centred_selection_rows(options)
-  p <- plain_variables(v)
-  if (any(centred)) {
-    rows <- which(centred)
-    class_deviation <- sweep(p$beta_class_centred, 1, p$beta_overall[rows],
-                             FUN = "-")
-    class_raw <- sweep(class_deviation, 1, p$sigma_overall[rows], FUN = "/")
-    type_deviation <- p$beta_type_centred -
-      p$beta_class_centred[, classes_index, drop = FALSE]
-    type_raw <- sweep(type_deviation, 1, p$sigma_class[rows], FUN = "/")
-    v$beta_class_raw <- stack_rows(class_raw, p$beta_class_raw, centred)
-    v$beta_type_raw <- stack_rows(type_raw, p$beta_type_raw, centred)
-    v$beta_class_centred <- NULL
-    v$beta_type_centred <- NULL
-  }
-  if (centred_rho_type(options)) {
-    logit_rho_class <- logit_rho_classes(p)
-    rho_deviation <- p$logit_rho_type - logit_rho_class[classes_index]
-    v$rho_type_raw <- as.matrix(rho_deviation / p$rho_sigma_type)
-    v$logit_rho_type <- NULL
-  }
-  v
-}
-
-# One draw `i` of the variables `v` (a named list of draws x dim arrays), as
-# arrays of dim(variable)
-variables_at_draw <- function(v, i) {
-  lapply(v, function(a) {
-    d <- dim(a)[-1]
-    array(a[i + (seq_len(prod(d)) - 1) * nrow(a)], d)
-  })
-}
-
-# Draws of the variables of a model with centred levels (`draws`, a named
-# list of draws x dim arrays, as from calculate() or extract_parameter()) as
-# draws of the non-centred model's (noncentre_variables()), the form
-# fit_model.R caches for dynamical_inits(). Unchanged without centring.
-noncentred_draws <- function(draws, classes_index, options) {
-  if (!any(centred_selection_rows(options)) && !centred_rho_type(options)) {
-    return(draws)
-  }
-  n_draws <- nrow(draws[[1]])
-  converted <- lapply(seq_len(n_draws), function(i) {
-    noncentre_variables(variables_at_draw(draws, i), classes_index, options)
-  })
-  lapply(setNames(nm = names(converted[[1]])), function(name) {
-    values <- lapply(converted, function(draw) draw[[name]])
-    stacked <- matrix(unlist(values), n_draws, byrow = TRUE)
-    array(stacked, c(n_draws, dim(as.array(values[[1]]))))
-  })
-}
-
-
 # sampling -------------------------------------------------------------------
 
 # The sampler settings for the dynamical model, used by fit_fold()
 # (R/fit_validation_fold.R) and fit_model.R. The arguments override single
 # settings, e.g. for a smoke test. The defaults, and the evidence for them, are
 # in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with
-# 30 to 60 leapfrog steps (60 to 120 before the centred selection hierarchy,
-# #48), redrawn every 10 iterations, target acceptance 0.65, 4 chains, 2,000
-# warmup and 1,500 samples (3,000 before #48).
+# 30 to 60 leapfrog steps, redrawn every 10 iterations, target acceptance
+# 0.65, 4 chains, 2,000 warmup and 1,500 samples.
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
 #                  burst of iterations
 #   accept_target  target acceptance of the step-size adaptation
@@ -774,19 +532,19 @@ run_dynamical_mcmc <- function(m, variables, inits,
 # selection or initial-state covariates), for dynamical_inits()
 inits_levels <- list(
   init_region_sd = "types", init_country_sd = "types",
-  logit_init_mean = "types", rho_type_raw = "types",
+  logit_init_mean = "types", logit_rho_type = "types",
   rho_class_raw = "classes", reversion_rate = "classes",
   init_region_raw = c("regions", "types"),
   init_country_level = c("countries", "types"),
   beta_class_raw = c(NA, "classes"), beta_type_raw = c(NA, "types"),
+  beta_class_centred = c(NA, "classes"), beta_type_centred = c(NA, "types"),
   init_coef = c(NA, "types"))
 
 # The cached initial values for the fits: posterior means of every variable
-# of the default model, from a 4-chain fit to the interpolation fold
-# (September 2026, before reversion was added; reversion_rate starts at
-# 0.01), with the columns of its selection design as attribute "columns" and
-# the names of its types, classes, regions and countries as "levels". Not in
-# git: remake it from a fit's draws as in fit_model.R.
+# of a 4-chain full fit with the centred hierarchy (October 2026), with the
+# columns of its selection design as attribute "columns" and the names of its
+# types, classes, regions and countries as "levels". Not in git: remake it
+# from a fit's draws as in fit_model.R.
 dynamical_inits_file <- "temporary/inits_refit.RDS"
 
 # The cached initial values the fits start from: the files in IR_CUBE_INITS,
@@ -801,16 +559,13 @@ dynamical_inits_files <- function() {
 # Initial values for each of `n_chains` chains, as a list for
 # run_dynamical_mcmc(): dynamical_inits() of each cached file in `files`, the
 # chains split into equal consecutive groups, one per file, in order. With one
-# file every chain starts from the same values. `options` (the model's) and
-# `classes_index` are needed for a model with centred levels
+# file every chain starts from the same values
 dynamical_chain_inits <- function(files, variables, levels, columns,
-                                  n_chains, options = NULL,
-                                  classes_index = NULL) {
+                                  n_chains) {
   stopifnot(length(files) >= 1, n_chains %% length(files) == 0)
   per_file <- lapply(files, function(file) {
     dynamical_inits(readRDS(file), variables, levels = levels,
-                    columns = columns, options = options,
-                    classes_index = classes_index)
+                    columns = columns)
   })
   per_file[rep(seq_along(files), each = n_chains / length(files))]
 }
@@ -903,10 +658,10 @@ build_dynamical_model <- function(train_df,
                                    n_regions = n_regions,
                                    n_countries = n_countries,
                                    types = types,
+                                   classes_index = classes_index,
                                    options = options,
                                    country_region_index =
-                                     lookups$country_region_index,
-                                   classes_index = classes_index)
+                                     lookups$country_region_index)
   terms <- dynamical_terms(variables,
                            classes_index = classes_index,
                            types = types,

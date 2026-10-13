@@ -44,14 +44,10 @@ dir.create("temporary", showWarnings = FALSE)
 for (mode in names(chains)) {
   draws_matrix <- as.matrix(all_draws[chains[[mode]]])
   names <- unique(sub("\\[.*$", "", colnames(draws_matrix)))
-  v <- lapply(setNames(nm = names), extract_parameter,
-              draws_matrix = draws_matrix)
-  # those of the non-centred model, if the fit centred some levels
-  # (noncentred_draws()), the form dynamical_inits() reads
-  v <- noncentred_draws(v, f$classes_index, f$model_options)
   # posterior means with the dimensions of the greta variables (vectors as
   # one-column matrices), as fit_model.R saves them
-  means <- lapply(v, function(x) {
+  means <- lapply(setNames(nm = names), function(name) {
+    x <- extract_parameter(draws_matrix, name)
     m <- colMeans(matrix(x, nrow(x)))
     dims <- dim(x)[-1]
     if (length(dims) == 1) dims <- c(dims, 1)
