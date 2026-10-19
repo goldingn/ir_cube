@@ -9,8 +9,10 @@
 # and print the log density itself, for regression checks between versions.
 #
 #   IR_CUBE_MODEL_OPTIONS='<options>' Rscript R/check_dynamical_model.R [seed] [sd]
-# (the free state is N(0, sd^2), sd 0.5 by default; a smaller sd avoids states
-# where p rounds to 1 at assays with survivors, and the log density is NaN)
+# (the free state is N(0, sd^2), sd 0.3 by default; a larger sd reaches states
+# where p rounds to 1, so that the logit of p loses precision (at sd 0.5 it
+# differs by 7.8e-6 while p agrees to 5e-15), or at assays with survivors the
+# log density is NaN)
 # e.g.
 #   IR_CUBE_MODEL_OPTIONS='dynamical_model_options(reversion = FALSE)' \
 #     Rscript R/check_dynamical_model.R
@@ -19,7 +21,7 @@
 
 arguments <- commandArgs(trailingOnly = TRUE)
 seed <- if (length(arguments) >= 1) as.integer(arguments[1]) else 1L
-free_sd <- if (length(arguments) >= 2) as.numeric(arguments[2]) else 0.5
+free_sd <- if (length(arguments) >= 2) as.numeric(arguments[2]) else 0.3
 
 source("R/greta_setup.R")
 start_greta(threads = 4)
@@ -184,12 +186,16 @@ x_years <- map_x(covariates, seq_len(nrow(map_rows)),
                  max(map_years) - baseline_year + 1)
 clamp <- function(l) pmin(pmax(l, qlogis(1e-12)), qlogis(1 - 1e-12))
 map_difference <- 0
+map_smooths <- cell_smooths(parameters,
+                            prediction_basis(model_options$smooth,
+                                             map_rows$cell))
 for (k in seq_along(types)) {
   dyn <- dynamical_logit_cells(parameters, k,
                                matrix(logit_init_all[, cell_country_index, k],
                                       1),
                                x_years, map_years - baseline_year + 1,
-                               x_init = covariates$init)
+                               x_init = covariates$init,
+                               smooths = map_smooths)
   for (y in map_years) {
     rows <- tibble(cell_id = map_rows$cell_id, type_id = k,
                    year_id = y - baseline_year + 1)

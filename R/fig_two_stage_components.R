@@ -150,11 +150,15 @@ covariates <- map_covariates(pixels$cell, baseline_year, end_year,
                              dynamical$parameters$options$selection_columns)
 pixel_country <- match(pixels$country, dimnames(dynamical$logit_init)[[2]])
 stopifnot(!anyNA(pixel_country))
+pixel_smooths <- cell_smooths(
+  dynamical$parameters,
+  prediction_basis(dynamical$parameters$options$smooth, pixels$cell))
 m <- dynamical_logit_cells(dynamical$parameters, k,
                            matrix(dynamical$logit_init[, pixel_country, k],
                                   n_draws),
                            map_x(covariates, seq_len(n_pix), n_years_all),
-                           seq_len(n_years_all), x_init = covariates$init)
+                           seq_len(n_years_all), x_init = covariates$init,
+                           smooths = pixel_smooths)
 m <- aperm(simplify2array(m), c(3, 2, 1))
 
 # check: at the sampled pixels' data years, the same draws as at the assays
