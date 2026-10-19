@@ -49,19 +49,26 @@ volume through its S3-compatible API.
 **Once per machine:** install `docker/irpod` outside the repository, so that
 the command a permission rule allows can't change with an edit to the
 repository, and add an S3 API key from the RunPod console (Settings, S3 API
-Keys) as the profile `runpod` in `~/.aws/credentials`:
+Keys) as the profile `runpod` in `~/.aws/credentials`, and a RunPod API key
+(Settings, API Keys) in `~/.config/irpod/runpod_api_key`, mode 600:
 
 ```bash
 python3 -m venv ~/.local/share/irpod/venv
 ~/.local/share/irpod/venv/bin/pip install awscli
 install -D -m 555 docker/irpod ~/.local/bin/irpod
+install -D -m 600 /dev/null ~/.config/irpod/runpod_api_key  # then paste the key in
 ```
+
+The API key needs read and write access to pods: permission Restricted, with
+the REST/GraphQL API Read/Write and the Serverless (AI) API None. RunPod has
+no narrower scope, so the key can also change the account's other resources;
+`irpod` only creates pods, lists them and deletes the pods it created.
 
 **Inputs:** from the repository root, `irpod sync` uploads `data/clean/`, the
 UNSD table, `temporary/*.RDS` and `outputs/bioassay_rho*.csv`. Sync again
 after `fit_model.R` rewrites the cached initial values.
 
-**A job:** create a pod with the image, the volume at `/workspace`, and these
+**A job** is one pod, with the image, the volume at `/workspace`, and these
 environment variables:
 
 | variable | value |
@@ -87,17 +94,37 @@ The job runs in `jobs/<name>/` on the volume, with its own `R/`, `tmb/`,
 `job.FAILED` (for `--in`, `<name>.log` and so on), and `job.spec`: the commit,
 checksums of the bioassay data and initial values (the job reads the volume's
 live `data/`, which a later sync changes), the command and the options. A name already taken
-fails at once, so a restarted container does not run the job twice. Then:
+fails at once, so a restarted container does not run the job twice.
 
-```bash
-irpod status <name>    # spec, markers and the end of the log
-irpod fetch <name>     # results to outputs/pod_jobs/<name>/
+**A batch** of pods is a file with one pod per line, e.g.
+
+```json
+{"name": "main", "image": "ghcr.io/goldingn/ir_cube-runpod:latest", "cpu": {"id": "cpu5c", "vcpuCount": 8}, "cloud": "SECURE", "dataCenterIds": ["EU-RO-1"], "mounts": {"network": [{"volumeId": "0f6xjzaxch", "path": "/workspace"}]}, "disk": 20, "env": {"JOB": "main full --threads 8", "CODE_REF": "<full commit id>"}}
 ```
 
+```bash
+irpod dispatch --dry-run batch.jsonl  # check it; print the pods and requests
+irpod dispatch batch.jsonl            # create the pods, one approval
+irpod status <name>    # spec, markers and the end of the log
+irpod fetch <name>     # results to outputs/pod_jobs/<name>/
+irpod pods             # the pods irpod created, and their status
+irpod reap             # delete those whose job has a DONE or FAILED marker
+```
+
+`dispatch` refuses the whole batch if any line is off: flavour not cpu3c,
+cpu3g, cpu5c or cpu5g; vCPU not 2 to 32; another data centre, volume, image
+or repository; an unknown variable; a `JOB` already in the ledger or on the
+volume; more than 24 pods. It prints each pod's list price ($/h) and the
+total, creates the pods in order, and stops at the first error, saying which
+were created; leave those out of the batch before dispatching it again. Each
+pod created is added to the ledger `~/.local/share/irpod/pods.tsv`;
+`reap` deletes only ledger pods.
+
 A pod cannot delete itself (RunPod refuses its pod-scoped key), so it idles,
-billed, until it is deleted. When `irpod status` shows `job.DONE` or
-`job.FAILED`, delete the pod with the RunPod connector; its log ends "job
-finished". At the end of a session, check `list-pods` for pods left running.
+billed, until it is deleted: run `irpod reap` when jobs finish, and `irpod
+pods` at the end of a session. A job that fails before it writes a marker
+(e.g. a bad `CODE_REF`) is not reaped: its log ends "job finished"; delete
+its pod in the console.
 
 **Interactively**, with ssh (`~/.ssh/runpod_ed25519`, the pod's direct TCP
 port 22), `run_pod_job.sh` runs a job detached, so that it outlives the

@@ -1,33 +1,242 @@
 #!/usr/bin/env bash
-# Move data to and from the RunPod network volume through its S3-compatible
-# API, so that routine runs need no ssh or rsync. Install a copy outside the
-# repository (see docker/README.md), so that the command a permission rule
+# Create and delete the run's RunPod pods, and move data to and from the
+# network volume through its S3-compatible API, so that routine runs need no
+# ssh or rsync and a batch of pods needs one approval. Install a copy outside
+# the repository (see docker/README.md), so that the command a permission rule
 # allows is not one an edit to the repository can change.
 #
 #   irpod sync           upload the run's inputs, from the repository root
 #   irpod status <job>   the job's spec, markers and the end of its log
 #   irpod fetch <job>    download the job's results (not its code or inputs)
 #                        to outputs/pod_jobs/<job>/
+#   irpod dispatch [--dry-run] <batch.jsonl>
+#                        check every pod of the batch and print it, then
+#                        create the pods one by one, stopping at the first
+#                        error, and add each to the ledger. --dry-run prints
+#                        the table and the request bodies and calls nothing
+#   irpod pods           the ledger's pods and their status
+#   irpod reap           delete each ledger pod whose job has a DONE or
+#                        FAILED marker on the volume
 #
-# Credentials: an S3 API key from the RunPod console, as the profile "runpod"
-# in ~/.aws/credentials. The aws command is the one in the virtual environment
-# this script was installed with.
+# Credentials: an S3 API key as the profile "runpod" in ~/.aws/credentials,
+# and a RunPod API key in ~/.config/irpod/runpod_api_key (mode 600). The aws
+# command is the one in the virtual environment this script was installed
+# with. Ledger: ~/.local/share/irpod/pods.tsv; only pods in it (created by
+# this command) are ever deleted.
 set -euo pipefail
 aws=$HOME/.local/share/irpod/venv/bin/aws
 volume=0f6xjzaxch
 remote=s3://$volume/ir_cube
+key_file=$HOME/.config/irpod/runpod_api_key
+ledger=$HOME/.local/share/irpod/pods.tsv
+rest=https://rest.runpod.io/v1
+max_pods=50
 s3() {
   "$aws" --profile runpod --region eu-ro-1 \
     --endpoint-url https://s3api-eu-ro-1.runpod.io s3 "$@"
 }
+die() { echo "irpod: $*" >&2; exit 1; }
 job_name() {
-  [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
-    echo "irpod: invalid job name '${1:-}'" >&2; exit 1; }
+  [[ ${1:-} =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid job name '${1:-}'"
+}
+
+# the RunPod API key, from a file only its owner can read
+api_key() {
+  [ -f "$key_file" ] || die "no API key: $key_file"
+  [ "$(stat -c '%a %U' "$key_file")" = "600 $(id -un)" ] ||
+    die "$key_file must be yours and mode 600"
+  key=$(tr -d '[:space:]' < "$key_file")
+  [[ $key =~ ^[A-Za-z0-9_]+$ ]] || die "malformed API key in $key_file"
+}
+# api_call METHOD URL [BODY]: the response body to $body, the HTTP status to
+# $code. The key reaches curl through a file descriptor, not its arguments
+api_call() {
+  local data=() out
+  [ $# -lt 3 ] || data=(-H 'Content-Type: application/json' --data-binary "$3")
+  out=$(curl -sS --max-time 60 -X "$1" -w '\n%{http_code}' \
+          -K <(printf 'header = "Authorization: Bearer %s"\n' "$key") \
+          "${data[@]}" "$2" < /dev/null) || die "request failed: $1 $2"
+  code=${out##*$'\n'}; body=${out%$'\n'*}
+}
+# ledger rows: created, pod id, pod name, job, marker prefix, $/h
+ledger_rows() { if [ -f "$ledger" ]; then tail -n +2 "$ledger"; fi; }
+# the account's pods: id, name, desiredStatus, costPerHr, tab-separated
+list_pods() {
+  api_call GET "$rest/pods"
+  [ "$code" = 200 ] || die "listing pods: HTTP $code: $body"
+  python3 -c '
+import json, sys
+for p in json.load(sys.stdin):
+    print(p["id"], p.get("name", ""), p.get("desiredStatus", ""),
+          p.get("costPerHr", ""), sep="\t")' <<< "$body"
+}
+
+# check a batch and translate it to create-pod requests of the REST API v1.
+# One tab-separated line per pod: name, flavour, vCPU, job, marker prefix
+# (under the volume's ir_cube/), JOB, request body
+check_batch() {
+  python3 - "$1" "$max_pods" <<'PY'
+import json, re, sys
+path, max_pods = sys.argv[1], int(sys.argv[2])
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+IMAGE = re.compile(r"ghcr\.io/goldingn/ir_cube-runpod:[A-Za-z0-9_.-]+")
+FLAVOURS = {"cpu3c", "cpu3g", "cpu5c", "cpu5g"}
+VCPUS = {2, 4, 8, 16, 32}
+REPOS = {"idem-lab/ir_cube", "goldingn/ir_cube"}
+ENV = {"JOB", "CODE_REF", "CODE_REPO", "IR_CUBE_MODEL_OPTIONS", "IR_CUBE_INITS",
+       "IR_CUBE_MCMC_SETTINGS", "OMP_NUM_THREADS", "IR_CUBE_NO_MEMORY_WAIT",
+       "HYPER_NAME", "IR_CUBE_NUTS_CHAINS", "IR_CUBE_NUTS_WARMUP",
+       "IR_CUBE_NUTS_ITER"}
+KEYS = {"name", "image", "cpu", "cloud", "dataCenterIds", "mounts", "disk", "env"}
+MOUNTS = {"network": [{"volumeId": "0f6xjzaxch", "path": "/workspace"}]}
+errors, rows, pods, markers = [], [], set(), set()
+
+def check(n, p):
+    def bad(msg): errors.append(f"line {n}: {msg}")
+    if not isinstance(p, dict): return bad("not a JSON object")
+    if set(p) - KEYS: bad(f"unknown fields {sorted(set(p) - KEYS)}")
+    name = p.get("name")
+    if not (isinstance(name, str) and NAME.fullmatch(name)): bad(f"pod name {name!r}")
+    elif name in pods: bad(f"pod name {name} repeated")
+    pods.add(name)
+    image = p.get("image")
+    if not (isinstance(image, str) and IMAGE.fullmatch(image)): bad(f"image {image!r}")
+    cpu = p.get("cpu")
+    if not (isinstance(cpu, dict) and set(cpu) == {"id", "vcpuCount"}):
+        return bad("cpu must be {id, vcpuCount}")
+    flavour, vcpu = cpu["id"], cpu["vcpuCount"]
+    if flavour not in FLAVOURS: bad(f"cpu flavour {flavour!r}, not one of {sorted(FLAVOURS)}")
+    if type(vcpu) is not int or vcpu not in VCPUS: bad(f"vcpuCount {vcpu!r}, not one of {sorted(VCPUS)}")
+    if p.get("cloud", "SECURE") != "SECURE": bad("cloud must be SECURE")
+    if p.get("dataCenterIds") != ["EU-RO-1"]: bad('dataCenterIds must be ["EU-RO-1"]')
+    if p.get("mounts") != MOUNTS: bad("mounts must be the volume 0f6xjzaxch at /workspace")
+    disk = p.get("disk", 20)
+    if type(disk) is not int or not 10 <= disk <= 50: bad(f"disk {disk!r}, not 10 to 50 GB")
+    env = p.get("env")
+    if not isinstance(env, dict): return bad("no env")
+    if set(env) - ENV: bad(f"unknown env {sorted(set(env) - ENV)}")
+    for k, v in env.items():
+        if not (isinstance(v, str) and v.isprintable()): bad(f"env {k} must be one line of text")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(env.get("CODE_REF", ""))):
+        bad("CODE_REF must be a full commit id (40 hex)")
+    if env.get("CODE_REPO", "idem-lab/ir_cube") not in REPOS:
+        bad(f"CODE_REPO {env.get('CODE_REPO')!r}, not one of {sorted(REPOS)}")
+    job = str(env.get("JOB", ""))
+    if not re.fullmatch(r"[A-Za-z0-9_.,:=/+ -]+", job):
+        return bad(f"JOB {job!r}: missing, or has quotes or other characters")
+    w = job.split()
+    if len(w) < 2 or not NAME.fullmatch(w[0]): return bad(f"JOB {job!r}: no job name")
+    if w[1] == "--in":
+        if len(w) < 5 or not NAME.fullmatch(w[2]) or w[3] != "--":
+            return bad(f"JOB {job!r}: --in needs <job> -- <command>")
+        marker = f"jobs/{w[2]}/{w[0]}"
+    elif w[1] in ("full", "fold"):
+        marker = f"jobs/{w[0]}/job"
+    else:
+        return bad(f"JOB {job!r}: kind must be full, fold or --in")
+    if marker in markers: bad(f"job {w[0]} repeated")
+    markers.add(marker)
+    body = {
+        "name": name, "imageName": image, "computeType": "CPU",
+        "cpuFlavorIds": [flavour], "vcpuCount": vcpu, "cloudType": "SECURE",
+        "dataCenterIds": ["EU-RO-1"], "networkVolumeId": "0f6xjzaxch",
+        "volumeMountPath": "/workspace", "containerDiskInGb": disk,
+        "ports": ["22/tcp"], "env": env,
+    }
+    rows.append([name, flavour, str(vcpu), w[0], marker, job, json.dumps(body)])
+
+with open(path) as f:
+    for n, line in enumerate(f, 1):
+        if not line.strip(): continue
+        try: p = json.loads(line)
+        except ValueError as e: errors.append(f"line {n}: {e}"); continue
+        check(n, p)
+if not rows and not errors: errors.append("no pods in the batch")
+if len(rows) > max_pods: errors.append(f"{len(rows)} pods: more than {max_pods}")
+if errors: sys.exit("irpod: batch refused\n  " + "\n  ".join(errors))
+for r in rows: print("\t".join(r))
+PY
+}
+
+# the $/h of each flavour at each vCPU count, from the v2 catalogue: lines
+# "flavour vcpu price". Empty if the catalogue cannot be read
+prices() {
+  api_call GET https://api.runpod.io/v2/catalog/cpus
+  [ "$code" = 200 ] || return 0
+  python3 -c '
+import json, sys
+for c in json.load(sys.stdin).get("cpus", []):
+    for v in (2, 4, 8, 16, 32):
+        print(c["id"], v, round(c["price"]["securePerVcpu"] * v, 4))' \
+    <<< "$body" 2>/dev/null || true
+}
+
+dispatch() {
+  local dry=0
+  [ "${1:-}" != --dry-run ] || { dry=1; shift; }
+  [ $# -eq 1 ] && [ -f "$1" ] || die "usage: irpod dispatch [--dry-run] <batch.jsonl>"
+  local batch; batch=$(check_batch "$1")
+  local price_list=""
+  if [ $dry = 0 ]; then api_key; price_list=$(prices); fi
+  local name flavour vcpu job marker spec request total=0 p n=0
+  printf '%-16s %-7s %4s %7s  %s\n' pod flavour vCPU '$/h' JOB
+  while IFS=$'\t' read -r name flavour vcpu job marker spec request; do
+    p=$(awk -v f="$flavour" -v v="$vcpu" '$1 == f && $2 == v {print $3}' <<< "$price_list")
+    if [ -n "$p" ]; then total=$(awk -v a="$total" -v b="$p" 'BEGIN {print a + b}'); else p=-; fi
+    printf '%-16s %-7s %4s %7s  %s\n' "$name" "$flavour" "$vcpu" "$p" "$spec"
+    n=$((n + 1))
+  done <<< "$batch"
+  if [ $dry = 1 ]; then echo "$n pods; prices not looked up in a dry run"
+  else echo "$n pods; \$$total/h at list price, for those priced (- : no price)"; fi
+  if [ $dry = 1 ]; then
+    echo; echo "POST $rest/pods, one per pod:"
+    cut -f7 <<< "$batch" | python3 -c '
+import json, sys
+for l in sys.stdin: print(json.dumps(json.loads(l), indent=2))'
+    return
+  fi
+  # a job already dispatched would run twice, or, its name taken on the
+  # volume, fail at once with no marker, its pod idling until deleted by hand
+  while IFS=$'\t' read -r name flavour vcpu job marker spec request; do
+    ! ledger_rows | cut -f5 | grep -xF "$marker" > /dev/null ||
+      die "job $job already in the ledger; nothing created"
+  done <<< "$batch"
+  s3 ls "$remote/" > /dev/null || die "cannot read the volume; nothing created"
+  while IFS=$'\t' read -r name flavour vcpu job marker spec request; do
+    if [ "${marker##*/}" = job ]; then
+      ! s3 ls "$remote/${marker%/job}/" < /dev/null > /dev/null 2>&1 ||
+        die "job $job already on the volume; nothing created"
+    else
+      ! s3 ls "$remote/$marker.spec" < /dev/null > /dev/null 2>&1 ||
+        die "job $job already run in ${marker%/*}; nothing created"
+    fi
+  done <<< "$batch"
+  mkdir -p "$(dirname "$ledger")"
+  [ -s "$ledger" ] ||
+    printf 'created\tpod_id\tpod_name\tjob\tmarker\tusd_per_hr\n' > "$ledger"
+  local created=() id cost
+  while IFS=$'\t' read -r name flavour vcpu job marker spec request; do
+    api_call POST "$rest/pods" "$request"
+    if [ "$code" != 201 ] && [ "$code" != 200 ]; then
+      echo "irpod: creating $name failed: HTTP $code: $body" >&2
+      echo "irpod: created before the error: ${created[*]:-none}" >&2
+      exit 1
+    fi
+    read -r id cost < <(python3 -c '
+import json, sys
+p = json.load(sys.stdin); print(p["id"], p.get("costPerHr", "-"))' <<< "$body") ||
+      die "pod $name created, but its id was not in the response: $body"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -u '+%F %T')" "$id" "$name" \
+      "$job" "$marker" "$cost" >> "$ledger"
+    created+=("$name=$id")
+    echo "created $name: pod $id, \$$cost/h; markers $marker.DONE, .FAILED"
+  done <<< "$batch"
+  echo "created ${#created[@]} pods; ledger $ledger"
 }
 
 case ${1:-} in
   sync)
-    [ -f R/fit_model.R ] || { echo "irpod: run from the repository root" >&2; exit 1; }
+    [ -f R/fit_model.R ] || die "run from the repository root"
     s3 sync data/clean "$remote/data/clean"
     s3 cp "data/raw/UNSD — Methodology.csv" "$remote/data/raw/"
     s3 sync temporary "$remote/temporary" --exclude '*' --include '*.RDS'
@@ -44,8 +253,42 @@ case ${1:-} in
     s3 sync "$remote/jobs/$2" "outputs/pod_jobs/$2" \
       --exclude 'R/*' --exclude 'tmb/*' --exclude 'data' --exclude 'data/*'
     ;;
+  dispatch)
+    shift; dispatch "$@"
+    ;;
+  pods)
+    api_key
+    live=$(list_pods)
+    printf '%-10s %-16s %-16s %-16s %s\n' created pod_id pod job status
+    ledger_rows | while IFS=$'\t' read -r created id name job marker cost; do
+      status=$(awk -F'\t' -v i="$id" '$1 == i {print $3 ", $" $4 "/h"; exit}' <<< "$live")
+      printf '%-10s %-16s %-16s %-16s %s\n' "${created%% *}" "$id" "$name" \
+        "$job" "${status:-gone}"
+    done
+    ;;
+  reap)
+    api_key
+    live=$(list_pods)
+    ledger_rows | while IFS=$'\t' read -r created id name job marker cost; do
+      live_name=$(awk -F'\t' -v i="$id" '$1 == i {print $2; exit}' <<< "$live")
+      [ -n "$live_name" ] || continue
+      if [ "$live_name" != "$name" ]; then
+        echo "$id: named $live_name, not $name as in the ledger; left alone"
+        continue
+      fi
+      found=$(s3 ls "$remote/$marker." < /dev/null 2>/dev/null | awk '{print $4}' |
+                grep -E '\.(DONE|FAILED)$' || true)
+      if [ -z "$found" ]; then echo "$name ($id): $job has no marker; left running"; continue; fi
+      api_call DELETE "$rest/pods/$id"
+      if [ "$code" = 204 ] || [ "$code" = 200 ]; then
+        echo "$name ($id): $job ${found##*.}; pod deleted"
+      else
+        echo "$name ($id): $job ${found##*.}; delete failed: HTTP $code: $body"
+      fi
+    done
+    ;;
   *)
-    sed -n '2,15p' "$0" >&2
+    sed -n '2,25p' "$0" >&2
     exit 1
     ;;
 esac
