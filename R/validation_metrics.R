@@ -21,6 +21,12 @@
 # Cramer-von Mises statistic assumed independent PIT values, which does not hold
 # for records scored against a shared posterior (#12 review).
 #
+# Point metrics (MSE, excess, bias, reliability bins, pooled means) score the
+# map, the point prediction a reader would take from the published maps:
+# for the two-stage model the posterior mean without its site noise u and p,
+# for every other model its predictive mean (#32; score_fold()). The
+# distributional metrics score each model's own predictive distribution.
+#
 # Every model is scored at the same overdispersion, the external
 # replicate-based estimate, rather than at its own fitted value. Letting each
 # model choose made coverage a comparison of dispersion rather than of
@@ -144,22 +150,25 @@ write.csv(coverage_curves, "outputs/cv_coverage.csv", row.names = FALSE)
 
 # reliability --------------------------------------------------------------
 
-# Binned on the prediction, never on the observation. Binning on the observed
-# mortality induces regression to the mean and makes a calibrated model look
-# badly biased at both extremes; conditioning on the prediction is the question
-# actually of interest — when the model says 60%, is the average outcome 60%.
+# Binned on the map (score_fold()), never on the observation. Binning on the
+# observed mortality induces regression to the mean and makes a calibrated
+# model look badly biased at both extremes; conditioning on the prediction is
+# the question actually of interest — when the model says 60%, is the average
+# outcome 60%.
 #
 # The envelope comes from the model's own posterior predictive distribution, so
-# a gap outside it is the model's error rather than the diagnostic's. That
-# requires the posterior draws, so it is computed per fold and then pooled by
-# experiment, weighting each fold by its held-out records.
+# a gap outside it is the model's error rather than the diagnostic's; for the
+# two-stage model that includes its fresh u and p, so the envelope is centred
+# off the map by the pull towards 0.5. That requires the posterior draws, so it
+# is computed per fold and then pooled by experiment, weighting each fold by
+# its held-out records.
 reliability <- all_scores %>%
   group_by(model, experiment) %>%
-  group_modify(~ reliability_bins(.x$predicted, .x$observed, n_bins = 10)) %>%
+  group_modify(~ reliability_bins(.x$map, .x$observed, n_bins = 10)) %>%
   ungroup()
 
 reliability_checks <- bind_rows(lapply(scored, function(entry) {
-  bins <- reliability_bins(colMeans(entry$p_draws),
+  bins <- reliability_bins(entry$scores$map,
                            entry$scores$observed,
                            n_bins = 10)
   with_fold_stream(entry$fold$file, "reliability", bind_cols(
@@ -167,7 +176,7 @@ reliability_checks <- bind_rows(lapply(scored, function(entry) {
                experiment = entry$fold$experiment,
                fold = entry$fold$fold),
     bins,
-    reliability_ppc(predicted = colMeans(entry$p_draws),
+    reliability_ppc(predicted = entry$scores$map,
                     mosquito_number = entry$scores$mosquito_number,
                     p_draws = entry$p_draws,
                     rho = entry$rho_scoring,
@@ -226,8 +235,9 @@ aggregate_summary <- aggregated %>%
     mean_assays = mean(n_assays),
     coverage_95 = mean(observed >= lower & observed <= upper),
     mean_pit = mean(pit),
-    bias = mean(predicted - observed),
-    rmse = rmse(observed, predicted),
+    # the pooled map
+    bias = mean(map - observed),
+    rmse = rmse(observed, map),
     .groups = "drop"
   )
 
@@ -301,7 +311,7 @@ print(rho_comparison %>%
 # pipeline dropped. `excess` is again mean squared error above the noise floor.
 # A per-group share of the intercept null's excess used to sit here too; it was
 # the intercept-referenced, floor-corrected variance explained under another
-# name, and variance_explained.R carries the one definition of that (#12
+# name, and validation_skill.R carries the one definition of that (#12
 # review). by_group() is in validation_scoring.R.
 
 by_fold <- by_group(all_scores, fold)
@@ -332,8 +342,8 @@ if (nrow(by_year) > 0) {
 # uncertainty --------------------------------------------------------------
 
 # The paired pixel-cluster bootstrap on excess MSE that used to sit here is
-# gone with the intercept-null skill metric it supported. variance_explained.R
-# carries the one bootstrap and the one definition of variance explained; two
-# of each, differing in reference and in floor treatment, was the confusion the
+# gone with the intercept-null skill metric it supported. cluster_bootstrap()
+# (validation_scoring.R) is the one bootstrap and validation_skill.R the one
+# definition of variance explained; two of each, differing in reference and in floor treatment, was the confusion the
 # review objected to. It also pivoted models wide on value columns, which would
 # have collapsed genuinely duplicate assays had any two matched exactly.

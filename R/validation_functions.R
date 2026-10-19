@@ -248,6 +248,14 @@ ppd_crps <- function(died, mosquito_number, sims) {
 # dividing by the known factor. Averaged over many assays the noise in that
 # estimate washes out.
 noise_floor_mse <- function(died, mosquito_number, rho) {
+  mean(noise_floor_record(died, mosquito_number, rho), na.rm = TRUE)
+}
+
+# The per-assay terms noise_floor_mse() averages: each is unbiased for that
+# assay's sampling variance but noisy (exactly 0 at 0% or 100%), so only means
+# over many assays are meaningful. NA for an assay that carries no information
+# about p(1 - p)
+noise_floor_record <- function(died, mosquito_number, rho) {
   yhat <- died / mosquito_number
   inflation <- (1 + (mosquito_number - 1) * rho) / mosquito_number
   # An assay of a single mosquito has inflation exactly 1, so the estimator
@@ -255,8 +263,35 @@ noise_floor_mse <- function(died, mosquito_number, rho) {
   # p(1 - p). Such assays are dropped from the floor rather than allowed to
   # make it undefined; there are a handful in the held-out data.
   usable <- mosquito_number > 1 & is.finite(inflation) & inflation < 1
+  out <- rep(NA_real_, length(yhat))
   pq <- pmax(yhat[usable] * (1 - yhat[usable]) / (1 - inflation[usable]), 0)
-  mean(pq * inflation[usable])
+  out[usable] <- pq * inflation[usable]
+  out
+}
+
+
+# the model floor -----------------------------------------------------------
+
+# The two-stage model (#21) treats u (per pixel-year) and p (per pixel) as
+# noise shared by the assays of a site: an assay at a pixel-year samples the
+# population mortality q = plogis(logit(m) + e), e ~ N(0, s^2), around the map
+# value m, with s^2 = tau^2 + sigma_p^2 from the fit. The model floor U (#32)
+# is the squared error this adds to the map's, as the model attributes it, for
+# a level score:
+#
+#   U(m, s) = E[(q - m) ^ 2]
+#
+# The expectation is the plain mean over 1000 evenly spaced normal quantiles,
+# within 4e-5 of 60-node Gauss-Hermite quadrature for map values 0.02 to 0.999
+# and SDs up to 1.5. Elementwise over map; m of exactly 0 or 1 gives U = 0.
+model_floor_mse <- function(map, tau, sigma_p) {
+  sd <- sqrt(tau ^ 2 + sigma_p ^ 2)
+  stopifnot(length(sd) %in% c(1, length(map)))
+  e <- qnorm(ppoints(1000))
+  sd <- rep_len(sd, length(map))
+  deviation <- plogis(outer(qlogis(map), rep(1, length(e))) +
+                        outer(sd, e)) - map
+  rowMeans(deviation ^ 2)
 }
 
 # The same quantity for a pooled observed proportion: the irreducible variance

@@ -119,7 +119,7 @@ reliability_plot <- reliability %>%
   coord_equal() +
   guides(colour = "none") +
   labs(
-    x = "predicted mortality",
+    x = "predicted mortality (map)",
     y = "observed mortality",
     subtitle = "When the model predicts a mortality, is that the average outcome? Grey band is the scatter a correct model would still show"
   ) +
@@ -145,7 +145,7 @@ ggsave("figures/CV_predictive_calibration.png",
 # the table ----------------------------------------------------------------
 
 # one row per experiment and model, with the column glosses that belong in the
-# caption rather than the header
+# caption rather than the header. MSE scores the map (#32)
 table_out <- summaries %>%
   tidy_labels() %>%
   transmute(

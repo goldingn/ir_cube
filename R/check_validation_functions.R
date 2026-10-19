@@ -246,3 +246,19 @@ report("pooling reduces scatter",
        scatter_pooled < scatter_single,
        sprintf("(%.4f vs %.4f, ratio %.2f)",
                scatter_pooled, scatter_single, scatter_pooled / scatter_single))
+
+
+# the model floor (#32) ----------------------------------------------------
+
+# U against Monte Carlo, at map values across the range and the site noise SDs
+# the September two-stage fits found (combined 0.2 to 0.85)
+map_values <- c(0.02, 0.2, 0.5, 0.8, 0.98)
+noise_sds <- c(0.2, 0.5, 0.85)
+grid <- expand.grid(map = map_values, sd = noise_sds)
+e <- rnorm(1e6)
+monte_carlo <- mapply(function(m, s) mean((plogis(qlogis(m) + s * e) - m) ^ 2),
+                      grid$map, grid$sd)
+floor_u <- model_floor_mse(grid$map, grid$sd, 0)
+report("model floor matches Monte Carlo",
+       max(abs(floor_u - monte_carlo)) < 1e-4,
+       sprintf("(max |diff| %.1e)", max(abs(floor_u - monte_carlo))))
