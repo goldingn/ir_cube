@@ -311,7 +311,7 @@ print(rho_comparison %>%
 # pipeline dropped. `excess` is again mean squared error above the noise floor.
 # A per-group share of the intercept null's excess used to sit here too; it was
 # the intercept-referenced, floor-corrected variance explained under another
-# name, and variance_explained.R carries the one definition of that (#12
+# name, and validation_skill.R carries the one definition of that (#12
 # review). by_group() is in validation_scoring.R.
 
 by_fold <- by_group(all_scores, fold)
@@ -342,8 +342,8 @@ if (nrow(by_year) > 0) {
 # uncertainty --------------------------------------------------------------
 
 # The paired pixel-cluster bootstrap on excess MSE that used to sit here is
-# gone with the intercept-null skill metric it supported. variance_explained.R
-# carries the one bootstrap and the one definition of variance explained; two
-# of each, differing in reference and in floor treatment, was the confusion the
+# gone with the intercept-null skill metric it supported. cluster_bootstrap()
+# (validation_scoring.R) is the one bootstrap and validation_skill.R the one
+# definition of variance explained; two of each, differing in reference and in floor treatment, was the confusion the
 # review objected to. It also pivoted models wide on value columns, which would
 # have collapsed genuinely duplicate assays had any two matched exactly.

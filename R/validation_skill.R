@@ -4,7 +4,7 @@
 # Sources R/validation_scoring.R.
 #
 #   level   100 (1 - MSE / Var(y)) against single held-out bioassays y: the %
-#           of variance explained, as in R/variance_explained.R
+#           of variance explained
 #   change  100 (1 - sum w (P - A)^2 / sum w A^2), the skill against no change
 #           (the persistence index; Kitanidis & Bras 1980), where A is the
 #           change between a pair of single bioassays at one pixel and P its
@@ -22,10 +22,10 @@
 #            pixel-year (level: 100 (1 - 2 F / Var(y)), the target's noise and
 #            its own), or an independent second pair at the same pixel (change)
 #
-# Intervals resample pixels (pixel_bootstrap(), as R/variance_explained.R
-# does). Replicate i also takes posterior draw i of rho by type, so the
-# intervals on the ceiling and the local bars carry the uncertainty in rho as
-# well as in the sample.
+# Intervals resample pixels (cluster_bootstrap(), in R/validation_scoring.R).
+# Replicate i also takes posterior draw i of rho by type, so the intervals on
+# the ceiling and the local bars carry the uncertainty in rho as well as in the
+# sample.
 
 source("R/validation_scoring.R")
 
@@ -40,7 +40,7 @@ n_bootstrap <- 2000
 # The per-record scores carry the map and the data floor (#32); stop on
 # scores written before that
 require_map_columns <- function(scores) {
-  stopifnot(all(c("map", "map_exact", "floor") %in% names(scores)))
+  stopifnot(all(c("map", "floor") %in% names(scores)))
   scores
 }
 
@@ -62,13 +62,7 @@ rho_replicates <- function(n = n_bootstrap,
 # point estimate). Returns estimate, lower and upper per element
 bootstrap_summary <- function(data, statistic, rho_draws) {
   point <- statistic(data, NULL)
-  cells <- unique(data$cell)
-  rows_by_cell <- split(seq_len(nrow(data)), data$cell)
-  replicates <- t(vapply(seq_len(nrow(rho_draws)), function(i) {
-    picked <- sample(cells, length(cells), replace = TRUE)
-    statistic(data[unlist(rows_by_cell[as.character(picked)],
-                          use.names = FALSE), ], rho_draws[i, ])
-  }, numeric(length(point))))
+  replicates <- cluster_bootstrap(data, statistic, rho_draws = rho_draws)
   tibble(bar = names(point), estimate = unname(point),
          lower = apply(replicates, 2, quantile, 0.025, na.rm = TRUE),
          upper = apply(replicates, 2, quantile, 0.975, na.rm = TRUE))
@@ -116,27 +110,28 @@ pair_floor <- function(pairs, rho = NULL) {
 # The expected squared error of an independent second pair at the same pixel,
 # as a prediction of the target pair: the second pair's noise, taken to be
 # the target's two assays' noise over a gap drawn from the targets' gaps (the
-# weighted mean of 1 / gap^2), plus the target's own noise. Rewriting the
-# target's floor F_pair = (F_b + F_a) / g^2 that way gives
+# mean of 1 / gap^2 under weights w), plus the target's own noise. Rewriting
+# the target's floor F_pair = (F_b + F_a) / g^2 that way gives
 # F_pair (1 + g^2 E[1 / gap^2])
-local_pair_error <- function(pairs, floor) {
-  inverse_square_gap <- sum(pairs$w / pairs$gap ^ 2) / sum(pairs$w)
+local_pair_error <- function(pairs, floor, w) {
+  inverse_square_gap <- sum(w / pairs$gap ^ 2) / sum(w)
   floor * (1 + pairs$gap ^ 2 * inverse_square_gap)
 }
 
 # Scores of every rate column of `pairs` named in `predictions` (a predicted
-# change over the pair's gap, per year), plus the ceiling and the local pair.
-# Weights w give each pixel equal weight. A column that is all NA scores NA
-change_statistic <- function(predictions) {
+# change over the pair's gap, per year), plus the ceiling and the local pair,
+# each pair weighted by its column `weight` (giving each pixel-insecticide
+# equal weight)
+change_statistic <- function(predictions, weight = "w") {
   function(pairs, rho) {
+    w <- pairs[[weight]]
     floor <- pair_floor(pairs, rho)
-    total <- sum(pairs$w * pairs$rate ^ 2)
+    total <- sum(w * pairs$rate ^ 2)
     scores <- vapply(predictions, function(column) {
-      100 * (1 - sum(pairs$w * (pairs[[column]] - pairs$rate) ^ 2) / total)
+      100 * (1 - sum(w * (pairs[[column]] - pairs$rate) ^ 2) / total)
     }, numeric(1))
-    c(ceiling = 100 * (1 - sum(pairs$w * floor) / total),
-      local = 100 * (1 - sum(pairs$w * local_pair_error(pairs, floor)) /
-                       total),
+    c(ceiling = 100 * (1 - sum(w * floor) / total),
+      local = 100 * (1 - sum(w * local_pair_error(pairs, floor, w)) / total),
       scores)
   }
 }

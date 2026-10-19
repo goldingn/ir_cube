@@ -1,5 +1,5 @@
 # Scoring the saved cross-validation folds: the functions behind
-# R/validation_metrics.R, R/variance_explained.R and R/two_stage_metrics.R.
+# R/validation_metrics.R, R/two_stage_metrics.R and the scripts built on them.
 # Functions and settings only; sourcing this file scores nothing. Sources
 # R/validation_functions.R, which holds the primitives (the beta-binomial
 # predictive distribution, PIT, CRPS, the noise floor and rho_lookup()).

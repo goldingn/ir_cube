@@ -22,9 +22,8 @@
 # each with its 95% interval, and its difference from the dynamical model's,
 # with the 95% interval of the paired difference and the bootstrap probability
 # that the model beats the dynamical model (for coverage: is closer to
-# nominal). Variance explained, its ceiling and its paired contrasts, per
-# experiment, fold and forecast horizon, are R/variance_explained.R's, on the
-# same records.
+# nominal). Variance explained and its ceiling are R/validation_level.R's, on
+# the same records.
 #
 # Groups: each experiment pooled over its folds (spatial_interpolation,
 # spatial_blocks, temporal_forecasting_2014, temporal_forecasting_2018), the two

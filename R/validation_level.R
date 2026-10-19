@@ -21,14 +21,16 @@
 #   dynamical, two-stage
 #              the map's point prediction (`map`, #32)
 #
-# Also the median over held-out assays of the distance to the nearest training
-# assay of the same insecticide (as R/validation_geometry.R's distance_same,
-# but per assay rather than per pixel-year-insecticide), for the panel titles.
+# Also the same bars per insecticide for B and C, for the per-insecticide
+# figure, and the median over held-out assays of the distance to the nearest
+# training assay of the same insecticide (distance_same,
+# R/validation_geometry.R), for the panel titles.
 #
 # Reads outputs/cv_scores.csv (R/validation_metrics.R),
-# and outputs/full_fit_maps_at_assays.csv (R/full_fit_maps_at_assays.R; panel A
-# is a placeholder without it).
-# Writes outputs/cv_level_skill.csv.
+# outputs/full_fit_maps_at_assays.csv (R/full_fit_maps_at_assays.R) and
+# outputs/cv_geometry.csv (R/validation_geometry.R).
+# Writes outputs/cv_level_skill.csv and
+# outputs/cv_level_skill_by_insecticide.csv.
 
 source("R/validation_skill.R")
 
@@ -56,7 +58,6 @@ held_out <- function(experiment) {
     stopifnot(identical(record_key(rows), record_key(reference)),
               identical(rows$fold, reference$fold))
     out[[bar]] <- rows$map
-    if (bar == "two_stage") out$two_stage_map_exact <- rows$map_exact
   }
   stopifnot(!anyNA(out[names(models)]))
   out
@@ -67,26 +68,20 @@ extrapolation <- held_out(experiments[["extrapolation"]])
 
 # panel A: the full-data fit's maps at the same assays, as two more columns,
 # so that A and B are scored on the same bootstrap resamples and share their
-# ceiling and local bar. Without them A's model bars are placeholders
+# ceiling and local bar
 full_fit_file <- "outputs/full_fit_maps_at_assays.csv"
-if (file.exists(full_fit_file)) {
-  full_fit <- interpolation %>%
-    select(cell, year_start, insecticide_type) %>%
-    left_join(read.csv(full_fit_file),
-              by = c("cell", "year_start", "insecticide_type"),
-              relationship = "many-to-one")
-  if (anyNA(full_fit$dynamical) || anyNA(full_fit$two_stage)) {
-    stop(sum(is.na(full_fit$dynamical)), " interpolation test assays have ",
-         "no full-fit map in ", full_fit_file,
-         "; it must come from the same data as outputs/cv_scores.csv")
-  }
-  interpolation$full_dynamical <- full_fit$dynamical
-  interpolation$full_two_stage <- full_fit$two_stage
-} else {
-  warning("no ", full_fit_file, "; panel A's model bars are placeholders")
-  interpolation$full_dynamical <- NA_real_
-  interpolation$full_two_stage <- NA_real_
+full_fit <- interpolation %>%
+  select(cell, year_start, insecticide_type) %>%
+  left_join(read.csv(full_fit_file),
+            by = c("cell", "year_start", "insecticide_type"),
+            relationship = "many-to-one")
+if (anyNA(full_fit$dynamical) || anyNA(full_fit$two_stage)) {
+  stop(sum(is.na(full_fit$dynamical)), " interpolation test assays have ",
+       "no full-fit map in ", full_fit_file,
+       "; it must come from the same data as outputs/cv_scores.csv")
 }
+interpolation$full_dynamical <- full_fit$dynamical
+interpolation$full_two_stage <- full_fit$two_stage
 
 rho_draws <- rho_replicates()
 
@@ -111,68 +106,100 @@ level <- bind_rows(
   panel_bars(extrapolation, names(models)) %>%
     mutate(panel = "C", source = "spatial_blocks 1, 2")
 ) %>%
-  mutate(
-    # a bar with no estimate is a placeholder, and drawn as one
-    source = ifelse(is.na(estimate), "placeholder", source),
-    map_exact = case_when(
-      bar != "two_stage" ~ NA,
-      panel == "B" ~ all(interpolation$two_stage_map_exact),
-      panel == "C" ~ all(extrapolation$two_stage_map_exact),
-      TRUE ~ TRUE)) %>%
   relocate(panel, source, .before = 1)
 
 
 # distances to the training data ----------------------------------------------------
 
-# the fold definitions (validation_blocks.R sources validation_folds.R)
-suppressMessages({
-  sink("/dev/null")
-  source("R/validation_blocks.R")
-  sink()
-})
-
-# per held-out assay, the great-circle distance between pixel centres to the
-# nearest training assay of the same insecticide, any year. The distance
-# depends only on the pixel and insecticide, so it is computed once for each
-nearest_training_km <- function(training, test) {
-  keys <- test %>% distinct(cell, insecticide_type)
-  keys$km <- NA_real_
-  for (type in unique(keys$insecticide_type)) {
-    index <- which(keys$insecticide_type == type)
-    training_cells <- unique(training$cell[training$insecticide_type == type])
-    distance <- fields::rdist.earth(terra::xyFromCell(mask,
-                                                      keys$cell[index]),
-                                    terra::xyFromCell(mask,
-                                                      training_cells),
-                                    miles = FALSE)
-    keys$km[index] <- apply(distance, 1, min)
-  }
-  keys$km[match(paste(test$cell, test$insecticide_type),
-                paste(keys$cell, keys$insecticide_type))]
+# per held-out assay, distance_same at its pixel-year-insecticide in its fold
+geometry <- read.csv("outputs/cv_geometry.csv",
+                     colClasses = c(fold = "character"))
+median_km <- function(data, experiment) {
+  km <- data %>%
+    select(fold, cell, year_start, insecticide_type) %>%
+    left_join(geometry %>%
+                filter(.data$experiment == !!experiment) %>%
+                select(fold, cell, year_start, insecticide_type,
+                       distance_same),
+              by = c("fold", "cell", "year_start", "insecticide_type"),
+              relationship = "many-to-one")
+  stopifnot(!anyNA(km$distance_same))
+  median(km$distance_same)
 }
-
-distances <- bind_rows(
-  tibble(panel = "B",
-         km = nearest_training_km(spatial_interpolation$training,
-                                  spatial_interpolation$test)),
-  bind_rows(lapply(spatial_blocks, function(block) {
-    tibble(panel = "C", km = nearest_training_km(block$training, block$test))
-  }))
-) %>%
-  group_by(panel) %>%
-  summarise(median_km = median(km), .groups = "drop")
-# the held-out sets must be the scored ones
-stopifnot(nrow(spatial_interpolation$test) == nrow(interpolation),
-          sum(vapply(spatial_blocks, function(b) nrow(b$test),
-                     numeric(1))) == nrow(extrapolation))
+distances <- tibble(
+  panel = c("B", "C"),
+  median_km = c(median_km(interpolation, experiments[["interpolation"]]),
+                median_km(extrapolation, experiments[["extrapolation"]])))
 
 level <- level %>% left_join(distances, by = "panel")
 
 
 write.csv(level, "outputs/cv_level_skill.csv", row.names = FALSE)
 
+
+# per insecticide, B and C ----------------------------------------------------------
+
+# Each insecticide bootstrapped on its own pixels, after the panels, so that
+# their resamples are unchanged. Every insecticide with held-out assays at two
+# or more pixels and some spread in them is scored. The figure draws only
+# those whose comparison can be read (`shown`), on two counts that are not
+# substitutes:
+#
+#   ceiling >= min_ceiling
+#       more than half the observed spread in held-out mortality has to be real
+#       variation in resistance rather than assay noise. Where it is not, the
+#       ratio is two small numbers divided by each other: Bendiocarb in the
+#       interpolation fold has 154 assays in 67 pixels and a predictable
+#       standard deviation of about 6 points of mortality, so a model would
+#       have to land inside 6 points to score above zero. A sample-size rule
+#       cannot see this.
+#
+#   interval width <= max_ci_width
+#       the estimate has to be resolvable, for the nearest bioassay and the
+#       dynamical model, or the comparison the panel exists to make cannot be
+#       read. This is where the pixel count enters, but only through its effect
+#       on precision.
+min_ceiling <- 50
+max_ci_width <- 100
+width_bars <- c("nearest", "dynamical")
+
+by_insecticide <- bind_rows(lapply(
+  list(B = interpolation, C = extrapolation), function(data) {
+    bind_rows(lapply(split(data, data$insecticide_type), function(type) {
+      if (n_distinct(type$cell) < 2 ||
+          mean((type$observed - mean(type$observed)) ^ 2) == 0) {
+        return(NULL)
+      }
+      panel_bars(type, c("nearest", "dynamical", "two_stage")) %>%
+        mutate(insecticide_type = type$insecticide_type[1], .before = 1)
+    }))
+  }), .id = "panel") %>%
+  group_by(panel, insecticide_type) %>%
+  mutate(
+    ceiling = estimate[bar == "ceiling"],
+    ci_width = max((upper - lower)[bar %in% width_bars]),
+    drop_reason = case_when(
+      ceiling < min_ceiling & ci_width > max_ci_width ~ "no signal, imprecise",
+      ceiling < min_ceiling                           ~ "no signal",
+      ci_width > max_ci_width                         ~ "imprecise",
+      TRUE                                            ~ NA_character_),
+    shown = is.na(drop_reason)) %>%
+  ungroup()
+
+write.csv(by_insecticide, "outputs/cv_level_skill_by_insecticide.csv",
+          row.names = FALSE)
+
 cat("\n% of variance explained in single held-out bioassays:\n")
 print(as.data.frame(level %>%
   mutate(value = sprintf("%5.1f [%5.1f, %5.1f]", estimate, lower, upper)) %>%
   select(panel, assays, pixels, median_km, bar, value) %>%
   pivot_wider(names_from = bar, values_from = value)), row.names = FALSE)
+
+cells <- by_insecticide %>% distinct(panel, insecticide_type, assays, pixels,
+                                     ceiling, ci_width, shown, drop_reason)
+cat(sprintf("\nby insecticide: %i panel-insecticides, %i shown\n",
+            nrow(cells), sum(cells$shown)))
+print(as.data.frame(cells %>%
+  mutate(across(c(ceiling, ci_width), ~ round(.x, 1)),
+         shown = ifelse(shown, "yes", drop_reason)) %>%
+  select(-drop_reason)), row.names = FALSE)
