@@ -70,16 +70,16 @@ environment variables:
 | `CODE_REF` | the commit to run (a full commit id), downloaded from GitHub |
 | `CODE_REPO` | if not `idem-lab/ir_cube`, e.g. a fork for a PR branch |
 | `IR_CUBE_MODEL_OPTIONS` | an R expression for `dynamical_model_options()`, if not the defaults (population d½ 270); needed for a fold paired with a full fit made with other options |
-| `OMP_NUM_THREADS`, `IR_CUBE_NO_MEMORY_WAIT` | as the job needs |
+| `OMP_NUM_THREADS` | as the job needs |
 
 `JOB` is split on spaces, so its arguments cannot contain spaces or quotes.
 An `--in` job takes its fit's `IR_CUBE_MODEL_OPTIONS`. For example,
 `JOB="main full --threads 8"`,
 `JOB="blocks1 fold spatial_blocks 1 --threads 8"`, or, on a finished fit,
-`JOB="ts_blocks1 --in blocks1 -- Rscript R/run_two_stage_folds.R spatial_blocks 1 stage_one"`.
+`JOB="ts_blocks1_3 --in blocks1 -- Rscript R/run_two_stage_folds.R spatial_blocks 1 3"`.
 The steps of a second stage and their order are in each script's header.
-Loading a saved fold takes 4 to 8 GB, so on a 16 GB pod run such steps one
-at a time.
+Loading a saved fold takes 4 to 8 GB and a two-stage type step up to 15 GB,
+so on a 32 GB pod run two such steps at a time.
 
 The job runs in `jobs/<name>/` on the volume, with its own `R/`, `tmb/`,
 `temporary/` and `outputs/`, and writes `job.log`, `job.DONE` or
@@ -107,8 +107,6 @@ session, with the same variables.
 - Over ssh, detach every job (the launcher does): an ssh or agent session
   ending kills its children.
 - A new pod pulls the image first, which took 5 to 25 minutes.
-- In a container `/proc/meminfo` is the host's; set `IR_CUBE_NO_MEMORY_WAIT=1`
-  for scripts that call `wait_for_memory()`.
 - zsh does not word-split a variable holding ssh options; wrap in `bash -c`
   or write them out.
 - Pods bill until deleted, idle or not. The volume is billed monthly whether

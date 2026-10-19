@@ -123,8 +123,7 @@ Use OpenBLAS (`LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=3`), because
 
 1. **Simulation check:** `Rscript R/check_two_stage.R`.
 2. **Folds** (`R/run_two_stage_folds.R`), for each of `spatial_interpolation all`, `spatial_blocks 1|2` and `temporal_forecasting 2014|2018`:
-   - `Rscript R/run_two_stage_folds.R <experiment> <fold> stage_one`: rebuilds the fold and recomputes the paired dynamical draws. Loading a fold takes 4–8 GB.
-   - `... <experiment> <fold> <k>` for k = 1–9: one process per type. Peak memory is up to ~15 GB (Deltamethrin).
+   - `Rscript R/run_two_stage_folds.R <experiment> <fold> <k>` for k = 1–9: one process per type. Each reads the paired dynamical logit draws that `R/run_one_fold.R` saved with the fold (`outputs/cv_draws/assays/`), not the fold. Peak memory is up to ~15 GB (Deltamethrin).
    - `... <experiment> <fold> assemble`: writes `outputs/cv_draws/two_stage__<experiment>__<fold>.rds` and `outputs/two_stage/fit_summary.csv`.
 3. **Metrics:** `Rscript R/validation_metrics.R`, then `Rscript R/variance_explained.R`, then `Rscript R/two_stage_metrics.R`.
 4. **Maps** (`R/two_stage_maps.R`):
