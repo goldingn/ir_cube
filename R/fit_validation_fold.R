@@ -14,6 +14,7 @@
 # it returns, so the model does not need to be purged by hand between folds.
 
 source("R/chain_floor_modes.R")
+source("R/dynamical_predictions.R")
 
 fit_fold <- function(train_df,
                      test_df,
@@ -82,8 +83,12 @@ fit_fold <- function(train_df,
   )
 
   # effective sample size of the quantities the validation metrics actually
-  # consume, rather than of the raw model parameters
-  ess_prediction <- coda::effectiveSize(prediction_draws)
+  # consume, rather than of the raw model parameters, over the chains that
+  # R/run_one_fold.R keeps (drop_fold_chains() drops the stuck ones; the
+  # predictions are only stored thinned, so it cannot recompute this)
+  moving <- setdiff(seq_along(draws), stuck_chains(draws))
+  if (length(moving) == 0) moving <- seq_along(draws)
+  ess_prediction <- coda::effectiveSize(prediction_draws[moving])
   ess_p <- ess_prediction[grep("population_mortality_vec_test\\[",
                                names(ess_prediction))]
   ess_rho <- ess_prediction[grep("rho_types", names(ess_prediction))]

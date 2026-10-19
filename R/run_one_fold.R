@@ -36,7 +36,6 @@ source("R/validation_functions.R")
 source("R/validation_folds.R")
 source("R/validation_covariates.R")
 source("R/fit_validation_fold.R")
-source("R/dynamical_predictions.R")
 settings <- do.call(dynamical_mcmc_settings, setting_overrides)
 
 # find the requested fold
