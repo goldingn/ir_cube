@@ -42,15 +42,14 @@
 #              is listed in fallback_types.
 #
 # The saved object has the #12 fields (model, experiment, fold, test_df,
-# p_draws) plus map_draws (draws x held-out assays of the map, NA in the
-# columns of a type whose part predates #32 and so has none), rho_type, the
+# p_draws) plus map_draws (draws x held-out assays of the map), rho_type, the
 # per-type rho of the fit (a data frame of insecticide_type and rho, from the
 # table rho_lookup() scores against), fallback_types and fit_summary (which
 # holds each type's tau and sigma_p, the model floor's inputs). The
 # forecasting folds also carry before_df (the dynamical fold's, row for row)
-# and map_before, the map's posterior mean at each of its assays (NA for
-# types whose parts have none; the dynamical posterior mean for fallback
-# types); both are absent where the stage-one cache predates them.
+# and map_before, the map's posterior mean at each of its assays (the
+# dynamical posterior mean for fallback types). Parts or a stage-one cache
+# saved before these were added are an error: rerun them.
 #
 # Run with OpenBLAS (reference BLAS is ~10x slower), e.g.
 #   LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=3 nice -n 10 Rscript ...
@@ -183,6 +182,9 @@ if (step == "stage_one") {
 suppressMessages(library(dplyr))
 cache <- readRDS(cache_file)
 types <- cache$types
+# the forecasting folds' before window, which caches from before #36 lack
+stopifnot((experiment_name == "temporal_forecasting") ==
+            !is.null(cache$logit_before))
 # the per-type replicate-based rho every model is scored against
 rho_type <- setNames(rho_for_record(tibble(insecticide_type = types),
                                     rho_lookup()), types)
@@ -205,13 +207,13 @@ if (step == "assemble") {
                             error = "no part file"))
     test_rows <- which(test_df$type_id == k)
     if (!is.null(part$p_draws)) {
+      stopifnot(!is.null(part$map_draws))
       p_out[, test_rows] <- part$p_draws
-      map_out[, test_rows] <- if (is.null(part$map_draws)) NA_real_ else
-        part$map_draws
-      if (!is.null(before_df)) {
-        before_rows <- which(before_df$type_id == k)
-        map_before[before_rows] <- if (is.null(part$map_before)) NA_real_ else
-          part$map_before
+      map_out[, test_rows] <- part$map_draws
+      before_rows <- which(before_df$type_id == k)
+      if (length(before_rows) > 0) {
+        stopifnot(!is.null(part$map_before))
+        map_before[before_rows] <- part$map_before
       }
     }
     summaries[[k]] <- mutate(part$summary, fallback_dynamical =
@@ -269,9 +271,8 @@ train_rows <- which(cache$training$type_id == k)
 test_rows <- which(cache$test_df$type_id == k)
 m_draws_train <- cache$logit_train[, train_rows, drop = FALSE]
 m_draws_test <- cache$logit_test[, test_rows, drop = FALSE]
-# the type's before-window assays (forecasting folds), where the cache has
-# them
-before_rows <- if (is.null(cache$logit_before)) integer(0) else
+# the type's before-window assays (forecasting folds only)
+before_rows <- if (is.null(cache$before_df)) integer(0) else
   which(cache$before_df$type_id == k)
 m_draws_before <- if (length(before_rows) == 0) NULL else
   cache$logit_before[, before_rows, drop = FALSE]
@@ -317,7 +318,7 @@ time_predict <- system.time(
   if (!is.null(fit) && fit$opt$convergence == 0 && length(test_rows) > 0) {
     # held-out predictive draws at the assays' coordinates, then the map at
     # their pixel centres in a second call, so the predictive draws are
-    # unchanged by it; its noise draws are discarded
+    # unchanged by it
     lambda <- predict_correction(fit, test_k, m_draws_train = m_draws_train,
                                  m_draws_new = m_draws_test,
                                  n_draws = nrow(m_draws_train))
@@ -326,29 +327,24 @@ time_predict <- system.time(
     lambda <- predict_correction(fit, test_centres_k,
                                  m_draws_train = m_draws_train,
                                  m_draws_new = m_draws_test,
-                                 n_draws = nrow(m_draws_train), map = TRUE)
-    stopifnot(!anyNA(lambda$map))
-    map_draws <- plogis(lambda$map)
+                                 n_draws = nrow(m_draws_train), noise = FALSE)
+    stopifnot(!anyNA(lambda))
+    map_draws <- plogis(lambda)
     rm(lambda)
   }
 )[["elapsed"]]
 
 # The map's posterior mean at the before-window assays, for the change score
 # (#36): training assays, so omega + xi are fitted there. Drawn after the
-# held-out draws, so those are unchanged; the noise draws it also makes are
-# discarded
+# held-out draws, so those are unchanged
 map_before <- NULL
 if (!is.null(p_draws) && !is.null(m_draws_before)) {
   map_before <- colMeans(plogis(predict_correction(
     fit, before_k, m_draws_train = m_draws_train,
     m_draws_new = m_draws_before, n_draws = nrow(m_draws_train),
-    map = TRUE)$map))
+    noise = FALSE)))
   stopifnot(!anyNA(map_before))
 }
-
-# the pull of the predictive mean towards 0.5 that averaging fresh u and p
-# after the inverse logit causes: predictive mean less map, per held-out assay
-pull <- if (is.null(p_draws)) NA else colMeans(p_draws) - colMeans(map_draws)
 
 summary <- bind_cols(
   tibble(insecticide_type = type, rho = rho_type[[type]],
@@ -357,8 +353,7 @@ summary <- bind_cols(
          max_test_horizon = if (is.null(fit)) NA else
            max(c(0, test_k$year - fit$T))),
   if (is.null(fit)) NULL else fit_summary(fit),
-  tibble(mean_pull = mean(pull), max_abs_pull = max(abs(pull)),
-         error = error, time_fit_s = time_fit, time_predict_s = time_predict,
+  tibble(error = error, time_fit_s = time_fit, time_predict_s = time_predict,
          peak_memory_gb = peak_memory_gb())
 )
 saveRDS(list(summary = summary, p_draws = p_draws, map_draws = map_draws,
