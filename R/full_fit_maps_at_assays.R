@@ -20,7 +20,7 @@
 #
 # Needs outputs/two_stage/maps/<type>/fit.rds and dynamical.rds
 # (R/two_stage_maps.R), built from the same data. Cells are taken chunk_size
-# at a time, so memory is set by one type's fit and a chunk's draws. Writes
+# at a time; peak memory ~11 GB, ~40 min on the October fits. Writes
 # outputs/full_fit_maps_at_assays.csv.
 
 source("R/packages.R")
