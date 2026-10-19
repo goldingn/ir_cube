@@ -6,9 +6,12 @@
 # Here predictions instead mix p(latent | theta_j, y) over points theta_j of
 # p(theta | y), with weights w_j:
 #
-#   nuts     NUTS draws of theta from the marginal posterior (tmbstan's
-#            model, in coordinates whitened by the Gaussian approximation),
-#            equal weights: the reference;
+#   is       importance sampling: a mixture of multivariate t proposals,
+#            adapted as in AMIS from the Gaussian approximation, then a fresh
+#            batch from it weighted by the exact (Laplace) marginal
+#            posterior, the weights Pareto-smoothed (PSIS, Vehtari et al.
+#            2024), and resampled to equally weighted points: the
+#            reference, with Monte Carlo standard errors;
 #   laplace  draws from the Gaussian approximation to p(theta | y) at its mode,
 #            on the optimiser's (log / logit) scale, equal weights;
 #   ccd      INLA's central composite design (Rue, Martino & Chopin 2009, sec.
@@ -141,11 +144,11 @@ hyper_mode <- function(fit, obj, control = list(eval.max = 200,
 }
 
 # points of p(theta | y) by `method`; see the header ("mode" is the plug-in
-# at the mode of this marginal). n is the number of
-# points for laplace and nuts (nuts thins its draws to n); ccd's number is
-# set by the dimension
+# at the mode of this marginal). n is the number of points for laplace and
+# is (is resamples its weighted draws to n); ccd's number is set by the
+# dimension
 hyper_points <- function(fit, obj, method = c("mode", "laplace", "ccd",
-                                              "nuts"),
+                                              "is"),
                          n = 100, ...) {
   method <- match.arg(method)
   start <- Sys.time()
@@ -154,7 +157,7 @@ hyper_points <- function(fit, obj, method = c("mode", "laplace", "ccd",
                 mode = list(theta = matrix(mode$mode, 1), weight = 1),
                 laplace = hyper_laplace(mode, n),
                 ccd = hyper_ccd(obj, mode, ...),
-                nuts = hyper_nuts(obj, mode, n, ...))
+                is = hyper_is(obj, mode, n, ...))
   colnames(out$theta) <- names(mode$mode)
   c(list(method = method, mode = mode$mode, covariance = mode$covariance,
          mode_convergence = mode$convergence),
@@ -223,53 +226,143 @@ hyper_ccd <- function(obj, mode, f0 = 1.1) {
                           design_weight = design_weight))
 }
 
-# NUTS on the marginal posterior of theta, in whitened coordinates z, theta =
-# mode + L z with L L' the covariance of the Gaussian approximation, so that
-# the target is near a standard normal from the first iteration and warmup
-# need not find the scales (tmbstan's model, given the marginal's fn and gr in
-# z; the Jacobian of the linear map is constant). Chains start near the mode;
-# the draws are thinned evenly to n points. Returns the full draws and the
-# chains' diagnostics too
-hyper_nuts <- function(obj, mode, n, chains = 4, warmup = 500, iter = 1000,
-                       cores = chains, adapt_delta = 0.9, init_sd = 0.5,
-                       max_treedepth = 8) {
-  suppressMessages(library(tmbstan))
+# log density of the multivariate t with df degrees of freedom, centre mu and
+# scale matrix sigma, at the rows of x
+log_dmvt <- function(x, mu, sigma, df) {
+  d <- length(mu)
+  R <- chol(sigma)
+  delta <- colSums(backsolve(R, t(x) - mu, transpose = TRUE) ^ 2)
+  lgamma((df + d) / 2) - lgamma(df / 2) - d / 2 * log(df * pi) -
+    sum(log(diag(R))) - (df + d) / 2 * log1p(delta / df)
+}
+
+# The log marginal posterior at the rows of theta, in `cores` forked
+# processes, each taking its share in a nearest-neighbour order, so that each
+# inner solve starts from the mode at a nearby theta; -Inf where it fails
+log_post_parallel <- function(obj, theta, covariance, cores) {
+  shares <- split(seq_len(nrow(theta)), rep_len(seq_len(cores), nrow(theta)))
+  parts <- parallel::mclapply(shares, function(rows) {
+    rows <- rows[point_order(theta[rows, , drop = FALSE], covariance)]
+    start <- Sys.time()
+    out <- numeric(length(rows))
+    for (r in seq_along(rows)) {
+      f <- tryCatch(obj$fn(theta[rows[r], ]), error = function(e) NA_real_)
+      out[r] <- if (is.finite(f)) -f else -Inf
+      if (r %% 50 == 0) {
+        report("is process %i: %i of %i draws, %.1f s per draw", Sys.getpid(),
+               r, length(rows),
+               as.numeric(Sys.time() - start, units = "secs") / r)
+      }
+    }
+    list(rows = rows, log_post = out)
+  }, mc.cores = cores, mc.preschedule = FALSE)
+  if (!all(vapply(parts, is.list, logical(1)))) {
+    stop("evaluating the marginal posterior failed in a forked process")
+  }
+  log_post <- numeric(nrow(theta))
+  for (part in parts) log_post[part$rows] <- part$log_post
+  log_post
+}
+
+# Importance sampling from the marginal posterior of theta, with a proposal
+# adapted as in AMIS (Cornuet, Marin, Mira & Robert 2012), then a fresh batch
+# from the fixed adapted proposal, so that the reported estimates are plain
+# importance sampling.
+#   adapt  `rounds` rounds of n_adapt / rounds draws, each from a multivariate
+#          t with df degrees of freedom: the first centred on the mode with the
+#          covariance of the Gaussian approximation, each later one on the
+#          weighted mean and covariance of all the draws so far, weighted by
+#          the exact marginal posterior density over the equal mixture of the
+#          rounds' proposals;
+#   final  n_final fresh draws from the equal mixture q of all rounds + 1
+#          proposals (the first, the Laplace t, keeps the weights bounded
+#          where the adapted ones fall short), weighted by p / q, the log
+#          weights Pareto-smoothed (loo::psis()).
+# Returns n equally weighted points, resampled systematically from the final
+# batch (repeats merged, weight = share), and the diagnostics: Pareto k of
+# the final batch (reliable below 0.7), its effective sample size, the ESS
+# after each adaptation round, and the posterior mean, SD and Monte Carlo SE
+# of each hyperparameter from the final batch
+hyper_is <- function(obj, mode, n = 200, n_adapt = 1000, n_final = 1000,
+                     rounds = 4, df = 3,
+                     cores = as.integer(Sys.getenv("IR_CUBE_IS_CORES", "1"))) {
   d <- length(mode$mode)
-  L <- t(chol(mode$covariance))
-  to_theta <- function(z) as.vector(mode$mode + L %*% z)
-  # tmbstan's sampling method reads the DLL's name from fn's environment
-  DLL <- obj$env$DLL
-  model <- tmbstan:::tmbstan_model(
-    par = setNames(rep(0, d), rep("z", d)),
-    fn = function(z) obj$fn(to_theta(z)),
-    gr = function(z) as.vector(obj$gr(to_theta(z)) %*% L))
-  inits <- lapply(seq_len(chains), function(i) {
-    list(z = numeric(), y = rnorm(d, 0, init_sd))
-  })
-  sampled <- rstan::sampling(model, chains = chains, iter = iter,
-                             warmup = warmup, init = inits, cores = cores,
-                             seed = sample.int(1e6, 1),
-                             control = list(adapt_delta = adapt_delta,
-                                            max_treedepth = max_treedepth))
-  z_draws <- as.matrix(sampled)
-  z_draws <- z_draws[, setdiff(colnames(z_draws), "lp__"), drop = FALSE]
-  stopifnot(ncol(z_draws) == d)
-  draws <- t(apply(z_draws, 1, to_theta))
-  colnames(draws) <- names(mode$mode)
-  summary <- posterior::summarise_draws(
-    posterior::as_draws_array(as.array(sampled)), "rhat", "ess_bulk",
-    "ess_tail")
-  sampler <- rstan::get_sampler_params(sampled, inc_warmup = FALSE)
-  keep <- round(seq(1, nrow(draws), length.out = n))
-  list(theta = unname(draws[keep, , drop = FALSE]), weight = rep(1 / n, n),
-       draws = draws,
-       diagnostics = list(
-         summary = summary,
-         divergent = sum(vapply(sampler, function(s) sum(s[, "divergent__"]),
-                                numeric(1))),
-         treedepth = unlist(lapply(sampler, function(s) s[, "treedepth__"])),
-         n_leapfrog = unlist(lapply(sampler,
-                                    function(s) s[, "n_leapfrog__"]))))
+  # draws from component k of the proposals, and the log density of their
+  # equal mixture
+  draw_t <- function(n, centre, scale) {
+    z <- matrix(rnorm(n * d), n) / sqrt(rchisq(n, df) / df)
+    sweep(z %*% chol(scale), 2, centre, "+")
+  }
+  log_mixture <- function(x, centres, scales) {
+    l <- sapply(seq_along(centres), function(k) {
+      log_dmvt(x, centres[[k]], scales[[k]], df)
+    })
+    l <- matrix(l, nrow(x))
+    apply(l, 1, function(v) max(v) + log(mean(exp(v - max(v)))))
+  }
+  normalise <- function(log_weight) {
+    w <- exp(log_weight - max(log_weight))
+    w / sum(w)
+  }
+
+  # adaptation
+  per_round <- ceiling(n_adapt / rounds)
+  centres <- list(mode$mode)
+  scales <- list(mode$covariance)
+  theta <- matrix(numeric(0), 0, d)
+  log_target <- numeric(0)
+  round_ess <- numeric(rounds)
+  for (r in seq_len(rounds)) {
+    new <- draw_t(per_round, centres[[r]], scales[[r]])
+    log_target <- c(log_target,
+                    log_post_parallel(obj, new, scales[[r]], cores))
+    theta <- rbind(theta, new)
+    weight <- normalise(log_target - log_mixture(theta, centres, scales))
+    round_ess[r] <- 1 / sum(weight ^ 2)
+    report("is adaptation round %i: %i draws, ESS %.0f", r, nrow(theta),
+           round_ess[r])
+    centre <- colSums(theta * weight)
+    covariance <- crossprod(sweep(theta, 2, centre) * sqrt(weight)) +
+      diag(1e-6 * diag(mode$covariance), d)
+    centres[[r + 1]] <- centre
+    scales[[r + 1]] <- covariance
+  }
+
+  # the final batch, from the fixed mixture of all the proposals
+  component <- sample(seq_along(centres), n_final, replace = TRUE)
+  theta <- matrix(NA_real_, n_final, d)
+  for (k in unique(component)) {
+    rows <- which(component == k)
+    theta[rows, ] <- draw_t(length(rows), centres[[k]], scales[[k]])
+  }
+  log_target <- log_post_parallel(obj, theta, scales[[length(scales)]], cores)
+  log_weight <- log_target - log_mixture(theta, centres, scales)
+  smoothed <- suppressWarnings(loo::psis(log_weight, r_eff = NA))
+  weight <- as.vector(weights(smoothed, log = FALSE, normalize = TRUE))
+  report("is final batch: %i draws, ESS %.0f, Pareto k %.2f", n_final,
+         1 / sum(weight ^ 2), loo::pareto_k_values(smoothed))
+
+  # summaries of each hyperparameter, with the Monte Carlo SE of a
+  # self-normalised importance sampling mean
+  centre <- colSums(theta * weight)
+  deviation <- sweep(theta, 2, centre)
+  summary <- data.frame(parameter = names(mode$mode) %||% seq_len(d),
+                        mean = centre,
+                        sd = sqrt(colSums(weight * deviation ^ 2)),
+                        mcse = sqrt(colSums(weight ^ 2 * deviation ^ 2)))
+
+  index <- hyper_allocation(weight, n)
+  counts <- table(index)
+  keep <- as.integer(names(counts))
+  list(theta = theta[keep, , drop = FALSE],
+       weight = as.vector(counts) / n,
+       draws = theta, log_weight = log_weight, is_weight = weight,
+       proposals = list(centres = centres, scales = scales, df = df),
+       diagnostics = list(pareto_k = loo::pareto_k_values(smoothed),
+                          ess = 1 / sum(weight ^ 2),
+                          round_ess = round_ess,
+                          n_failed = sum(!is.finite(log_target)),
+                          summary = summary))
 }
 
 # The point of p(theta | y) each of n_draws draws uses: the points allotted by
@@ -329,8 +422,14 @@ predict_correction_hyper <- function(fit, hyper, new, m_draws_train = NULL,
     used <- used[point_order(hyper$theta[used, , drop = FALSE],
                              hyper$covariance)]
   }
-  for (j in used) {
+  # the conditional posterior mean of omega + xi at `new` at each point used,
+  # for the Monte Carlo error of the integration over theta
+  point_means <- matrix(NA_real_, length(used), nrow(new))
+  for (i in seq_along(used)) {
+    j <- used[i]
     fit_j <- conditional_fit(fit, obj, hyper$theta[j, ])
+    point_means[i, ] <- project_correction(
+      fit_j, correction_node_draws(fit_j, new$year, mean = TRUE), new)[, 1]
     rows <- which(point == j)
     for (batch in split(rows, ceiling(seq_along(rows) / batch_size))) {
       if (is.null(dynamical)) {
@@ -347,5 +446,22 @@ predict_correction_hyper <- function(fit, hyper, new, m_draws_train = NULL,
     }
   }
   attr(draws, "point") <- point
+  attr(draws, "point_means") <- point_means
+  attr(draws, "point_share") <- as.vector(table(factor(point, used))) /
+    n_draws
   draws
+}
+
+# The Monte Carlo SE, from the integration over theta, of the predictive mean
+# of omega + xi at each point of `new`, from predict_correction_hyper()'s
+# draws: the weighted SD of the points' conditional means over the square
+# root of the points' effective number (1 / sum of squared shares), or of
+# n_eff when given (e.g. the importance sampling ESS, if smaller)
+hyper_mcse <- function(draws, n_eff = NULL) {
+  g <- attr(draws, "point_means")
+  w <- attr(draws, "point_share")
+  if (is.null(g) || nrow(g) < 2) return(rep(NA_real_, ncol(draws)))
+  g_bar <- colSums(g * w)
+  sd_w <- sqrt(colSums(w * sweep(g, 2, g_bar) ^ 2))
+  sd_w / sqrt(min(c(1 / sum(w ^ 2), n_eff)))
 }

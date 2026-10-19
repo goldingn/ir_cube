@@ -21,8 +21,8 @@
 #                (#34, point 2), with its Laplace latent posterior;
 #   laplace_bb,
 #   ccd_bb       laplace and ccd on the beta-binomial Laplace marginal;
-#   nuts         NUTS draws of theta from the beta-binomial Laplace marginal:
-#                the reference.
+#   is           importance sampling of theta from the beta-binomial Laplace
+#                marginal, PSIS-smoothed: the reference.
 #
 # All but plugin_once share the plugin fit, which is saved once to
 # outputs/two_stage/hyper/fits/<key>__<k>.rds and reused. Each method saves
@@ -32,9 +32,8 @@
 # and p), the points of theta and their weights, and a one-row summary.
 # R/two_stage_hyper_scores.R scores them.
 #
-# NUTS settings from the environment: IR_CUBE_NUTS_CHAINS (4),
-# IR_CUBE_NUTS_WARMUP (500), IR_CUBE_NUTS_ITER (1000, warmup included); the
-# chains run in parallel. Run with OpenBLAS, as R/run_two_stage_folds.R.
+# is evaluates its proposal draws in IR_CUBE_IS_CORES forked processes. Run
+# with OpenBLAS, as R/run_two_stage_folds.R.
 
 arguments <- commandArgs(trailingOnly = TRUE)
 stopifnot(length(arguments) == 4)
@@ -43,7 +42,7 @@ fold_name <- arguments[2]
 k <- as.integer(arguments[3])
 methods <- strsplit(arguments[4], ",")[[1]]
 all_methods <- c("plugin_once", "plugin", "laplace", "ccd", "plugin_bb",
-                 "laplace_bb", "ccd_bb", "nuts")
+                 "laplace_bb", "ccd_bb", "is")
 stopifnot(all(methods %in% all_methods))
 
 source("R/two_stage_helpers.R")
@@ -144,7 +143,7 @@ for (method in methods) {
     theta <- matrix(hyper_vector(fit), 1)
     weight <- 1
   } else {
-    bb <- method %in% c("plugin_bb", "laplace_bb", "ccd_bb", "nuts")
+    bb <- method %in% c("plugin_bb", "laplace_bb", "ccd_bb", "is")
     obj <- correction_marginal(fit, if (bb) "beta_binomial" else "pql")
     # the points are saved as soon as they are made, and reused by a rerun
     points_file <- file.path(hyper_dir, "fits",
@@ -155,11 +154,7 @@ for (method in methods) {
       plugin = hyper_points(fit, obj, "mode"),
       laplace = hyper_points(fit, obj, "laplace", n = 100),
       ccd = hyper_points(fit, obj, "ccd"),
-      nuts = hyper_points(
-        fit, obj, "nuts", n = 100,
-        chains = as.integer(Sys.getenv("IR_CUBE_NUTS_CHAINS", "4")),
-        warmup = as.integer(Sys.getenv("IR_CUBE_NUTS_WARMUP", "500")),
-        iter = as.integer(Sys.getenv("IR_CUBE_NUTS_ITER", "1000"))))
+      is = hyper_points(fit, obj, "is", n = 200))
     saveRDS(hyper, points_file)
     report("%s: %i points of theta in %.0f s", method, nrow(hyper$theta),
            hyper$seconds)
@@ -173,6 +168,9 @@ for (method in methods) {
   }
   stopifnot(!anyNA(lambda))
   seconds <- as.numeric(Sys.time() - start, units = "secs")
+  mcse <- if (method %in% c("ccd", "ccd_bb")) rep(NA_real_, ncol(lambda)) else
+    hyper_mcse(lambda, if (method == "is") hyper$diagnostics$ess)
+  predictive_sd <- apply(lambda, 2, sd)
 
   hyper_table <- point_hyper(fit, theta)
   summary <- bind_cols(
@@ -182,18 +180,24 @@ for (method in methods) {
            n_points_used = length(unique(attr(lambda, "point") %||% 1)),
            fit_seconds = fit_seconds, seconds = seconds,
            hyper_seconds = if (is.null(hyper)) NA else hyper$seconds,
-           nuts_divergent = if (method == "nuts")
-             hyper$diagnostics$divergent else NA,
-           nuts_max_rhat = if (method == "nuts")
-             max(hyper$diagnostics$summary$rhat) else NA,
-           nuts_min_ess_bulk = if (method == "nuts")
-             min(hyper$diagnostics$summary$ess_bulk) else NA,
+           is_pareto_k = if (method == "is")
+             hyper$diagnostics$pareto_k else NA,
+           is_ess = if (method == "is") hyper$diagnostics$ess else NA,
+           is_n_failed = if (method == "is")
+             hyper$diagnostics$n_failed else NA,
+           # the Monte Carlo SE of the predictive mean of omega + xi from
+           # the integration over theta, relative to the predictive SD of
+           # the logit (median and max over the held-out assays)
+           mcse_ratio_median = median(mcse / predictive_sd),
+           mcse_ratio_max = max(mcse / predictive_sd),
            peak_memory_gb = peak_memory_gb()),
     hyper_quantiles(hyper_table, weight),
     fit_summary(fit) |> select(pql_refits, pql_last_theta_change,
                                convergence)
   )
   attr(lambda, "point") <- NULL
+  attr(lambda, "point_means") <- NULL
+  attr(lambda, "point_share") <- NULL
   saveRDS(list(summary = summary, test = test, logit_draws = lambda,
                theta = theta, weight = weight, hyper_table = hyper_table,
                hyper = hyper[setdiff(names(hyper), "theta")]),

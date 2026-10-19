@@ -85,8 +85,7 @@ VCPUS = {2, 4, 8, 16, 32}
 REPOS = {"idem-lab/ir_cube", "goldingn/ir_cube"}
 ENV = {"JOB", "CODE_REF", "CODE_REPO", "IR_CUBE_MODEL_OPTIONS", "IR_CUBE_INITS",
        "IR_CUBE_MCMC_SETTINGS", "OMP_NUM_THREADS", "IR_CUBE_NO_MEMORY_WAIT",
-       "HYPER_NAME", "IR_CUBE_NUTS_CHAINS", "IR_CUBE_NUTS_WARMUP",
-       "IR_CUBE_NUTS_ITER"}
+       "HYPER_NAME", "HYPER_FITS_FROM", "IR_CUBE_IS_CORES"}
 KEYS = {"name", "image", "cpu", "cloud", "dataCenterIds", "mounts", "disk", "env"}
 MOUNTS = {"network": [{"volumeId": "0f6xjzaxch", "path": "/workspace"}]}
 errors, rows, pods, markers = [], [], set(), set()

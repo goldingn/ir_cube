@@ -64,7 +64,7 @@ RUN echo "options(repos = c(CRAN = '${CRAN}'), Ncpus = ${NCPUS})" \
        future future.apply future.callr DHARMa Hmisc patchwork extraDistr \
        ggtext geodata sf TMB RcppEigen fmesher Matrix coda scales fields mgcv \
        ggrepel scoringRules posterior loo matrixStats RColorBrewer R6 \
-       processx callr remotes reticulate tensorflow tmbstan \
+       processx callr remotes reticulate tensorflow \
   && rm -rf /tmp/downloaded_packages
 
 # greta at 282944f (0.6.0.9000); its dependencies from the snapshot
