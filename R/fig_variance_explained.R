@@ -15,9 +15,9 @@
 # R/validation_change.R (D, E); definitions, n* and the distances in
 # doc/cv_figure_captions.md.
 #
-# Also the per-insecticide breakdown of the level scores
-# (outputs/cv_variance_explained_by_insecticide.csv, R/variance_explained.R),
-# in the same encoding.
+# Also the per-insecticide breakdown of B and C
+# (outputs/cv_level_skill_by_insecticide.csv, R/validation_level.R), in the
+# same encoding.
 source("R/packages.R")
 
 suppressMessages({
@@ -36,7 +36,6 @@ panel_order <- c("A", "B", "C", "D", "E")
 bar_order <- c("local", "best_k", "nearest", "dynamical", "two_stage")
 # the gap between the bioassay-based and the model-based bars, in bar widths
 group_gap <- 0.35
-placeholder_note <- "not yet\navailable"
 
 km <- function(panel) {
   round(unique(level$median_km[level$panel == panel & !is.na(level$median_km)]))
@@ -54,9 +53,7 @@ bars <- bind_rows(level, change) %>%
   mutate(ceiling = estimate[bar == "ceiling"]) %>%
   ungroup() %>%
   filter(bar %in% bar_order) %>%
-  mutate(placeholder = source == "placeholder" | is.na(estimate),
-         note = placeholder_note,
-         panel = factor(panel, levels = panel_order),
+  mutate(panel = factor(panel, levels = panel_order),
          bar = factor(bar, levels = bar_order)) %>%
   arrange(panel, bar) %>%
   group_by(panel) %>%
@@ -124,38 +121,32 @@ ggsave("figures/CV_variance_explained.png", main, width = 11,
        bg = "white")
 
 
-# per insecticide, level only ------------------------------------------------------
+# per insecticide, B and C -----------------------------------------------------------
 
 # One panel per experiment, the insecticides grouped by class as in
 # fig_ir_maps.R. Only cells where the comparison can be read are drawn (the
-# `shown` rule in variance_explained.R: ceiling >= 50% and 95% intervals
+# `shown` rule in validation_level.R: ceiling >= 50% and 95% intervals
 # narrower than 100 points); the rest, and why, are in the csv.
-by_insecticide_all <- read.csv("outputs/cv_variance_explained_by_insecticide.csv")
+by_insecticide_all <- read.csv("outputs/cv_level_skill_by_insecticide.csv")
 by_insecticide <- by_insecticide_all %>% filter(shown)
 
-experiment_order <- c("spatial interpolation", "spatial extrapolation",
-                      "temporal change")
+experiment_labels <- c(B = "B  interpolation", C = "C  extrapolation")
 insecticide_class_order <- c(
   "Alpha-cypermethrin", "Deltamethrin", "Lambda-cyhalothrin", "Permethrin",
   "Fenitrothion", "Malathion", "Pirimiphos-methyl",
   "DDT", "Bendiocarb")
-present <- unique(by_insecticide$stratum)
+present <- unique(by_insecticide$insecticide_type)
 stopifnot(setequal(present, intersect(insecticide_class_order, present)))
 insecticide_levels <- intersect(insecticide_class_order, present)
-insecticide_bars <- c("nearest recent survey" = "nearest",
-                      "dynamical model" = "dynamical",
-                      "two-stage model" = "two_stage")
+insecticide_bars <- c("nearest", "dynamical", "two_stage")
 
 insecticide_data <- by_insecticide %>%
-  group_by(experiment, stratum) %>%
-  mutate(ceiling = 100 - estimate[kind == "noise"]) %>%
-  ungroup() %>%
-  filter(kind == "model", quantity %in% names(insecticide_bars)) %>%
-  mutate(bar = unname(insecticide_bars[quantity]),
-         offset = match(bar, insecticide_bars),
-         position = match(stratum, insecticide_levels) + (offset - 2) * 0.28,
-         placeholder = FALSE, note = NA_character_,
-         experiment = factor(experiment, levels = experiment_order)) %>%
+  filter(bar %in% insecticide_bars) %>%
+  mutate(offset = match(bar, insecticide_bars),
+         position = match(insecticide_type, insecticide_levels) +
+           (offset - 2) * 0.28,
+         experiment = factor(experiment_labels[panel],
+                             levels = experiment_labels)) %>%
   # A bar whose estimate is below zero gets no colour: on this axis its
   # interval would show above zero with no rule in it, as though the estimate
   # lay inside it. Plain grey says what is meant, that it explains none of the
@@ -180,7 +171,7 @@ by_type_figure <- ggplot(insecticide_data) +
 
 # a key for the bar colours as well as the parts, since the bars are not
 # labelled one by one
-colour_key <- ggplot(tibble(bar = unname(insecticide_bars),
+colour_key <- ggplot(tibble(bar = insecticide_bars,
                             x = seq_along(insecticide_bars))) +
   geom_tile(aes(x = x, y = 1, fill = bar), width = 0.12, height = 0.6) +
   geom_text(aes(x = x + 0.1, y = 1, label = bar_labels[bar]), hjust = 0,
@@ -192,12 +183,12 @@ colour_key <- ggplot(tibble(bar = unname(insecticide_bars),
 by_type_with_key <- by_type_figure /
   (colour_key + skill_key(swatch_bar = "dynamical") +
      plot_layout(widths = c(1, 1.3))) +
-  plot_layout(heights = c(10, 2))
+  plot_layout(heights = c(7, 2))
 
 ggsave("figures/CV_variance_explained_by_insecticide.png", by_type_with_key,
-       width = 10, height = 10.5, dpi = 300, bg = "white", limitsize = FALSE)
+       width = 10, height = 7.7, dpi = 300, bg = "white", limitsize = FALSE)
 
-shown_cells <- by_insecticide_all %>% distinct(experiment, stratum, shown)
+shown_cells <- by_insecticide_all %>% distinct(panel, insecticide_type, shown)
 cat("\nper-insecticide panels: ", sum(shown_cells$shown), " cells shown of ",
     nrow(shown_cells), "\n", sep = "")
 

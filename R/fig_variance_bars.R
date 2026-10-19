@@ -51,16 +51,13 @@ rule_colour <- function(bar) {
 }
 
 # One bar per row of `data`: position, bar (a name of bar_colours), estimate,
-# lower, upper, ceiling, and placeholder (TRUE where the estimate is not yet
-# available: drawn as a dashed outline up to the ceiling, labelled `note`)
-skill_bar_layers <- function(data, width = 0.8, note_size = 2.6) {
+# lower, upper and ceiling
+skill_bar_layers <- function(data, width = 0.8) {
 
   data <- data %>%
-    mutate(xmin = position - width / 2, xmax = position + width / 2)
-  scored <- data %>% filter(!placeholder) %>%
-    mutate(solid_top = pmax(lower, 0),
+    mutate(xmin = position - width / 2, xmax = position + width / 2,
+           solid_top = pmax(lower, 0),
            rule = rule_colour(bar))
-  waiting <- data %>% filter(placeholder)
 
   list(
     # the noise, above the ceiling
@@ -68,23 +65,20 @@ skill_bar_layers <- function(data, width = 0.8, note_size = 2.6) {
               aes(xmin = xmin, xmax = xmax, ymin = ceiling, ymax = 100),
               fill = noise_fill, colour = NA),
     # the remainder up to the ceiling
-    geom_rect(data = scored,
+    geom_rect(data = data,
               aes(xmin = xmin, xmax = xmax,
                   ymin = pmin(pmax(upper, 0), ceiling), ymax = ceiling),
               fill = remainder_fill, colour = NA),
-    geom_rect(data = waiting,
-              aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = ceiling),
-              fill = remainder_fill, colour = NA),
     # the score: its interval translucent, solid to its nearer bound
-    geom_rect(data = scored,
+    geom_rect(data = data,
               aes(xmin = xmin, xmax = xmax, ymin = lower, ymax = upper,
                   fill = bar),
               alpha = interval_alpha, colour = NA),
-    geom_rect(data = scored,
+    geom_rect(data = data,
               aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = solid_top,
                   fill = bar),
               colour = NA),
-    geom_segment(data = scored,
+    geom_segment(data = data,
                  aes(x = xmin, xend = xmax, y = estimate, yend = estimate,
                      colour = rule),
                  linewidth = 0.7),
@@ -94,18 +88,10 @@ skill_bar_layers <- function(data, width = 0.8, note_size = 2.6) {
                  colour = ceiling_colour, linetype = "dotted",
                  linewidth = 0.45),
     # the outline last, over the full extent of the bar
-    geom_rect(data = scored,
+    geom_rect(data = data,
               aes(xmin = xmin, xmax = xmax, ymin = pmin(lower, 0),
                   ymax = 100),
               fill = NA, colour = outline_colour, linewidth = 0.3),
-    geom_rect(data = waiting,
-              aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = 100),
-              fill = NA, colour = grey(0.4), linewidth = 0.4,
-              linetype = "22"),
-    geom_text(data = waiting,
-              aes(x = position, y = ceiling / 2, label = note),
-              angle = 90, size = note_size, colour = grey(0.25),
-              lineheight = 0.9),
     scale_fill_manual(values = bar_colours, guide = "none"),
     scale_colour_identity()
   )
