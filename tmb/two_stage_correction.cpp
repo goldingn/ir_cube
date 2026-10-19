@@ -38,19 +38,17 @@ using namespace density;
 using namespace R_inla;
 using namespace Eigen;
 
-// log density of the Fuglstad et al. (2019) PC prior for a d = 2 Matern field,
-// on the (log kappa, log sigma) scale the optimiser works on. With range
-// r = sqrt(8) / kappa, P(r < r0) = alpha_r and P(sigma > s0) = alpha_s; the
-// Jacobians are |d r / d log kappa| = r and |d sigma / d log sigma| = sigma.
+// log prior density of a d = 2 Matern field's (log kappa, log sigma), the
+// scale the optimiser works on, with range r = sqrt(8) / kappa: log r ~
+// normal(prior(0), prior(1)) (|d log r / d log kappa| = 1), and the Fuglstad
+// et al. (2019) PC prior on sigma, P(sigma > prior(2)) = prior(3)
+// (|d sigma / d log sigma| = sigma)
 template<class Type>
-Type log_pc_matern(Type log_kappa, Type log_sigma, vector<Type> pc) {
+Type log_matern_prior(Type log_kappa, Type log_sigma, vector<Type> prior) {
   Type log_range = log(sqrt(Type(8.0))) - log_kappa;
-  Type range = exp(log_range);
   Type sigma = exp(log_sigma);
-  Type lambda_range = -log(pc(1)) * pc(0);
-  Type lambda_sigma = -log(pc(3)) / pc(2);
-  Type lp = log(lambda_range) - Type(2.0) * log_range - lambda_range / range +
-    log_range;
+  Type lambda_sigma = -log(prior(3)) / prior(2);
+  Type lp = dnorm(log_range, prior(0), prior(1), true);
   lp += log(lambda_sigma) - lambda_sigma * sigma + log_sigma;
   return lp;
 }
@@ -76,8 +74,8 @@ Type objective_function<Type>::operator() ()
   DATA_IVECTOR(iid_term);         // 0-based term of each level in iid
   DATA_STRUCT(spde, spde_t);      // FEM matrices of the omega mesh
   DATA_STRUCT(spde_xi, spde_t);   // and of the xi mesh
-  DATA_VECTOR(pc_omega);          // (range0, P(range < range0), sigma0, P(sigma > sigma0))
-  DATA_VECTOR(pc_eta);            // as above, for the eta innovations field
+  DATA_VECTOR(prior_omega);       // (mean log range, sd log range, sigma0, P(sigma > sigma0))
+  DATA_VECTOR(prior_eta);         // as above, for the eta innovations field
   DATA_VECTOR(pc_iid);            // (sigma0, P(sigma > sigma0)) for every iid term
   DATA_VECTOR(persistence_prior); // (meanlog, sdlog) of 1 / (1 - phi)
   DATA_INTEGER(likelihood);       // 0: Gaussian working response, 1: beta-binomial counts
@@ -149,8 +147,8 @@ Type objective_function<Type>::operator() ()
   // exponential (PC) priors on the iid SDs (with the Jacobian for log sigma),
   // and a lognormal prior on persistence L = 1 / (1 - phi) = 1 + exp(logit_phi),
   // for which d log L / d logit_phi = phi
-  nll -= log_pc_matern(log_kappa_omega, log_sigma_omega, pc_omega);
-  nll -= log_pc_matern(log_kappa_eta, log_sigma_eta, pc_eta);
+  nll -= log_matern_prior(log_kappa_omega, log_sigma_omega, prior_omega);
+  nll -= log_matern_prior(log_kappa_eta, log_sigma_eta, prior_eta);
   Type lambda_iid = -log(pc_iid(1)) / pc_iid(0);
   for (int k = 0; k < sigma_iid.size(); k++) {
     nll -= log(lambda_iid) - lambda_iid * sigma_iid(k) + log_sigma_iid(k);

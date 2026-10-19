@@ -207,21 +207,25 @@ xi_design <- function(mesh_xi, coords, year, t0, T) {
                        dims = c(length(year), mesh_xi$n * (T - t0)))
 }
 
-# PC priors: P(range < 50 km) = 0.05 for both Matern fields; P(sigma > 1) =
-# 0.05 for omega, and P(sigma > 0.05) = 0.05 for the annual anomalies eta, so
-# that the second stage changes the dynamical model's trend by at most about
-# 0.5 logit per decade (#34); P(sd > 1) = 0.05 for each iid term; and
-# persistence 1 / (1 - phi) ~ lognormal(log 5.5, 0.31): a median of 5.5
-# years, 95% interval 3.0-10.0, 99.9% interval 2.0-15 (phi 0.5-0.93), which
-# rules out both year-to-year random walks of the trend correction and
-# persistences longer than the data can identify (#34)
-correction_priors <- function(range0 = 50, alpha_range = 0.05, sigma0 = 1,
-                              alpha_sigma = 0.05, eta_sigma0 = 0.05,
+# Priors: each Matern field's range is lognormal with median 222 km and sdlog
+# 0.84, so 95% of its mass lies in 50-1,500 km (2.5% quantile 43 km) and
+# P(range > 3,000 km) = 0.001: the dynamical model's own fields have 1,500 km
+# ranges, and the second stage only fills in finer-scale error (#34). PC
+# priors on the SDs: P(sigma > 1) = 0.05 for omega, and P(sigma > 0.05) = 0.05
+# for the annual anomalies eta, so that the second stage changes the dynamical
+# model's trend by at most about 0.5 logit per decade (#34); P(sd > 1) = 0.05
+# for each iid term; and persistence 1 / (1 - phi) ~ lognormal(log 5.5, 0.31):
+# a median of 5.5 years, 95% interval 3.0-10.0, 99.9% interval 2.0-15 (phi
+# 0.5-0.93), which rules out both year-to-year random walks of the trend
+# correction and persistences longer than the data can identify (#34)
+correction_priors <- function(range_median = 222, range_sdlog = 0.84,
+                              sigma0 = 1, alpha_sigma = 0.05,
+                              eta_sigma0 = 0.05,
                               iid_sigma0 = 1, alpha_iid = 0.05,
                               persistence_median = 5.5,
                               persistence_sdlog = 0.31) {
-  list(pc_omega = c(range0, alpha_range, sigma0, alpha_sigma),
-       pc_eta = c(range0, alpha_range, eta_sigma0, alpha_sigma),
+  list(prior_omega = c(log(range_median), range_sdlog, sigma0, alpha_sigma),
+       prior_eta = c(log(range_median), range_sdlog, eta_sigma0, alpha_sigma),
        pc_iid = c(iid_sigma0, alpha_iid),
        persistence_prior = c(log(persistence_median), persistence_sdlog))
 }
@@ -371,9 +375,9 @@ fit_stage_a <- function(train, t0, T = max(train$year), meshes,
   # ranges of a few hundred km, well inside the prior, and small SDs: the
   # correction should be modest if the dynamical model is good
   start <- modifyList(list(log_sigma_omega = log(0.5),
-                           log_kappa_omega = log(sqrt(8) / 300),
+                           log_kappa_omega = log(sqrt(8) / 222),
                            log_sigma_eta = log(0.03),
-                           log_kappa_eta = log(sqrt(8) / 300),
+                           log_kappa_eta = log(sqrt(8) / 222),
                            logit_phi = qlogis(0.8),
                            log_sigma_iid = rep(log(0.3), length(iid_levels))),
                       start)
