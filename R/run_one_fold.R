@@ -121,18 +121,34 @@ dir.create(draws_dir, showWarnings = FALSE, recursive = TRUE)
 # That includes the draws object and the greta arrays the predictions came from,
 # so that calculate() can be used on a reloaded fold to predict a quantity that
 # was not asked for at fitting time, though the scoring reads only the matrices
-# and they are the bulk of each file's size.
-saveRDS(
-  c(list(model = "dynamical",
-         experiment = experiment_label,
-         fold = fold_name),
-    fit),
-  destination
-)
+# and they are the bulk of each file's size. Chains that stopped moving
+# (stuck_chains()) are dropped from the stored predictions and flagged in the
+# log, and the Rhat is reported over the remaining chains, whatever it is. If
+# the drop fails (e.g. fewer than two chains would remain for the Rhat), the
+# fold is saved with every chain, so the fit is not lost, and flagged to refit.
+fold <- c(list(model = "dynamical",
+               experiment = experiment_label,
+               fold = fold_name),
+          fit)
+fold <- tryCatch(drop_fold_chains(fold), error = function(e) {
+  cat(sprintf(paste("%s | WARNING: stuck chains not dropped (%s);",
+                    "saved with every chain, refit this fold\n"),
+              format(Sys.time(), "%Y-%m-%d %H:%M:%S"), conditionMessage(e)))
+  fold
+})
+saveRDS(fold, destination)
 
-cat(sprintf("%s | saved. p ESS median %.0f, rho ESS median %.0f, worst Rhat %.3f\n",
+if (length(fold$stuck_chains) > 0) {
+  cat(sprintf("%s | WARNING: dropped stuck chain(s) %s of %i\n",
+              format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+              paste(fold$stuck_chains, collapse = ", "), length(fold$draws)))
+}
+cat(sprintf(paste("%s | saved. p ESS median %.0f, rho ESS median %.0f,",
+                  "Rhat worst %.3f, %d of %d parameters above 1.01\n"),
             format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-            median(fit$ess_p, na.rm = TRUE),
-            median(fit$ess_rho, na.rm = TRUE),
-            max(fit$convergence[, 1], na.rm = TRUE)))
+            median(fold$ess_p, na.rm = TRUE),
+            median(fold$ess_rho, na.rm = TRUE),
+            max(fold$convergence[, 1], na.rm = TRUE),
+            sum(fold$convergence[, 1] > 1.01, na.rm = TRUE),
+            nrow(fold$convergence)))
 cat("FOLD COMPLETE\n")
