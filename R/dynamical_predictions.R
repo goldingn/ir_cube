@@ -8,11 +8,12 @@
 # R/dynamical_model.R) and its options (fold$options). The recursion is
 # solved in closed form on the logit scale, as in closed_form_states():
 #
-#   logit q_t = logit q_0 - sum_{s <= t} log w_s - t kappa
+#   logit q_t = logit q_0 - exp(u_s(x)) sum_{s <= t} log w_s - t kappa
 #
-# the state for year index t having had the fitness of years 1..t applied.
-# The logit draws are of predicted mortality: q_t, or with a mortality floor
-# f, f + (1 - f) q_t.
+# the state for year index t having had the fitness of years 1..t applied,
+# with the latent smooths at each cell from their basis there
+# (prediction_basis(), R/latent_smooth.R). The logit draws are of predicted
+# mortality, f + (1 - f) q_t with the floor f at the cell.
 
 source("R/dynamical_model.R")
 # thin_draws() and max_draws
@@ -22,8 +23,8 @@ source("R/validation_scoring.R")
 # correspond to: newer folds thin p_draws to `maximum` at fitting time with
 # this rule, older folds are thinned by the same rule at scoring time. The
 # rule is thin_draws() (R/validation_scoring.R). Chains recorded as stuck
-# (fold$stuck_chains, set by R/drop_stuck_chains.R, which drops their rows
-# from the stored predictions) are left out.
+# (fold$stuck_chains, set by drop_fold_chains(), which drops their rows from
+# the stored predictions) are left out.
 paired_draw_index <- function(fold, maximum = max_draws) {
   n_total <- sum(vapply(fold$draws, nrow, integer(1)))
   index <- thin_draws(matrix(seq_len(n_total)), maximum)[, 1]
@@ -61,12 +62,14 @@ drop_chains <- function(draws, keep) {
   out
 }
 
-# A fitted fold without the chains `stuck`: the rows of the stored predictions
-# (p_draws, rho_type_draws, p_draws_before) that came from them are dropped,
-# and the chains recorded in `stuck_chains`, so that paired_draw_index() gives
-# the draws the remaining rows correspond to. `draws` keeps every chain. The
-# convergence diagnostics are recomputed without them.
-drop_fold_chains <- function(fold, stuck = stuck_chains(fold$draws)) {
+# A fitted fold without its stuck chains (stuck_chains()): the rows of the
+# stored predictions (p_draws, rho_type_draws, p_draws_before) that came from
+# them are dropped, and the chains recorded in `stuck_chains`, so that
+# paired_draw_index() gives the draws the remaining rows correspond to.
+# `draws` keeps every chain. The convergence diagnostics are recomputed
+# without them.
+drop_fold_chains <- function(fold) {
+  stuck <- stuck_chains(fold$draws)
   if (length(stuck) == 0) {
     return(fold)
   }
@@ -168,9 +171,14 @@ dynamical_terms_draws <- function(v, classes_index, types, terms, options) {
 #   init_coef            draws x n_init_covs x n_types, the coefficients of
 #                        the initial-state covariates (NULL for none)
 #   rho_types            draws x n_types, the observation overdispersion
-#   mortality_floor      draws (NULL for none)
 #   kappa_type           draws x n_types, the reversion kappa (<= 0; NULL for
 #                        none, see reversion_kappa())
+#   smooth_weights_selection, smooth_weights_floor
+#                        draws x basis functions, the weights of the latent
+#                        smooths' basis functions (smooth_terms(),
+#                        R/latent_smooth.R; cell_smooths())
+#   floor_log_hazard     draws x n_types, the log floor hazard of each type
+#                        where the floor smooth is 0 (floor_log_hazard())
 #   init_min             n_types, init_frac_min
 #   x_cells_init         the fit's initial-state covariates, one row per
 #                        cell_id (NULL for none)
@@ -199,7 +207,8 @@ dynamical_parameter_draws <- function(fold,
   terms <- dynamical_terms_draws(
     v, classes_index, types,
     terms = c("beta_type", "logit_init_relative", "rho_types",
-              if (reversion) "kappa_type"),
+              if (reversion) "kappa_type", "smooth_weights_selection",
+              "smooth_weights_floor", "floor_log_hazard"),
     options = options)
 
   list(effect_type = exp(terms$beta_type),
@@ -210,10 +219,11 @@ dynamical_parameter_draws <- function(fold,
                dimnames = list(NULL, options$init_covariates, types))
        },
        rho_types = matrix(terms$rho_types, n_draws),
-       mortality_floor = if (isTRUE(options$mortality_floor)) {
-         c(v$mortality_floor)
-       },
        kappa_type = if (reversion) matrix(terms$kappa_type, n_draws),
+       smooth_weights_selection = matrix(terms$smooth_weights_selection,
+                                         n_draws),
+       smooth_weights_floor = matrix(terms$smooth_weights_floor, n_draws),
+       floor_log_hazard = matrix(terms$floor_log_hazard, n_draws),
        init_min = init_frac_constants(types)$min,
        x_cells_init = select_init_covariates(fold$x_cells_init, options),
        variables = v,
@@ -232,7 +242,8 @@ subset_draws <- function(parameters, draws) {
                    drop = FALSE))
   }
   for (name in c("effect_type", "logit_init_relative", "init_coef",
-                 "rho_types", "mortality_floor", "kappa_type")) {
+                 "rho_types", "kappa_type", "smooth_weights_selection",
+                 "smooth_weights_floor", "floor_log_hazard")) {
     parameters[name] <- list(rows(parameters[[name]]))
   }
   parameters$variables <- lapply(parameters$variables, rows)
@@ -256,6 +267,14 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
   floored_logit(logit_init, parameters$init_min[k])
 }
 
+# The latent smooths at cells with basis `basis` (prediction_basis()), for
+# the draws of `parameters`, as list(selection, floor), each draws x cells:
+# u_s and u_f. For dynamical_logit_cells(), once for every type at those cells
+cell_smooths <- function(parameters, basis) {
+  list(selection = parameters$smooth_weights_selection %*% t(basis),
+       floor = parameters$smooth_weights_floor %*% t(basis))
+}
+
 # The recursion for cells of insecticide type k:
 #   parameters  dynamical_parameter_draws() (or subset_draws())
 #   logit_init  draws x cells, the logit relative initial state at each cell's
@@ -265,15 +284,24 @@ cell_logit_init <- function(parameters, k, logit_init, x_init = NULL) {
 #   years_keep  year indices to return
 #   x_init      cells x initial-state covariates (named columns), for fits
 #               with them
+#   smooths     the latent smooths at the cells (cell_smooths())
 # Returns a list named by years_keep of draws x cells logit mortality.
 dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
-                                  x_init = NULL) {
+                                  x_init = NULL, smooths) {
   n_cells <- dim(x)[1]
   n_draws <- parameters$n_draws
   stopifnot(ncol(logit_init) == n_cells, nrow(logit_init) == n_draws,
-            max(years_keep) <= dim(x)[2])
+            max(years_keep) <= dim(x)[2], ncol(smooths$floor) == n_cells)
 
   logit_init <- cell_logit_init(parameters, k, logit_init, x_init)
+
+  # the multiplier of the cumulative log fitness, exp(u_s(x)), and the floor,
+  # draws x cells, the latent smooths at 0 for the types without them
+  has_smooth <- as.numeric(parameters$options$smooth$term_classes[
+    parameters$classes_index[k]])
+  multiplier <- exp(smooths$selection * has_smooth)
+  floor <- floor_value(parameters$floor_log_hazard[, k] +
+                         smooths$floor * has_smooth)
 
   effect <- matrix(parameters$effect_type[, , k], nrow = n_draws)
   kappa <- parameters$kappa_type[, k]
@@ -283,11 +311,11 @@ dynamical_logit_cells <- function(parameters, k, logit_init, x, years_keep,
     # log1p because the selection term can be tiny
     cumulative <- cumulative +
       log1p(effect %*% t(matrix(x[, t, ], nrow = n_cells)))
-    # reversion: - t kappa in year t (reversion_kappa()), one per draw
-    if (!is.null(kappa)) cumulative <- cumulative + kappa
     if (t %in% years_keep) {
-      out[[as.character(t)]] <- floored_logit(
-        logit_init - cumulative, parameters$mortality_floor)
+      logit_q <- logit_init - multiplier * cumulative
+      # reversion: - t kappa in year t (reversion_kappa()), one per draw
+      if (!is.null(kappa)) logit_q <- logit_q - t * kappa
+      out[[as.character(t)]] <- floored_logit(logit_q, floor)
     }
   }
   out
@@ -308,8 +336,11 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
   if (any(rows$year_id > n_times | rows$year_id < 1)) {
     stop("rows fall outside the covariate years 1..", n_times)
   }
-  cell_country <- dynamical_lookups(df)$cell_country_lookup
+  lookups <- dynamical_lookups(df)
+  cell_country <- lookups$cell_country_lookup
   stopifnot(!anyNA(cell_country[rows$cell_id]))
+  # the basis of the latent smooths at each cell_id's mask cell
+  basis_cells <- prediction_basis(parameters$options$smooth, lookups$cells)
 
   # row of x_cell_years for each (cell, year)
   x_row <- matrix(NA_integer_, max(cell_years_index$cell_id), n_times)
@@ -337,7 +368,9 @@ dynamical_logit <- function(parameters, rows, df, x_cell_years,
         matrix(parameters$logit_init_relative[, cell_country[cells], k],
                nrow = n_draws),
         x, years_keep,
-        x_init = parameters$x_cells_init[cells, , drop = FALSE])
+        x_init = parameters$x_cells_init[cells, , drop = FALSE],
+        smooths = cell_smooths(parameters,
+                               basis_cells[cells, , drop = FALSE]))
       for (t in years_keep) {
         at_t <- target[unique_rows$year_id[target] == t]
         result[, at_t] <- logit[[as.character(t)]][

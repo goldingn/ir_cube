@@ -137,12 +137,14 @@ predict_output <- function(output) {
     if (length(ok) == 0) next
     p <- NULL
     x_chunk <- map_x(covariates, ok, length(years_predict))
+    smooths <- cell_smooths(parameters,
+                            prediction_basis(options$smooth, cells[ok]))
     for (type in names(weights)) {
       k <- match(type, types)
       dyn <- dynamical_logit_cells(
         parameters, k, matrix(logit_init[, cell_country_index[ok], k], n_draws),
         x_chunk, seq_along(years_predict),
-        x_init = covariates$init[ok, , drop = FALSE])
+        x_init = covariates$init[ok, , drop = FALSE], smooths = smooths)
       p_type <- lapply(dyn, function(x) weights[[type]] * plogis(x))
       p <- if (is.null(p)) p_type else Map(`+`, p, p_type)
       rm(dyn, p_type)
@@ -151,7 +153,7 @@ predict_output <- function(output) {
       mean_out[ok, j] <- colMeans(p[[j]])
       sd_out[ok, j] <- col_sds(p[[j]])
     }
-    rm(p, x_chunk)
+    rm(p, x_chunk, smooths)
   }
 
   # a fresh raster handle in this process

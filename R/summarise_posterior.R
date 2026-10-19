@@ -1,5 +1,6 @@
 # Posterior summary of the full fit's interpretable parameters, against their
-# priors: the mortality floor, reversion per class, rho per type (with the
+# priors: the mean floor hazard per class and the sd of the types' about it,
+# the latent smooths' sds, reversion per class, rho per type (with the
 # external replicate-based estimate), the initial-state covariate coefficients
 # per type, and the selection coefficients per type (beta_type; the effect on
 # selection is exp(beta_type)).
@@ -34,7 +35,10 @@ n_prior <- 4000
 covariate_names <- colnames(fit$x_cell_years)
 init_names <- fit$model_options$init_covariates
 targets <- list(
-  mortality_floor = list(fit$mortality_floor, NULL),
+  floor_flat = list(fit$floor_flat, list(fit$classes)),
+  floor_sd_type = list(fit$floor_sd_type, NULL),
+  smooth_sd_selection = list(fit$smooth_sd_selection, NULL),
+  smooth_sd_floor = list(fit$smooth_sd_floor, NULL),
   reversion_rate = list(fit$reversion_rate, list(fit$classes)),
   rho_types = list(fit$rho_types, list(fit$types)),
   init_coef = list(fit$init_coef, list(init_names, fit$types)),
