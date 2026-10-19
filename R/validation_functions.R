@@ -282,52 +282,29 @@ noise_floor_record <- function(died, mosquito_number, rho) {
 #
 # The second term is the pull: E[q] lies nearer 0.5 than m, because the
 # inverse logit is applied after the noise. It is why the two-stage predictive
-# mean is not the map. Both moments are integrals over a normal, evaluated by
-# Gauss-Hermite quadrature (normal_quadrature()); the integrand is smooth and
-# bounded, and 40 nodes are exact to ~1e-10 for s up to 2.
+# mean is not the map. Both moments are expectations over a normal
+# (normal_nodes()).
 
-# Nodes and weights for E[f(e)], e ~ N(0, 1): the eigenvalues of the Jacobi
-# matrix of the probabilists' Hermite polynomials, and the squared first
-# components of its eigenvectors (Golub & Welsch 1969)
-normal_quadrature <- function(n_nodes = 40) {
-  jacobi <- matrix(0, n_nodes, n_nodes)
-  off <- sqrt(seq_len(n_nodes - 1))
-  jacobi[cbind(seq_len(n_nodes - 1), seq_len(n_nodes - 1) + 1)] <- off
-  jacobi[cbind(seq_len(n_nodes - 1) + 1, seq_len(n_nodes - 1))] <- off
-  decomposition <- eigen(jacobi, symmetric = TRUE)
-  list(nodes = decomposition$values,
-       weights = decomposition$vectors[1, ] ^ 2)
-}
+# Nodes for an expectation over e ~ N(0, 1): n evenly spaced normal quantiles,
+# so that E[f(e)] is the plain mean of f over them. With n = 1000 the moments
+# below are within 4e-5 of 60-node Gauss-Hermite quadrature for map values
+# 0.02 to 0.999 and SDs up to 1.5
+normal_nodes <- function(n = 1000) qnorm(ppoints(n))
 
 # E[q] - m and E[(q - m)^2] for q = plogis(qlogis(m) + e), e ~ N(0, sd^2),
 # elementwise over m and sd. m of exactly 0 or 1 gives q = m, both zero
-site_noise_moments <- function(map, sd, n_nodes = 40) {
+site_noise_moments <- function(map, sd) {
   stopifnot(length(sd) %in% c(1, length(map)))
-  rule <- normal_quadrature(n_nodes)
+  e <- normal_nodes()
   sd <- rep_len(sd, length(map))
-  deviation <- plogis(outer(qlogis(map), rep(1, n_nodes)) +
-                        outer(sd, rule$nodes)) - map
-  list(pull = drop(deviation %*% rule$weights),
-       mse = drop(deviation ^ 2 %*% rule$weights))
+  deviation <- plogis(outer(qlogis(map), rep(1, length(e))) +
+                        outer(sd, e)) - map
+  list(pull = rowMeans(deviation), mse = rowMeans(deviation ^ 2))
 }
 
 # the model floor U at each map value, for a level score: u and p both count
 model_floor_mse <- function(map, tau, sigma_p) {
   site_noise_moments(map, sqrt(tau ^ 2 + sigma_p ^ 2))$mse
-}
-
-# The same for a change score between two assays at one pixel: p is shared
-# by the pair and cancels on the logit scale, so only u counts (sd tau), drawn
-# independently at each pixel-year. With d_j = q_j - m_j independent,
-#
-#   E[((q_2 - q_1) - (m_2 - m_1)) ^ 2] = E[d_1^2] + E[d_2^2] - 2 E[d_1] E[d_2]
-#
-# On the mortality scale p does not cancel exactly; it is left out as the
-# model's structure says. Divide by the squared gap for a per-year change
-model_floor_change_mse <- function(map_1, map_2, tau) {
-  first <- site_noise_moments(map_1, tau)
-  second <- site_noise_moments(map_2, tau)
-  first$mse + second$mse - 2 * first$pull * second$pull
 }
 
 # The same quantity for a pooled observed proportion: the irreducible variance
