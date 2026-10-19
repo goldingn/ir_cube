@@ -6,8 +6,9 @@
 # Here predictions instead mix p(latent | theta_j, y) over points theta_j of
 # p(theta | y), with weights w_j:
 #
-#   nuts     NUTS draws of theta from the Laplace-approximate marginal posterior
-#            (tmbstan, laplace = TRUE), equal weights: the reference;
+#   nuts     NUTS draws of theta from the marginal posterior (tmbstan's
+#            model, in coordinates whitened by the Gaussian approximation),
+#            equal weights: the reference;
 #   laplace  draws from the Gaussian approximation to p(theta | y) at its mode,
 #            on the optimiser's (log / logit) scale, equal weights;
 #   ccd      INLA's central composite design (Rue, Martino & Chopin 2009, sec.
@@ -222,22 +223,39 @@ hyper_ccd <- function(obj, mode, f0 = 1.1) {
                           design_weight = design_weight))
 }
 
-# NUTS on the Laplace-approximate marginal posterior (tmbstan, laplace = TRUE),
-# chains started near the mode; the draws thinned evenly to n points. Returns
-# the full draws and the chains' diagnostics too
+# NUTS on the marginal posterior of theta, in whitened coordinates z, theta =
+# mode + L z with L L' the covariance of the Gaussian approximation, so that
+# the target is near a standard normal from the first iteration and warmup
+# need not find the scales (tmbstan's model, given the marginal's fn and gr in
+# z; the Jacobian of the linear map is constant). Chains start near the mode;
+# the draws are thinned evenly to n points. Returns the full draws and the
+# chains' diagnostics too
 hyper_nuts <- function(obj, mode, n, chains = 4, warmup = 500, iter = 1000,
-                       cores = chains, adapt_delta = 0.9, init_sd = 0.1) {
+                       cores = chains, adapt_delta = 0.9, init_sd = 0.5,
+                       max_treedepth = 8) {
   suppressMessages(library(tmbstan))
+  d <- length(mode$mode)
+  L <- t(chol(mode$covariance))
+  to_theta <- function(z) as.vector(mode$mode + L %*% z)
+  # tmbstan's sampling method reads the DLL's name from fn's environment
+  DLL <- obj$env$DLL
+  model <- tmbstan:::tmbstan_model(
+    par = setNames(rep(0, d), rep("z", d)),
+    fn = function(z) obj$fn(to_theta(z)),
+    gr = function(z) as.vector(obj$gr(to_theta(z)) %*% L))
   inits <- lapply(seq_len(chains), function(i) {
-    mode$mode + rnorm(length(mode$mode), 0, init_sd)
+    list(z = numeric(), y = rnorm(d, 0, init_sd))
   })
-  sampled <- tmbstan::tmbstan(obj, chains = chains, iter = iter,
-                              warmup = warmup, init = inits, laplace = TRUE,
-                              cores = cores, seed = sample.int(1e6, 1),
-                              control = list(adapt_delta = adapt_delta),
-                              silent = TRUE)
-  draws <- as.matrix(sampled)
-  draws <- draws[, setdiff(colnames(draws), "lp__"), drop = FALSE]
+  sampled <- rstan::sampling(model, chains = chains, iter = iter,
+                             warmup = warmup, init = inits, cores = cores,
+                             seed = sample.int(1e6, 1),
+                             control = list(adapt_delta = adapt_delta,
+                                            max_treedepth = max_treedepth))
+  z_draws <- as.matrix(sampled)
+  z_draws <- z_draws[, setdiff(colnames(z_draws), "lp__"), drop = FALSE]
+  stopifnot(ncol(z_draws) == d)
+  draws <- t(apply(z_draws, 1, to_theta))
+  colnames(draws) <- names(mode$mode)
   summary <- posterior::summarise_draws(
     posterior::as_draws_array(as.array(sampled)), "rhat", "ess_bulk",
     "ess_tail")

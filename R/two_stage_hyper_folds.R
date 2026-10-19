@@ -146,7 +146,11 @@ for (method in methods) {
   } else {
     bb <- method %in% c("plugin_bb", "laplace_bb", "ccd_bb", "nuts")
     obj <- correction_marginal(fit, if (bb) "beta_binomial" else "pql")
-    hyper <- switch(
+    # the points are saved as soon as they are made, and reused by a rerun
+    points_file <- file.path(hyper_dir, "fits",
+                             sprintf("%s__%s__%i__points.rds", method,
+                                     fold_key, k))
+    hyper <- if (file.exists(points_file)) readRDS(points_file) else switch(
       sub("_bb$", "", method),
       plugin = hyper_points(fit, obj, "mode"),
       laplace = hyper_points(fit, obj, "laplace", n = 100),
@@ -156,6 +160,7 @@ for (method in methods) {
         chains = as.integer(Sys.getenv("IR_CUBE_NUTS_CHAINS", "4")),
         warmup = as.integer(Sys.getenv("IR_CUBE_NUTS_WARMUP", "500")),
         iter = as.integer(Sys.getenv("IR_CUBE_NUTS_ITER", "1000"))))
+    saveRDS(hyper, points_file)
     report("%s: %i points of theta in %.0f s", method, nrow(hyper$theta),
            hyper$seconds)
     lambda <- predict_correction_hyper(fit, hyper, test_k,
