@@ -29,7 +29,7 @@ Per insecticide type, on the logit scale, for assay i at pixel s and year t:
 
 ## Headline results
 
-Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summary.csv`), where the final model is `two_stage`. Variance explained, its ceiling and its paired contrasts are from `R/variance_explained.R` → `outputs/cv_variance_explained.csv`, `_by_fold.csv` and `_by_horizon.csv`. The other paired differences are from `R/two_stage_metrics.R` → `outputs/two_stage/cv_headline_two_stage.csv` and `cv_horizon_two_stage.csv`.
+Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summary.csv`), where the final model is `two_stage`. Variance explained and its ceiling are from `R/validation_level.R` → `outputs/cv_level_skill.csv` and `_by_insecticide.csv`. The paired differences are from `R/two_stage_metrics.R` → `outputs/two_stage/cv_headline_two_stage.csv` and `cv_horizon_two_stage.csv`.
 
 - Log score: mean beta-binomial log predictive density at the per-type ρ.
 - CRPS: on the mortality scale.
@@ -125,7 +125,7 @@ Use OpenBLAS (`LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=3`), because
 2. **Folds** (`R/run_two_stage_folds.R`), for each of `spatial_interpolation all`, `spatial_blocks 1|2` and `temporal_forecasting 2014|2018`:
    - `Rscript R/run_two_stage_folds.R <experiment> <fold> <k>` for k = 1–9: one process per type. Each reads the paired dynamical logit draws that `R/run_one_fold.R` saved with the fold (`outputs/cv_draws/assays/`), not the fold. Peak memory is up to ~15 GB (Deltamethrin).
    - `... <experiment> <fold> assemble`: writes `outputs/cv_draws/two_stage__<experiment>__<fold>.rds` and `outputs/two_stage/fit_summary.csv`.
-3. **Metrics:** `Rscript R/validation_metrics.R`, then `Rscript R/variance_explained.R`, then `Rscript R/two_stage_metrics.R`.
+3. **Metrics:** `Rscript R/validation_metrics.R`, then `Rscript R/two_stage_metrics.R`; the rest of the scoring as in `doc/cv_run_plan.md`, section 3.
 4. **Maps** (`R/two_stage_maps.R`):
    - `prepare`: loads `temporary/fitted_model.RData`, checks that its data and covariates are those the current scripts build, and saves per-type dynamical draws (2 min, 7 GB).
    - `fit <k>`: fits type k to all data and saves `outputs/two_stage/maps/<type>/fit.rds` (the fit without its TMB object) and `hyperparameters.csv`. 7–20 min and 8–14 GB per type (Deltamethrin 13.9).

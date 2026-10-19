@@ -63,10 +63,14 @@ confusing ways if they are disturbed:
 ```bash
 Rscript R/fig_illustrate_bioassay_variability.R  # overdispersion per type; everything downstream needs it
 Rscript R/run_validation_folds.R                 # nulls, then dispatch the model folds
+# the two-stage folds: doc/two_stage_plan.md, "How to run", step 2
 Rscript R/validation_metrics.R                   # score everything on disk
-Rscript R/validation_change.R                    # score predicted change, per forecast origin
 Rscript R/validation_geometry.R                  # fold separation, and the leak check
-Rscript R/variance_explained.R                   # variance explained and the noise ceiling
+Rscript R/two_stage_metrics.R                    # the two-stage model against the dynamical
+Rscript R/bioassay_vs_map.R                      # n* tables: bioassays against the map (#30)
+Rscript R/full_fit_maps_at_assays.R              # full-data fit's maps at every assay (after R/predict.R, R/two_stage_maps.R)
+Rscript R/validation_level.R                     # main figure, level panels A-C, and per insecticide
+Rscript R/validation_change.R                    # main figure, change panels D-E (pairs of bioassays)
 Rscript R/fig_variance_explained.R               # the bar figures
 Rscript R/fig_predictive_validation.R            # figures and the table
 ```
@@ -74,6 +78,12 @@ Rscript R/fig_predictive_validation.R            # figures and the table
 The overdispersion fit comes first: `rho_lookup()` stops rather than falling
 back, so nothing scores until `outputs/bioassay_rho_hierarchical.csv` and
 `outputs/bioassay_rho_type_draws.rds` exist.
+
+Point metrics score each model's map (#32): `validation_metrics.R` writes it
+to `outputs/cv_scores.csv` as `map`, and the scripts after it read it from
+there. The two-stage map needs the folds' `map_draws`, and the change score
+the forecasting folds' `map_before` (#36), which `run_two_stage_folds.R`
+saves; scoring stops on a fold without them.
 
 `run_validation_folds.R` fits the nulls in process (minutes) and then dispatches
 each model fold as a separate `Rscript R/run_one_fold.R <experiment> <fold>`,
@@ -475,7 +485,7 @@ both holdouts. Pooling them is still the right way to report a single forecastin
 bar - the alternative is two bars whose difference is mostly window difficulty -
 but the pooled interval carries roughly one and a bit folds' worth of
 information rather than two, and should not be read as though the origins were
-replicates. `outputs/cv_variance_explained_by_fold.csv` has them separately.
+replicates. `outputs/two_stage/cv_headline_two_stage.csv` has them separately.
 
 **How it is coded.** `validation_folds.R` exposes `forecasting_fold(cut_year,
 window)` and a named list `temporal_forecasting_folds`, holding 2014 and 2018.
@@ -709,8 +719,9 @@ national folds.
 
 ## 6. Change-based scoring, and two analyses that are not here
 
-`validation_change.R` scores predicted change between the before-window and the
-holdout, per forecast origin, which is the quantity the forecasting experiment is
+`validation_change.R` scores predicted change between pairs of single
+bioassays at a pixel, one in the before-window and one in the holdout, at least
+3 years apart (#36), which is the quantity the forecasting experiment is
 actually about. The before-window predictions it needs are saved with each fold
 by `fit_validation_fold.R`; because sampling cannot be resumed across sessions
 (§8), that has to be in place before a fit starts and cannot be added afterwards.
