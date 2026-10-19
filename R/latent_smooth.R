@@ -115,6 +115,16 @@ smooth_basis <- function(class_cells, classes) {
   smooth
 }
 
+# Labels of the basis functions of `smooth` (smooth_basis()), by which
+# dynamical_inits() matches cached weights to them: their frequency indices,
+# with the box (origin and half-widths) and the range to 4 significant
+# figures, so that the weights of another basis match none of them
+smooth_basis_labels <- function(smooth) {
+  box <- paste(signif(c(smooth$origin, smooth$half_width), 4), collapse = ",")
+  sprintf("(%d,%d) box %s range %s", smooth$indices[, 1], smooth$indices[, 2],
+          box, signif(smooth$range, 4))
+}
+
 # The frequencies omega_j = sqrt(lambda_j) of the basis functions with
 # indices `indices` (one row per function, one column per dimension) on a box
 # of half-widths `half_width`: lambda_j = sum_d (pi j_d / (2 L_d))^2
