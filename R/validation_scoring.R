@@ -91,10 +91,8 @@ string_seed <- function(key) {
 #              country-year means). For the two-stage model, the posterior
 #              mean of plogis(m + omega + xi), without u and p, from the
 #              fold's map_draws; for every other model the mean of its
-#              p_draws, `predicted`, which is already its map
-#   map_exact  FALSE where a two-stage fold has no map draws for the record
-#              (folds assembled before #32), so `map` falls back to
-#              `predicted`, which is pulled towards 0.5 by the fresh u and p
+#              p_draws, `predicted`, which is already its map. A two-stage
+#              fold without map_draws (assembled before #32) is an error
 #   predicted  the predictive mean, mean of p_draws. The log score, PIT,
 #              coverage, CRPS and the reliability envelopes use each model's
 #              own predictive distribution, the two-stage model's with its
@@ -108,8 +106,7 @@ string_seed <- function(key) {
 #              the dynamical draws, NA for every other model
 #   cdf_below_map, pmf_at_map
 #              the two-stage model's predictive distribution without u and p,
-#              for its coverage without them; NA where map_exact is FALSE and
-#              for every other model
+#              for its coverage without them; NA for every other model
 score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
 
   fold <- readRDS(file)
@@ -146,18 +143,16 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
 
   # the map and the two-stage model's floors; nothing here draws random
   # numbers, so the streams above are as they were
-  map_point <- map_prediction(fold, summary$predicted)
+  map <- map_prediction(fold, summary$predicted)
   site_noise <- site_noise_for_record(fold, test)
   model_floor <- if (is.null(site_noise)) NA_real_ else
-    model_floor_mse(map_point$map, site_noise$tau, site_noise$sigma_p)
+    model_floor_mse(map, site_noise$tau, site_noise$sigma_p)
   without_noise <- data.frame(cdf_below = rep(NA_real_, nrow(test)),
                               pmf_at = NA_real_)
-  if (!is.null(site_noise) && any(map_point$exact)) {
-    exact <- which(map_point$exact)
-    without_noise[exact, ] <- ppd_summary(
-      test$died[exact], test$mosquito_number[exact],
-      thin_draws(fold$map_draws)[, exact, drop = FALSE],
-      rho_draws[, exact, drop = FALSE])[c("cdf_below", "pmf_at")]
+  if (!is.null(site_noise)) {
+    without_noise <- ppd_summary(test$died, test$mosquito_number,
+                                 thin_draws(fold$map_draws),
+                                 rho_draws)[c("cdf_below", "pmf_at")]
   }
 
   scores <- summary %>%
@@ -183,8 +178,7 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
       .before = everything()
     ) %>%
     mutate(
-      map = map_point$map,
-      map_exact = map_point$exact,
+      map = map,
       floor = noise_floor_record(died, mosquito_number, rho_scoring),
       model_floor = model_floor,
       cdf_below_map = without_noise$cdf_below,
@@ -209,21 +203,16 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
                    n_chains = fold$n_chains))
 }
 
-# The map's point prediction per held-out record, and whether it is exact
-# (score_fold()). A fold with map_draws (the two-stage model's, #32) gives the
-# posterior mean of those draws, with NA columns, for types whose parts
-# predate #32, falling back to the predictive mean. A two-stage fold without
-# map_draws falls back everywhere; every other model's predictive mean is its
-# map
+# The map's point prediction per held-out record (score_fold()): the posterior
+# mean of the two-stage fold's map_draws (#32); every other model's
+# predictive mean is its map
 map_prediction <- function(fold, predicted) {
-  if (is.null(fold$map_draws)) {
-    exact <- !identical(fold$model, "two_stage")
-    return(list(map = predicted, exact = rep(exact, length(predicted))))
-  }
-  stopifnot(identical(dim(fold$map_draws), dim(fold$p_draws)))
+  if (!identical(fold$model, "two_stage")) return(predicted)
+  stopifnot(!is.null(fold$map_draws),
+            identical(dim(fold$map_draws), dim(fold$p_draws)))
   map <- colMeans(thin_draws(fold$map_draws))
-  exact <- !is.na(map)
-  list(map = ifelse(exact, map, predicted), exact = exact)
+  stopifnot(!anyNA(map))
+  map
 }
 
 # The two-stage model's fitted SDs of u (tau) and p (sigma_p) per held-out
@@ -240,26 +229,6 @@ site_noise_for_record <- function(fold, test) {
   fell_back <- fits$fallback_dynamical | is.na(fits$tau)
   list(tau = ifelse(fell_back, 0, fits$tau),
        sigma_p = ifelse(fell_back, 0, fits$sigma_p))
-}
-
-# The same SDs for rows of outputs/cv_scores.csv (experiment, fold,
-# insecticide_type), from outputs/two_stage/fit_summary.csv, for scores built
-# from the per-record table rather than the folds. For a change score only u
-# counts: model_floor_change_mse(map_1, map_2, tau)
-site_noise_from_summary <- function(records,
-                                    file = "outputs/two_stage/fit_summary.csv") {
-  fits <- read.csv(file, colClasses = c(fold = "character")) %>%
-    mutate(experiment = ifelse(experiment == "temporal_forecasting",
-                               paste(experiment, fold, sep = "_"),
-                               experiment),
-           fell_back = fallback_dynamical | is.na(tau),
-           tau = ifelse(fell_back, 0, tau),
-           sigma_p = ifelse(fell_back, 0, sigma_p))
-  index <- match(paste(records$experiment, records$fold,
-                       records$insecticide_type),
-                 paste(fits$experiment, fits$fold, fits$insecticide_type))
-  stopifnot(!anyNA(index))
-  list(tau = fits$tau[index], sigma_p = fits$sigma_p[index])
 }
 
 # The expected coverage of each record's central interval at `level`, over the
@@ -281,36 +250,23 @@ expected_coverage <- function(cdf_below, pmf_at, level) {
 
 # one model in one experiment, pooling its folds. Coverage is the exact
 # expectation over the PIT randomisation (expected_coverage()), as in every
-# other table. Bias and MSE score the map (score_fold()); bias_predictive is
-# the predictive mean's, which for the two-stage model differs by the pull
-# towards 0.5. coverage_*_map is the two-stage model's coverage without u and
-# p, over the records with map draws only (n_map_exact; NA if none)
+# other table. Bias and MSE score the map (score_fold())
 summarise_experiment <- function(scores, pit_list) {
   pit <- do.call(rbind, pit_list)
-  exact <- scores[scores$map_exact & !is.na(scores$cdf_below_map), ]
-  coverage_map <- function(level) {
-    if (nrow(exact) == 0) return(NA_real_)
-    mean(expected_coverage(exact$cdf_below_map, exact$pmf_at_map, level))
-  }
   data.frame(
     n = nrow(scores),
-    n_map_exact = sum(scores$map_exact),
     mean_pit = mean(pit),
     coverage_50 = mean(expected_coverage(scores$cdf_below, scores$pmf_at,
                                          0.5)),
     coverage_95 = mean(expected_coverage(scores$cdf_below, scores$pmf_at,
                                          0.95)),
-    coverage_50_map = coverage_map(0.5),
-    coverage_95_map = coverage_map(0.95),
     cvm = pit_statistic(pit, cvm_stat),
     crps = mean(scores$crps),
     elpd = mean(scores$log_score),
     bias = mean(scores$map - scores$observed),
-    bias_predictive = mean(scores$predicted - scores$observed),
     mse = mean((scores$observed - scores$map) ^ 2),
     mse_floor = noise_floor_mse(scores$died, scores$mosquito_number,
-                                scores$rho_external),
-    model_floor = mean(scores$model_floor)
+                                scores$rho_external)
   )
 }
 
@@ -356,47 +312,9 @@ by_group <- function(scores, ...) {
       crps = mean(crps),
       mse = mean((observed - map) ^ 2),
       mse_floor = noise_floor_mse(died, mosquito_number, rho_external),
-      model_floor = mean(model_floor),
       .groups = "drop"
     ) %>%
     mutate(excess = mse - mse_floor)
-}
-
-# The data floor checked directly (#32). On held-out pixel-years with two or
-# more assays of one insecticide, half the mean squared difference between an
-# assay and its partners estimates that assay's noise variance with no rho;
-# compared with the rho-based floor (noise_floor_record()) on the same assays.
-# Each assay's differences are averaged first, so a pixel-year of n assays
-# weighs n, not n^2 (as in #30). One model's rows per fold: the records are
-# the same for every model. Duplicate records (#31) are not removed here
-floor_pair_check <- function(scores) {
-  scores <- scores %>%
-    group_by(experiment, fold, cell, year_start, insecticide_type) %>%
-    mutate(n_replicates = n()) %>%
-    ungroup()
-  pairs <- scores %>%
-    filter(n_replicates >= 2) %>%
-    group_by(experiment, fold, cell, year_start, insecticide_type) %>%
-    mutate(pair_half = vapply(observed, function(y) sum((observed - y) ^ 2),
-                              numeric(1)) / (2 * (n() - 1))) %>%
-    ungroup()
-  pairs %>%
-    group_by(experiment) %>%
-    summarise(replicated_assays = n(),
-              replicated_pixel_years = n_distinct(paste(fold, cell,
-                                                        year_start,
-                                                        insecticide_type)),
-              pair_floor = mean(pair_half),
-              rho_floor = mean(floor, na.rm = TRUE),
-              ratio = pair_floor / rho_floor,
-              .groups = "drop") %>%
-    left_join(scores %>%
-                group_by(experiment) %>%
-                summarise(assays = n(),
-                          share_replicated = mean(n_replicates >= 2),
-                          rho_floor_all = mean(floor, na.rm = TRUE),
-                          .groups = "drop"),
-              by = "experiment")
 }
 
 

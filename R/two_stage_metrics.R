@@ -37,9 +37,7 @@
 # predictive mean changes (#32), per group: the bias of the map and of the
 # predictive mean (they differ by the pull towards 0.5), the MSE of each, the
 # data floor, the model floor U and its share of the remainder above the data
-# floor, and coverage with and without u and p. Coverage without them needs
-# the fold's map draws; where a fold has none (assembled before #32) it is NA
-# and n_map_exact says so.
+# floor, and coverage with and without u and p, reported nowhere else.
 #
 # Writes outputs/two_stage/cv_headline_two_stage.csv,
 # outputs/two_stage/cv_horizon_two_stage.csv and
@@ -162,12 +160,10 @@ write.csv(horizon, file.path(output_dir, "cv_horizon_two_stage.csv"),
 # No bootstrap: these say what the switch to the map changes and how the
 # two-stage remainder splits, not whether the model beats another
 map_summary <- function(data) {
-  exact <- data %>% filter(map_exact)
   remainder <- mean((data$observed - data$map) ^ 2) -
     mean(data$floor, na.rm = TRUE)
   tibble(
     n = nrow(data),
-    n_map_exact = nrow(exact),
     bias_map = mean(data$map - data$observed),
     bias_predictive = mean(data$predicted - data$observed),
     mean_pull = mean(data$predicted - data$map),
@@ -178,10 +174,10 @@ map_summary <- function(data) {
     model_floor_share = model_floor / remainder,
     cover50 = mean(data$cover50),
     cover95 = mean(data$cover95),
-    cover50_map = if (nrow(exact) == 0) NA else
-      mean(expected_coverage(exact$cdf_below_map, exact$pmf_at_map, 0.5)),
-    cover95_map = if (nrow(exact) == 0) NA else
-      mean(expected_coverage(exact$cdf_below_map, exact$pmf_at_map, 0.95))
+    cover50_map = mean(expected_coverage(data$cdf_below_map, data$pmf_at_map,
+                                         0.5)),
+    cover95_map = mean(expected_coverage(data$cdf_below_map, data$pmf_at_map,
+                                         0.95))
   )
 }
 
