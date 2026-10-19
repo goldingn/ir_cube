@@ -9,9 +9,9 @@
 # dynamical fold's job (e.g. cv5pg_fc2014), whose second stage
 # (ts_v5f/<fold job>/) holds the stage-one cache. Works in
 # /workspace/ir_cube/ts_hyper/<name>/. HYPER_FITS_FROM=<earlier name> starts
-# from that job's saved fits (its outputs/two_stage/hyper/fits/). is
-# evaluates its draws in one single-threaded process per vCPU; the other
-# methods use all the vCPUs.
+# from that job's saved fits (its outputs/two_stage/hyper/fits/). The *_is
+# methods evaluate their draws in one single-threaded process per vCPU; the
+# other methods use all the vCPUs.
 set -euo pipefail
 export IR_CUBE_NO_MEMORY_WAIT=1
 experiment=$1; fold=$2; k=$3; methods=$4; ref=$5
@@ -42,16 +42,18 @@ fi
 say "compile the correction template"
 Rscript -e 'source("R/two_stage_correction.R"); invisible(load_correction_template())'
 
-# the methods other than is with every thread; is in forked processes
-other=$(echo "$methods" | tr ',' '\n' | grep -v '^is$' | paste -sd, || true)
+# the methods other than the importance sampling ones (*_is) with every
+# thread; those in forked single-threaded processes
+other=$(echo "$methods" | tr ',' '\n' | grep -v '_is$' | paste -sd, || true)
+is_methods=$(echo "$methods" | tr ',' '\n' | grep '_is$' | paste -sd, || true)
 if [ -n "$other" ]; then
   say "methods $other, $threads threads"
   OPENBLAS_NUM_THREADS=$threads Rscript R/two_stage_hyper_folds.R \
     "$experiment" "$fold" "$k" "$other"
 fi
-if [[ ,$methods, == *,is,* ]]; then
-  say "is, $threads processes x 1 thread"
+if [ -n "$is_methods" ]; then
+  say "methods $is_methods, $threads processes x 1 thread"
   OPENBLAS_NUM_THREADS=1 IR_CUBE_IS_CORES=$threads Rscript \
-    R/two_stage_hyper_folds.R "$experiment" "$fold" "$k" is
+    R/two_stage_hyper_folds.R "$experiment" "$fold" "$k" "$is_methods"
 fi
 say "done"

@@ -229,6 +229,70 @@ correction_priors <- function(range0 = 50, alpha_range = 0.05, sigma0 = 1,
 
 # fitting ----------------------------------------------------------------------
 
+# the hyperparameters, on the optimiser's scale, in the template's order
+correction_hyper_names <- c("log_sigma_omega", "log_kappa_omega",
+                            "log_sigma_eta", "log_kappa_eta", "logit_phi",
+                            "log_sigma_iid")
+
+# theta of a fit, on the optimiser's scale, named as obj$par
+hyper_vector <- function(fit) {
+  unlist(fit$par_list[correction_hyper_names]) |>
+    setNames(rep(correction_hyper_names,
+                 lengths(fit$par_list[correction_hyper_names])))
+}
+
+# The TMB object of the fit's marginal likelihood of theta, started at its
+# latent mode and theta_hat: "pql" at its final working response
+# (fit$tmb_data), "beta_binomial" for the counts
+correction_marginal <- function(fit, likelihood = c("pql", "beta_binomial")) {
+  likelihood <- match.arg(likelihood)
+  data <- fit$tmb_data
+  data$likelihood <- if (likelihood == "pql") 0L else 1L
+  correction_adfun(data, fit$par_list)
+}
+
+# W, the negative second derivative in lambda of the beta-binomial log
+# likelihood of `died` of n with mean ilogit(lambda) and intra-class
+# correlation rho (a = c p, b = c (1 - p), c = (1 - rho) / rho)
+beta_binomial_weight <- function(lambda, died, n, rho) {
+  p <- plogis(lambda)
+  s <- p * (1 - p)
+  c <- (1 - rho) / rho
+  a <- c * p
+  b <- c * (1 - p)
+  d1 <- c * (digamma(died + a) - digamma(n - died + b) - digamma(a) +
+               digamma(b))
+  d2 <- c ^ 2 * (trigamma(died + a) + trigamma(n - died + b) - trigamma(a) -
+                   trigamma(b))
+  -(d2 * s ^ 2 + d1 * s * (1 - 2 * p))
+}
+
+# The correction_fit at theta (optimiser scale): the latent mode solved at
+# theta, its Hessian, and the factor of that, updated from fit's symbolic
+# factorisation (the sparsity pattern does not depend on theta). For the
+# beta-binomial marginal, precision_obs becomes W at the mode, for the
+# linearised cut-posterior shift
+conditional_fit <- function(fit, obj, theta) {
+  obj$fn(theta)
+  par_full <- obj$env$last.par
+  random <- obj$env$random
+  H <- obj$env$spHess(par_full, random = TRUE)
+  H <- Matrix::forceSymmetric(as(H, "CsparseMatrix"), uplo = "L")
+  par_list <- obj$env$parList(par = par_full)
+  fit$mode <- setNames(par_full[random], names(fit$mode))
+  fit$H <- H
+  fit$H_chol <- Matrix::update(fit$H_chol, H)
+  fit$par_list <- par_list
+  fit$hyper <- correction_hyper(par_list)
+  data <- obj$env$data
+  if (data$likelihood == 1) {
+    lambda <- fit$m_ref + as.vector(fit$A_latent %*% fit$mode)
+    fit$precision_obs <- beta_binomial_weight(lambda, data$died,
+                                              data$n_mosquito, data$rho)
+  }
+  fit
+}
+
 # fit$hyper from the template's parameter list
 correction_hyper <- function(par_list) {
   phi <- plogis(par_list$logit_phi)
@@ -366,6 +430,39 @@ fit_stage_a <- function(train, t0, T = max(train$year), meshes,
                                         units = "secs"))),
     class = "correction_fit"
   )
+}
+
+# The standalone Laplace fit (#34): stage A, then the hyperparameters by
+# penalised maximum of TMB's Laplace approximation to the marginal likelihood
+# of the beta-binomial counts (likelihood = 1 in the template), started from
+# stage A's hyperparameters and latent mode; no PQL. The latent posterior is
+# N(mode, H^-1) at the optimum, and precision_obs is W there, for the
+# linearised cut-posterior shift (conditional_fit()). Arguments as for
+# fit_stage_a()
+fit_correction_laplace <- function(train, t0, T = max(train$year), meshes,
+                                   priors = correction_priors(),
+                                   control = list(eval.max = 1000,
+                                                  iter.max = 500)) {
+  start_time <- Sys.time()
+  fit_a <- fit_stage_a(train[setdiff(names(train), c("z", "v"))], t0 = t0,
+                       T = T, meshes = meshes, priors = priors,
+                       control = control)
+  if (fit_a$opt$convergence != 0) {
+    stop("stage A did not converge: ", fit_a$opt$message)
+  }
+  time_a <- as.numeric(Sys.time() - start_time, units = "secs")
+  obj <- correction_marginal(fit_a, "beta_binomial")
+  opt <- nlminb(hyper_vector(fit_a), obj$fn, obj$gr, control = control)
+  fit <- conditional_fit(fit_a, obj, opt$par)
+  fit$tmb_data$likelihood <- 1L
+  fit$obj <- obj
+  fit$opt <- opt
+  fit$max_gradient <- max(abs(obj$gr(opt$par)))
+  fit$stage_b <- list(hyper_a = fit_a$hyper, objective_a = fit_a$opt$objective,
+                      time_stage_a = time_a,
+                      time_laplace = as.numeric(Sys.time() - start_time,
+                                                units = "secs") - time_a)
+  fit
 }
 
 # The final model: stage A, then stage B (PQL) from it. Arguments as for

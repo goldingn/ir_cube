@@ -4,28 +4,27 @@
 #
 #   Rscript R/two_stage_hyper_folds.R <experiment> <fold> <type index> <methods>
 #
-# e.g. Rscript R/two_stage_hyper_folds.R temporal_forecasting 2014 4 plugin,laplace,ccd
+# e.g. Rscript R/two_stage_hyper_folds.R temporal_forecasting 2014 4 pql_plugin,la_ccd
 #
 # Needs the fold's stage-one cache (outputs/two_stage/stage_one__<key>.rds,
 # from R/run_two_stage_folds.R). <methods> is a comma-separated list of
+# plugin_once, the current algorithm (stage A, PQL, one re-estimation of
+# theta, plug-in theta_hat; fit_correction()), or <latent>_<theta>:
 #
-#   plugin_once  the current algorithm: stage A, PQL, one re-estimation of
-#                theta, plug-in theta_hat (fit_correction());
-#   plugin       theta re-estimated until it stops moving (max_refits = 10),
-#                plug-in (#34, point 1);
-#   laplace      the plugin fit, integrated over draws from the Gaussian
-#                approximation to p(theta | y) of the PQL marginal likelihood
-#                (R/two_stage_hyper.R);
-#   ccd          the same, over INLA's central composite design;
-#   plugin_bb    the plug-in at the mode of the beta-binomial Laplace marginal
-#                (#34, point 2), with its Laplace latent posterior;
-#   laplace_bb,
-#   ccd_bb       laplace and ccd on the beta-binomial Laplace marginal;
-#   is           importance sampling of theta from the beta-binomial Laplace
-#                marginal, PSIS-smoothed: the reference.
+#   latent  pql  PQL with theta re-estimated until it stops moving
+#                (fit_correction(), max_refits = 10; #34, point 1); theta's
+#                marginal is that of the final PQL working response;
+#           la   the standalone Laplace fit (fit_correction_laplace(): stage
+#                A, then theta by the Laplace approximation to the marginal
+#                likelihood of the beta-binomial counts; #34, point 2)
+#   theta   plugin  theta_hat;
+#           gauss   100 draws from the Gaussian approximation to p(theta | y);
+#           ccd     INLA's central composite design;
+#           is      importance sampling, PSIS-smoothed, with Monte Carlo SEs:
+#                   the reference (R/two_stage_hyper.R; #34, point 4).
 #
-# All but plugin_once share the plugin fit, which is saved once to
-# outputs/two_stage/hyper/fits/<key>__<k>.rds and reused. Each method saves
+# Each latent fit is saved once to outputs/two_stage/hyper/fits/
+# <latent>__<key>__<k>.rds and reused. Each method saves
 # outputs/two_stage/hyper/parts/<method>__<key>__<k>.rds: the held-out
 # assays (test), their predictive draws of logit mortality (draws x assays,
 # as in R/run_two_stage_folds.R: paired dynamical draw + omega + xi + fresh u
@@ -41,8 +40,9 @@ experiment_name <- arguments[1]
 fold_name <- arguments[2]
 k <- as.integer(arguments[3])
 methods <- strsplit(arguments[4], ",")[[1]]
-all_methods <- c("plugin_once", "plugin", "laplace", "ccd", "plugin_bb",
-                 "laplace_bb", "ccd_bb", "is")
+all_methods <- c("plugin_once",
+                 outer(c("pql", "la"), c("plugin", "gauss", "ccd", "is"),
+                       paste, sep = "_"))
 stopifnot(all(methods %in% all_methods))
 
 source("R/two_stage_helpers.R")
@@ -54,7 +54,9 @@ hyper_dir <- "outputs/two_stage/hyper"
 dir.create(file.path(hyper_dir, "fits"), showWarnings = FALSE,
            recursive = TRUE)
 dir.create(file.path(hyper_dir, "parts"), showWarnings = FALSE)
-base_file <- file.path(hyper_dir, "fits", sprintf("%s__%i.rds", fold_key, k))
+base_file <- function(latent) {
+  file.path(hyper_dir, "fits", sprintf("%s__%s__%i.rds", latent, fold_key, k))
+}
 part_file <- function(method) {
   file.path(hyper_dir, "parts", sprintf("%s__%s__%i.rds", method, fold_key, k))
 }
@@ -87,14 +89,16 @@ report("%s %s: %i training, %i held-out assays; methods %s", fold_key, type,
 
 meshes <- build_correction_meshes(coords_km(train_k), prediction_mask_coords())
 
-# the plugin fit, made once
-base_fit <- function() {
-  if (file.exists(base_file)) return(readRDS(base_file))
-  set.seed(string_seed(paste(fold_key, type, "plugin fit")))
-  fit <- fit_correction(train_k, t0 = t0, meshes = meshes,
-                        pql_args = list(max_refits = 10))
+# the latent fit, made once
+base_fit <- function(latent) {
+  if (file.exists(base_file(latent))) return(readRDS(base_file(latent)))
+  set.seed(string_seed(paste(fold_key, type, latent, "fit")))
+  fit <- switch(latent,
+                pql = fit_correction(train_k, t0 = t0, meshes = meshes,
+                                     pql_args = list(max_refits = 10)),
+                la = fit_correction_laplace(train_k, t0 = t0, meshes = meshes))
   fit$obj <- NULL
-  saveRDS(fit, base_file)
+  saveRDS(fit, base_file(latent))
   fit
 }
 
@@ -129,30 +133,31 @@ for (method in methods) {
   set.seed(string_seed(paste(fold_key, type, method)))
   start <- Sys.time()
   hyper <- NULL
+  latent <- sub("_.*$", "", method)
+  theta_method <- sub("^[a-z]+_", "", method)
   if (method == "plugin_once") {
     fit <- fit_correction(train_k, t0 = t0, meshes = meshes)
   } else {
-    fit <- base_fit()
+    fit <- base_fit(latent)
   }
   fit_seconds <- as.numeric(Sys.time() - start, units = "secs")
 
-  if (method %in% c("plugin_once", "plugin")) {
+  if (method == "plugin_once" || theta_method == "plugin") {
     lambda <- predict_correction(fit, test_k, m_draws_train = m_draws_train,
                                  m_draws_new = m_draws_test,
                                  n_draws = n_draws)
     theta <- matrix(hyper_vector(fit), 1)
     weight <- 1
   } else {
-    bb <- method %in% c("plugin_bb", "laplace_bb", "ccd_bb", "is")
-    obj <- correction_marginal(fit, if (bb) "beta_binomial" else "pql")
+    obj <- correction_marginal(fit, if (latent == "la") "beta_binomial" else
+      "pql")
     # the points are saved as soon as they are made, and reused by a rerun
     points_file <- file.path(hyper_dir, "fits",
                              sprintf("%s__%s__%i__points.rds", method,
                                      fold_key, k))
     hyper <- if (file.exists(points_file)) readRDS(points_file) else switch(
-      sub("_bb$", "", method),
-      plugin = hyper_points(fit, obj, "mode"),
-      laplace = hyper_points(fit, obj, "laplace", n = 100),
+      theta_method,
+      gauss = hyper_points(fit, obj, "gaussian", n = 100),
       ccd = hyper_points(fit, obj, "ccd"),
       is = hyper_points(fit, obj, "is", n = 200))
     saveRDS(hyper, points_file)
@@ -168,8 +173,8 @@ for (method in methods) {
   }
   stopifnot(!anyNA(lambda))
   seconds <- as.numeric(Sys.time() - start, units = "secs")
-  mcse <- if (method %in% c("ccd", "ccd_bb")) rep(NA_real_, ncol(lambda)) else
-    hyper_mcse(lambda, if (method == "is") hyper$diagnostics$ess)
+  mcse <- if (theta_method == "ccd") rep(NA_real_, ncol(lambda)) else
+    hyper_mcse(lambda, if (theta_method == "is") hyper$diagnostics$ess)
   predictive_sd <- apply(lambda, 2, sd)
 
   hyper_table <- point_hyper(fit, theta)
@@ -180,10 +185,10 @@ for (method in methods) {
            n_points_used = length(unique(attr(lambda, "point") %||% 1)),
            fit_seconds = fit_seconds, seconds = seconds,
            hyper_seconds = if (is.null(hyper)) NA else hyper$seconds,
-           is_pareto_k = if (method == "is")
+           is_pareto_k = if (theta_method == "is")
              hyper$diagnostics$pareto_k else NA,
-           is_ess = if (method == "is") hyper$diagnostics$ess else NA,
-           is_n_failed = if (method == "is")
+           is_ess = if (theta_method == "is") hyper$diagnostics$ess else NA,
+           is_n_failed = if (theta_method == "is")
              hyper$diagnostics$n_failed else NA,
            # the Monte Carlo SE of the predictive mean of omega + xi from
            # the integration over theta, relative to the predictive SD of
@@ -193,7 +198,7 @@ for (method in methods) {
            peak_memory_gb = peak_memory_gb()),
     hyper_quantiles(hyper_table, weight),
     fit_summary(fit) |> select(pql_refits, pql_last_theta_change,
-                               convergence)
+                               convergence, max_gradient)
   )
   attr(lambda, "point") <- NULL
   attr(lambda, "point_means") <- NULL

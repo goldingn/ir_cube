@@ -49,70 +49,6 @@
 #     over the points of hyper: draw d uses dynamical draw ((d - 1) mod K) + 1
 #     and point j(d), the points allotted to the draws by their weights
 
-# the hyperparameters, on the optimiser's scale, in the template's order
-correction_hyper_names <- c("log_sigma_omega", "log_kappa_omega",
-                            "log_sigma_eta", "log_kappa_eta", "logit_phi",
-                            "log_sigma_iid")
-
-# theta of a fit, on the optimiser's scale, named as obj$par
-hyper_vector <- function(fit) {
-  unlist(fit$par_list[correction_hyper_names]) |>
-    setNames(rep(correction_hyper_names,
-                 lengths(fit$par_list[correction_hyper_names])))
-}
-
-# The TMB object of the fit's marginal likelihood of theta, started at its
-# latent mode and theta_hat: "pql" at its final working response
-# (fit$tmb_data), "beta_binomial" for the counts
-correction_marginal <- function(fit, likelihood = c("pql", "beta_binomial")) {
-  likelihood <- match.arg(likelihood)
-  data <- fit$tmb_data
-  data$likelihood <- if (likelihood == "pql") 0L else 1L
-  correction_adfun(data, fit$par_list)
-}
-
-# W, the negative second derivative in lambda of the beta-binomial log
-# likelihood of `died` of n with mean ilogit(lambda) and intra-class
-# correlation rho (a = c p, b = c (1 - p), c = (1 - rho) / rho)
-beta_binomial_weight <- function(lambda, died, n, rho) {
-  p <- plogis(lambda)
-  s <- p * (1 - p)
-  c <- (1 - rho) / rho
-  a <- c * p
-  b <- c * (1 - p)
-  d1 <- c * (digamma(died + a) - digamma(n - died + b) - digamma(a) +
-               digamma(b))
-  d2 <- c ^ 2 * (trigamma(died + a) + trigamma(n - died + b) - trigamma(a) -
-                   trigamma(b))
-  -(d2 * s ^ 2 + d1 * s * (1 - 2 * p))
-}
-
-# The correction_fit at theta (optimiser scale): the latent mode solved at
-# theta, its Hessian, and the factor of that, updated from fit's symbolic
-# factorisation (the sparsity pattern does not depend on theta). For the
-# beta-binomial marginal, precision_obs becomes W at the mode, for the
-# linearised cut-posterior shift
-conditional_fit <- function(fit, obj, theta) {
-  obj$fn(theta)
-  par_full <- obj$env$last.par
-  random <- obj$env$random
-  H <- obj$env$spHess(par_full, random = TRUE)
-  H <- Matrix::forceSymmetric(as(H, "CsparseMatrix"), uplo = "L")
-  par_list <- obj$env$parList(par = par_full)
-  fit$mode <- setNames(par_full[random], names(fit$mode))
-  fit$H <- H
-  fit$H_chol <- Matrix::update(fit$H_chol, H)
-  fit$par_list <- par_list
-  fit$hyper <- correction_hyper(par_list)
-  data <- obj$env$data
-  if (data$likelihood == 1) {
-    lambda <- fit$m_ref + as.vector(fit$A_latent %*% fit$mode)
-    fit$precision_obs <- beta_binomial_weight(lambda, data$died,
-                                              data$n_mosquito, data$rho)
-  }
-  fit
-}
-
 # An order of the points of theta (rows) in which each is near the last, a
 # greedy nearest-neighbour chain from the first in the metric of covariance,
 # so that each inner solve starts from the mode at a nearby theta
@@ -144,10 +80,10 @@ hyper_mode <- function(fit, obj, control = list(eval.max = 200,
 }
 
 # points of p(theta | y) by `method`; see the header ("mode" is the plug-in
-# at the mode of this marginal). n is the number of points for laplace and
+# at the mode of this marginal). n is the number of points for gaussian and
 # is (is resamples its weighted draws to n); ccd's number is set by the
 # dimension
-hyper_points <- function(fit, obj, method = c("mode", "laplace", "ccd",
+hyper_points <- function(fit, obj, method = c("mode", "gaussian", "ccd",
                                               "is"),
                          n = 100, ...) {
   method <- match.arg(method)
@@ -155,7 +91,7 @@ hyper_points <- function(fit, obj, method = c("mode", "laplace", "ccd",
   mode <- hyper_mode(fit, obj)
   out <- switch(method,
                 mode = list(theta = matrix(mode$mode, 1), weight = 1),
-                laplace = hyper_laplace(mode, n),
+                gaussian = hyper_gaussian(mode, n),
                 ccd = hyper_ccd(obj, mode, ...),
                 is = hyper_is(obj, mode, n, ...))
   colnames(out$theta) <- names(mode$mode)
@@ -166,7 +102,7 @@ hyper_points <- function(fit, obj, method = c("mode", "laplace", "ccd",
 }
 
 # n draws from N(mode, covariance), equal weights
-hyper_laplace <- function(mode, n) {
+hyper_gaussian <- function(mode, n) {
   L <- t(chol(mode$covariance))
   z <- matrix(rnorm(n * length(mode$mode)), length(mode$mode))
   theta <- t(mode$mode + L %*% z)
