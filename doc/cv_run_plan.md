@@ -81,6 +81,12 @@ two at a time, logging to `outputs/cv_logs/<experiment>__<fold>.log`. A fold
 whose `.rds` is already in `outputs/cv_draws/` is skipped, by `run_one_fold.R`
 itself, so the run resumes after an interruption.
 
+`run_one_fold.R` drops a stuck chain (`stuck_chains()`) from a fold before
+saving it (`drop_fold_chains()`), records it in `stuck_chains`, and flags it in
+the fold's log with a `WARNING` line; the run continues. It reports the worst
+Rhat over the remaining chains, and the number of parameters above 1.01,
+however high, without stopping. Check the logs for both before scoring.
+
 **Run from a frozen copy of the scripts.** R reads `--file=` incrementally, so
 editing a script while a fold is running corrupts that fold — two folds were
 lost this way after 62 h each, both crashing at the `saveRDS` block. Copy `R/`
@@ -100,17 +106,71 @@ afterwards, or the real fold will be skipped.
 
 `dynamical_mcmc_settings()` in `R/dynamical_model.R` holds them, and
 `fit_fold()`, `run_one_fold.R`, `run_validation_folds.R` and `fit_model.R` all
-take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 60 to 120
+take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 30 to 60
 leapfrog steps (`Lmin`, `Lmax`), redrawn every 10 iterations, target
-acceptance 0.65, 4 chains, 2,000 warmup and 3,000 samples. The model samples the
+acceptance 0.65, 4 chains, 2,000 warmup and 1,500 samples. The model samples the
 countries' initial states centred and starts from `temporary/inits_refit.RDS`
 (`dynamical_inits_file`).
 
-At four threads the 2014 forecasting fold took 3.7 h at 3.0 s per iteration
-(2,000 + 2,500, machine loaded to about 8 of 16 cores), so about 4.2 h at
-3,000 samples. The interpolation fold ran 1.5 times slower per iteration than
-the 2014 fold at 15-30 steps, so it should take about 6 h, and the full fit,
-now at the same settings, about as long. It was roughly 62 h per fold with
+**Centred selection hierarchy (#48).** Since #48 the model also samples the
+class and type levels of the net use, IRS and population selection effects,
+and the type level of the overdispersion, centred (`n_centred_rows` in
+`R/dynamical_model.R`), which the data pin down; the crop effects stay
+non-centred. In five fits of October 2026 the posterior sd over the prior sd
+was 0.04-0.65 for these columns' type-level effects on the pyrethroids,
+mostly 0.1-1.5 for the other types (up to 3.9 for net use on the
+organophosphates in one fit), 0.2-1.2 for their class-level effects, and
+0.06-0.33 for the types' overdispersion (0.5-1.2 for the classes'); the crop
+columns' type-level effects were mostly 0.8-2.8, prior-dominated, so centred
+they would be funnels. On those fits, the local curvature of the posterior
+predicted a step size about 4 times larger with this centring. The centred
+model's log density equals the non-centred one's less the log Jacobian of
+the change of variables (to within 6e-11), its predictions are identical,
+and its free state round-trips exactly. The steps were 60 to 120 before.
+Full fits of the default model (d_half 270, no floor) on the full data, the
+same data and initial values, 4 chains, 2,000 + 3,000, 8 vCPU RunPod pods
+(cpu5c, except cpu3c at 62 ms per gradient for 15-30); ESS per 1,000
+gradients counts the sampling iterations at the mean number of steps:
+
+| hierarchy, steps | hours | worst rank Rhat | bulk ESS min / median | per 1,000 gradients min / median |
+|---|---|---|---|---|
+| non-centred, 60-120 | 6.18 | 1.01 | 400 / 1,999 | 1.48 / 7.41 |
+| centred, 15-30 | 1.93 | 1.01 | 514 / 2,657 | 7.62 / 39.4 |
+| **centred, 30-60** (these settings) | 3.00 | 1.00 | 1,208 / 7,217 | 8.95 / 53.5 |
+
+One chain of the non-centred fit stuck (one draw for all 3,000 samples) and
+was dropped, so its row is from three chains, and its ESS columns are about
+three quarters of a four-chain fit's. Adjusted for that, the centred 30-60 fit
+gets 4.5 (minimum) and 5.4 (median) times its ESS per gradient.
+
+The centred fits' posterior means of the 683 quantities all three share
+differ from the non-centred fit's by a median 0.7
+Monte Carlo standard errors (at most 3.8, IRS on fenitrothion, 0.10
+posterior sd) and their sds by a median ratio
+of 1.00. The worst-mixing quantity in all three is `sigma_class` for net use:
+it is set by the type deviations the data barely inform (the
+organophosphates, and bendiocarb and DDT alone in their classes), which
+centred sit in a mild funnel with it. The funnel's tails agree: the 0.5-5%
+quantiles of `sigma_class` for net use, and of the net use effects on those
+five types, differ between the 30-60 and non-centred fits by at most 1.5
+Monte Carlo standard errors, with tail ESS 2,300-7,900 against 950-5,300.
+Only the deepest part of the neck is visited less: 0.06% of the 30-60 fit's
+draws have `sigma_class` below 0.04, against 0.22% of the non-centred fit's
+(Monte Carlo se 0.04 and 0.06 points), and none of the 15-30 fit's.
+
+At 30-60 steps the worst quantity had 0.40 effective samples per iteration
+of the four chains (0.10 per draw), so 1,500 samples (3,000 before #48)
+should give a minimum bulk ESS of about 600.
+The warmup stays at 2,000: at 1,000 (+ 1,500, the same pod type), one of the
+four chains ended warmup in that funnel's neck (`sigma_class` for net use at
+0.13, against a posterior median of 0.27) and rejected every proposal while
+sampling, at the step size the other chains adapted (rank Rhat up to 4.6).
+
+Before #48, at 60-120 steps and four threads, the 2014 forecasting fold took
+3.7 h at 3.0 s per iteration (2,000 + 2,500, machine loaded to about 8 of 16
+cores), so about 4.2 h at 3,000 samples. The interpolation fold ran 1.5 times
+slower per iteration than the 2014 fold at 15-30 steps, so it should have
+taken about 6 h, and the full fit, at the same settings, about as long. It was roughly 62 h per fold with
 the greta.dynamics loop.
 
 **Result.** On the 2014 forecasting fold, for the default model, against
@@ -121,9 +181,10 @@ only fold that baseline was run on):
 |---|---|---|---|---|---|
 | `hmc()`, non-centred, 15-30 steps | interpolation | 20,000 | 1.156 | 575 / 83 | 18 / 232 |
 | windowed, centred, 15-30 steps | 2014 | 20,000 | 1.049 | 207 / 0 | 104 / 600 |
-| **these settings** (2,500 samples) | 2014 | 10,000 | 1.013 | 1 / 0 | 361 / 2,723 |
+| windowed, centred, 60-120 steps (2,500 samples) | 2014 | 10,000 | 1.013 | 1 / 0 | 361 / 2,723 |
 
-At 3,000 samples the minimum should reach about 430. These settings were not
+At 3,000 samples, the setting before #48, the minimum should have reached
+about 430. These settings were not
 run on the interpolation fold, which mixed worse than the 2014 fold at every
 setting tried (at 15-30 steps, minimum ESS 33 against 104). The worst-mixing
 parameters are the countries' initial levels for type 7 (`init_country_level[,

@@ -61,6 +61,34 @@ drop_chains <- function(draws, keep) {
   out
 }
 
+# A fitted fold without the chains `stuck`: the rows of the stored predictions
+# (p_draws, rho_type_draws, p_draws_before) that came from them are dropped,
+# and the chains recorded in `stuck_chains`, so that paired_draw_index() gives
+# the draws the remaining rows correspond to. `draws` keeps every chain. The
+# convergence diagnostics are recomputed without them.
+drop_fold_chains <- function(fold, stuck = stuck_chains(fold$draws)) {
+  if (length(stuck) == 0) {
+    return(fold)
+  }
+  # the stored rows' draws, by the rule fit_fold() thinned them with
+  stored_index <- paired_draw_index(fold, maximum = nrow(fold$p_draws))
+  keep <- !draw_chain(fold$draws)[stored_index] %in% stuck
+  fold$p_draws <- fold$p_draws[keep, , drop = FALSE]
+  fold$rho_type_draws <- fold$rho_type_draws[keep, , drop = FALSE]
+  if (!is.null(fold$p_draws_before)) {
+    fold$p_draws_before <- fold$p_draws_before[keep, , drop = FALSE]
+  }
+  fold$stuck_chains <- stuck
+  stopifnot(identical(stored_index[keep],
+                      paired_draw_index(fold, maximum = length(keep))))
+
+  kept_draws <- drop_chains(fold$draws, setdiff(seq_along(fold$draws), stuck))
+  fold$convergence <- coda::gelman.diag(kept_draws, multivariate = FALSE,
+                                        autoburnin = FALSE)$psrf
+  fold$ess <- coda::effectiveSize(kept_draws)
+  fold
+}
+
 # One named parameter of a draws x parameter matrix, as a draws x
 # dim(parameter) array. greta names elements by their R (column-major) index,
 # e.g. "beta_type_raw[13,9]", so the index is parsed from the names

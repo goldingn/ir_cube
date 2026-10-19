@@ -67,6 +67,16 @@ check_dynamical_model_options <- function(options) {
 
 # fixed quantities ---------------------------------------------------------
 
+# The number of selection effects (rows of beta_class and beta_type, the first
+# columns of the selection design: net use, IRS and population;
+# selection_column_names()) sampled centred at both levels (#48). A
+# hierarchical effect b ~ N(m, s) can be sampled non-centred, as z with
+# b = m + s z, or centred, as b itself; the posterior is the same. Where the
+# data pin b down, the non-centred form is a curved ridge in (s, z) that HMC
+# follows only with small steps; where they say little, the centred form is a
+# funnel. The data pin these effects down; the crop effects stay non-centred
+n_centred_rows <- 3
+
 # Prior and minimum values for the initial fraction susceptible, per type. The
 # initial state is modelled on the logit of its relative position between
 # init_frac_min and 1. More flexibility for DDT, less for the others.
@@ -120,11 +130,12 @@ dynamical_lookups <- function(df) {
 # list of greta arrays. Every element is passed to model(), so every one has
 # named columns in the draws.
 dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
-                                n_countries, types,
+                                n_countries, types, classes_index,
                                 options = dynamical_model_options(),
                                 country_region_index = NULL) {
 
   init <- init_frac_constants(types)
+  noncentred <- seq(n_centred_rows + 1, n_covs)
 
   variables <- list(
     # initial fractions susceptible: a prior logit-mean per type, and IID
@@ -132,30 +143,51 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     init_region_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
     init_country_sd = normal(0, 1, truncation = c(0, Inf), dim = n_types),
     init_region_raw = normal(0, 1, dim = c(n_regions, n_types)),
-    # hierarchical regression coefficients: overall -> class -> type
+    # hierarchical regression coefficients: overall -> class -> type, with the
+    # standard normal deviations of the non-centred rows at each level
     beta_overall = normal(0, 1, dim = n_covs),
-    beta_class_raw = normal(0, 1, dim = c(n_covs, n_classes)),
-    beta_type_raw = normal(0, 1, dim = c(n_covs, n_types)),
+    beta_class_raw = normal(0, 1, dim = c(length(noncentred), n_classes)),
+    beta_type_raw = normal(0, 1, dim = c(length(noncentred), n_types)),
     sigma_overall = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
     sigma_class = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
     logit_init_mean = normal(qlogis(init$relative_prior), 1, dim = n_types)
   )
 
-  # Observation overdispersion per type, nested in class, on the logit scale
-  # and non-centred, as the replicate-assay estimate in
-  # R/fig_illustrate_bioassay_variability.R (#20):
-  #   logit rho_type = rho_mu + rho_sigma_class z_class + rho_sigma_type z_type
-  # with the same priors. The prior centre is that of the replicate-assay rho
-  # (0.15); rho here also absorbs misfit of the model, and the class-level rho
-  # of the fits before the refit reached posterior means of 0.24-0.38 despite
-  # a half-normal prior with sd 0.025, so no stronger prior is put on it.
+  # The centred rows of the selection effects (n_centred_rows): the class and
+  # type effects themselves, with the priors the non-centred rows imply,
+  #   beta_class[c, ] ~ N(beta_overall[c], sigma_overall[c])
+  #   beta_type[c, ] ~ N(beta_class[c, class of type], sigma_class[c])
+  centred <- seq_len(n_centred_rows)
+  class_mean <- sweep(zeros(n_centred_rows, n_classes), 1,
+                      variables$beta_overall[centred], FUN = "+")
+  class_sd <- sweep(zeros(n_centred_rows, n_classes), 1,
+                    variables$sigma_overall[centred], FUN = "+")
+  variables$beta_class_centred <- normal(class_mean, class_sd)
+  type_sd <- sweep(zeros(n_centred_rows, n_types), 1,
+                   variables$sigma_class[centred], FUN = "+")
+  variables$beta_type_centred <- normal(
+    variables$beta_class_centred[, classes_index], type_sd)
+
+  # Observation overdispersion per type, nested in class, on the logit scale,
+  # as the replicate-assay estimate in R/fig_illustrate_bioassay_variability.R
+  # (#20):
+  #   logit rho_class = rho_mu + rho_sigma_class z_class
+  #   logit rho_type ~ N(logit rho_class, rho_sigma_type)
+  # with the same priors, the type level centred (as the data pin it down)
+  # and the class level not. The prior centre is that of the replicate-assay
+  # rho (0.15); rho here also absorbs misfit of the model, and the class-level
+  # rho of the fits before the refit reached posterior means of 0.24-0.38
+  # despite a half-normal prior with sd 0.025, so no stronger prior is put on
+  # it.
   rho <- list(
     rho_mu = normal(qlogis(0.15), 1),
     rho_sigma_class = normal(0, 0.5, truncation = c(0, Inf)),
     rho_sigma_type = normal(0, 0.5, truncation = c(0, Inf)),
-    rho_class_raw = normal(0, 1, dim = n_classes),
-    rho_type_raw = normal(0, 1, dim = n_types)
+    rho_class_raw = normal(0, 1, dim = n_classes)
   )
+  logit_rho_class <- rho$rho_mu + rho$rho_sigma_class * rho$rho_class_raw
+  rho$logit_rho_type <- normal(logit_rho_class[classes_index],
+                               rho$rho_sigma_type)
 
   # Floor on bioassay mortality (#14): predicted mortality f + (1 - f) q_t,
   # f the mortality of a fully resistant population (mechanisms with finite
@@ -293,11 +325,20 @@ dynamical_terms <- function(v, classes_index, types,
     inv_logit <- stats::plogis
   }
 
-  # selection effects: doubly hierarchical
-  beta_class_sigma <- sweep(v$beta_class_raw, 1, v$sigma_overall, FUN = "*")
-  beta_class <- sweep(beta_class_sigma, 1, v$beta_overall, FUN = "+")
-  beta_type_sigma <- sweep(v$beta_type_raw, 1, v$sigma_class, FUN = "*")
-  beta_type <- beta_class[, classes_index] + beta_type_sigma
+  # selection effects: doubly hierarchical, the centred rows (n_centred_rows)
+  # variables in their own right, the others from their standard normal
+  # deviations
+  noncentred <- seq(n_centred_rows + 1, length(v$beta_overall))
+  beta_class_sigma <- sweep(v$beta_class_raw, 1, v$sigma_overall[noncentred],
+                            FUN = "*")
+  class_noncentred <- sweep(beta_class_sigma, 1, v$beta_overall[noncentred],
+                            FUN = "+")
+  beta_type_sigma <- sweep(v$beta_type_raw, 1, v$sigma_class[noncentred],
+                           FUN = "*")
+  beta_class <- rbind(v$beta_class_centred, class_noncentred)
+  beta_type <- rbind(v$beta_type_centred,
+                     class_noncentred[, classes_index, drop = FALSE] +
+                       beta_type_sigma)
 
   # initial state: the logit relative position above init_frac_min of each
   # country (#25), its level less the initial-state covariates' effect at the
@@ -312,9 +353,7 @@ dynamical_terms <- function(v, classes_index, types,
     matrix(init_min, nrow(logit_init_relative), length(types), byrow = TRUE))
 
   # observation overdispersion per type
-  logit_rho_class <- v$rho_mu + v$rho_sigma_class * v$rho_class_raw
-  rho_types <- inv_logit(logit_rho_class[classes_index] +
-                           v$rho_sigma_type * v$rho_type_raw)
+  rho_types <- inv_logit(v$logit_rho_type)
 
   list(beta_type = beta_type,
        logit_init_country = logit_init_country,
@@ -383,18 +422,32 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
   }
   # the selection coefficients, by covariate (row): the cached values where
   # the column is in the cached fit's design, and weak selection (a log effect
-  # of -4, no deviations) for new columns. The cached pop coefficients put on
-  # log population, which is near 0.8 where raw population is near 0, drove p
-  # to 0 and stalled a short run at its initial values
+  # of -4, no deviations) for new columns. The centred effects' rows are the
+  # first n_centred_rows columns, and the deviations' the others. The cached
+  # pop coefficients put on log population, which is near 0.8 where raw
+  # population is near 0, drove p to 0 and stalled a short run at its initial
+  # values
   if (!is.null(columns)) {
     stopifnot(!is.null(cached_columns))
-    selection_starts <- c(beta_overall = -4, beta_class_raw = 0,
-                          beta_type_raw = 0, sigma_overall = 0.5,
-                          sigma_class = 0.5)
+    selection_starts <- c(beta_overall = -4, sigma_overall = 0.5,
+                          sigma_class = 0.5, beta_class_centred = -4,
+                          beta_type_centred = -4, beta_class_raw = 0,
+                          beta_type_raw = 0)
+    centred <- seq_len(n_centred_rows)
+    rows_of <- function(design, name) {
+      if (grepl("_centred$", name)) design[centred] else
+        if (grepl("_raw$", name)) design[-centred] else design
+    }
     for (name in intersect(names(selection_starts), names(cached))) {
       old <- as.matrix(cached[[name]])
-      new <- matrix(selection_starts[[name]], length(columns), ncol(old))
-      shared <- match(columns, cached_columns)
+      old_columns <- rows_of(cached_columns, name)
+      if (nrow(old) != length(old_columns)) {
+        stop("the cached ", name, " is not in this model's variables; ",
+             "remake the cache from a fit of the model, as in fit_model.R")
+      }
+      new_columns <- rows_of(columns, name)
+      new <- matrix(selection_starts[[name]], length(new_columns), ncol(old))
+      shared <- match(new_columns, old_columns)
       new[!is.na(shared), ] <- old[shared[!is.na(shared)], ]
       cached[[name]] <- new
     }
@@ -429,8 +482,8 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
 # (R/fit_validation_fold.R) and fit_model.R. The arguments override single
 # settings, e.g. for a smoke test. The defaults, and the evidence for them, are
 # in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with
-# 60 to 120 leapfrog steps, redrawn every 10 iterations, target acceptance
-# 0.65, 4 chains, 2,000 warmup and 3,000 samples.
+# 30 to 60 leapfrog steps, redrawn every 10 iterations, target acceptance
+# 0.65, 4 chains, 2,000 warmup and 1,500 samples.
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
 #                  burst of iterations
 #   accept_target  target acceptance of the step-size adaptation
@@ -440,9 +493,9 @@ dynamical_inits <- function(cached, variables, levels, columns = NULL) {
 #                  hardly moves for the whole burst
 dynamical_mcmc_settings <- function(n_chains = 4,
                                     warmup = 2000,
-                                    n_samples = 3000,
-                                    Lmin = 60,
-                                    Lmax = 120,
+                                    n_samples = 1500,
+                                    Lmin = 30,
+                                    Lmax = 60,
                                     accept_target = 0.65,
                                     pb_update = 10) {
   list(n_chains = n_chains,
@@ -479,19 +532,19 @@ run_dynamical_mcmc <- function(m, variables, inits,
 # selection or initial-state covariates), for dynamical_inits()
 inits_levels <- list(
   init_region_sd = "types", init_country_sd = "types",
-  logit_init_mean = "types", rho_type_raw = "types",
+  logit_init_mean = "types", logit_rho_type = "types",
   rho_class_raw = "classes", reversion_rate = "classes",
   init_region_raw = c("regions", "types"),
   init_country_level = c("countries", "types"),
   beta_class_raw = c(NA, "classes"), beta_type_raw = c(NA, "types"),
+  beta_class_centred = c(NA, "classes"), beta_type_centred = c(NA, "types"),
   init_coef = c(NA, "types"))
 
 # The cached initial values for the fits: posterior means of every variable
-# of the default model, from a 4-chain fit to the interpolation fold
-# (September 2026, before reversion was added; reversion_rate starts at
-# 0.01), with the columns of its selection design as attribute "columns" and
-# the names of its types, classes, regions and countries as "levels". Not in
-# git: remake it from a fit's draws as in fit_model.R.
+# of a 4-chain full fit with the centred hierarchy (October 2026), with the
+# columns of its selection design as attribute "columns" and the names of its
+# types, classes, regions and countries as "levels". Not in git: remake it
+# from a fit's draws as in fit_model.R.
 dynamical_inits_file <- "temporary/inits_refit.RDS"
 
 # The cached initial values the fits start from: the files in IR_CUBE_INITS,
@@ -605,6 +658,7 @@ build_dynamical_model <- function(train_df,
                                    n_regions = n_regions,
                                    n_countries = n_countries,
                                    types = types,
+                                   classes_index = classes_index,
                                    options = options,
                                    country_region_index =
                                      lookups$country_region_index)
