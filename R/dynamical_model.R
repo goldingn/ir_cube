@@ -481,97 +481,50 @@ floored_logit <- function(l, a) {
 }
 
 
-# Initial values for the model's `variables` from a cached set
-# (dynamical_inits_file, posterior means from an earlier fit): the cached values
-# of the variables the model has (where the dimensions match), and starts for
-# the initial-state coefficients, the reversion rate, the floor and the latent
-# smooths. Other variables start where greta puts them. The cached values are
-# matched to the model by name: `levels` are the model's types, classes, regions
-# and countries (build_dynamical_model()'s lookups$levels), matched to the
-# cached fit's (attribute "levels"), and a level new to the model starts at the
-# mean of the others; `columns` are the columns of the selection design matrix,
-# matched to the cached fit's (attribute "columns").
-dynamical_inits <- function(cached, variables, levels, columns = NULL) {
-  cached_levels <- attr(cached, "levels")
-  cached_columns <- attr(cached, "columns")
-  if (is.null(cached_levels)) {
-    stop("the cached initial values have no levels; remake them as in ",
-         "fit_model.R")
-  }
-  cached <- unclass(cached)
-  for (name in intersect(names(inits_levels), names(cached))) {
-    x <- as.matrix(cached[[name]])
-    for (d in which(!is.na(inits_levels[[name]]))) {
-      level <- inits_levels[[name]][d]
-      i <- match(levels[[level]], cached_levels[[level]])
-      if (d == 1) {
-        x <- x[i, , drop = FALSE]
-        x[is.na(i), ] <- rep(colMeans(x, na.rm = TRUE), each = sum(is.na(i)))
-      } else {
-        x <- x[, i, drop = FALSE]
-        x[, is.na(i)] <- rowMeans(x, na.rm = TRUE)
-      }
+# Initial values for every variable of a model built by
+# build_dynamical_model(), `built`, from a cached set (dynamical_inits_file:
+# posterior means of an earlier fit, with the labels of their dimensions as
+# dimnames, as fit_model.R saves them). Each variable's cached values are
+# matched to it by the labels of its dimensions (built$variable_labels):
+# cached labels the model lacks are dropped, and labels the cache lacks take
+# the variable's start (built$variable_starts) or, for a variable without one,
+# the mean of the cached values along that dimension. A variable the cache
+# lacks takes its start, and one without a start is an error.
+dynamical_inits <- function(cached, built) {
+  values <- lapply(setNames(nm = names(built$variables)), function(name) {
+    match_labels(cached[[name]], built$variable_labels[[name]],
+                 built$variable_starts[name], name)
+  })
+  do.call(greta::initials, values)
+}
+
+# The cached values `x` of the variable `name` (a matrix with dimnames, or
+# NULL if the cache lacks them) on the labels of its dimensions in the model,
+# `labels`, for dynamical_inits(): the labels the cache lacks at `start`, or
+# at the mean along the dimension where `start` is NA. Matched along each
+# dimension in turn, transposing after each so that the next is the rows.
+match_labels <- function(x, labels, start, name) {
+  if (is.null(x)) {
+    if (is.na(start)) {
+      stop("the cached initial values lack ", name, ", which has no start")
     }
-    cached[[name]] <- x
+    return(array(start, lengths(labels), labels))
   }
-  # the selection coefficients, by covariate (row): the cached values where
-  # the column is in the cached fit's design, and weak selection (a log effect
-  # of -4, no deviations) for new columns. The centred effects' rows are the
-  # first n_centred_rows columns, and the deviations' the others. The cached
-  # pop coefficients put on log population, which is near 0.8 where raw
-  # population is near 0, drove p to 0 and stalled a short run at its initial
-  # values
-  if (!is.null(columns)) {
-    stopifnot(!is.null(cached_columns))
-    selection_starts <- c(beta_overall = -4, sigma_overall = 0.5,
-                          sigma_class = 0.5, beta_class_centred = -4,
-                          beta_type_centred = -4, beta_class_raw = 0,
-                          beta_type_raw = 0)
-    centred <- seq_len(n_centred_rows)
-    rows_of <- function(design, name) {
-      if (grepl("_centred$", name)) design[centred] else
-        if (grepl("_raw$", name)) design[-centred] else design
+  for (dimension in labels) {
+    i <- match(dimension, rownames(x))
+    new <- is.na(i)
+    if (all(new) && is.na(start)) {
+      stop("the cached ", name, " has none of the model's labels, and no ",
+           "start")
     }
-    for (name in intersect(names(selection_starts), names(cached))) {
-      old <- as.matrix(cached[[name]])
-      old_columns <- rows_of(cached_columns, name)
-      if (nrow(old) != length(old_columns)) {
-        stop("the cached ", name, " is not in this model's variables; ",
-             "remake the cache from a fit of the model, as in fit_model.R")
-      }
-      new_columns <- rows_of(columns, name)
-      new <- matrix(selection_starts[[name]], length(new_columns), ncol(old))
-      shared <- match(new_columns, old_columns)
-      new[!is.na(shared), ] <- old[shared[!is.na(shared)], ]
-      cached[[name]] <- new
+    x <- t(x[i, , drop = FALSE])
+    if (any(new)) {
+      x[, new] <- if (is.na(start)) rowMeans(x[, !new, drop = FALSE]) else
+        start
     }
   }
-  out <- cached[intersect(names(cached), names(variables))]
-  # only where the dimensions match (a different selection design changes the
-  # number of covariates)
-  matches <- vapply(names(out), function(name) {
-    identical(as.integer(dim(out[[name]])),
-              as.integer(dim(variables[[name]])))
-  }, logical(1))
-  out <- out[matches]
-  # inside the constraint on the initial-state coefficients
-  if (!is.null(out$init_coef)) {
-    out$init_coef <- pmin(as.matrix(out$init_coef), -0.05)
-  }
-  # the other new terms start near the model without them. Left to greta, the
-  # reversion rate starts around 1 per year, which drives p to 1 at most
-  # assays and stalled a short run at its initial values. The floors start
-  # low, and the latent smooths flat (raw weights 0), their sds inside their
-  # priors
-  starts <- c(init_coef = -0.05, reversion_rate = 0.01, floor_flat = 0.002,
-              floor_sd_type = 0.3, floor_type_raw = 0,
-              smooth_raw_selection = 0, smooth_sd_selection = 0.02,
-              smooth_raw_floor = 0, smooth_sd_floor = 0.02)
-  for (name in intersect(names(starts), setdiff(names(variables),
-                                                names(out)))) {
-    out[[name]] <- array(starts[[name]], dim(variables[[name]]))
-  }
-  do.call(greta::initials, out)
+  dimnames(x) <- labels
+  x
 }
 
 
@@ -626,24 +579,10 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
 }
 
 
-# The levels each dimension of a cached variable is indexed by (NA: the
-# selection or initial-state covariates), for dynamical_inits()
-inits_levels <- list(
-  init_region_sd = "types", init_country_sd = "types",
-  logit_init_mean = "types", logit_rho_type = "types",
-  rho_class_raw = "classes", reversion_rate = "classes",
-  floor_flat = "classes", floor_type_raw = "types",
-  init_region_raw = c("regions", "types"),
-  init_country_level = c("countries", "types"),
-  beta_class_raw = c(NA, "classes"), beta_type_raw = c(NA, "types"),
-  beta_class_centred = c(NA, "classes"), beta_type_centred = c(NA, "types"),
-  init_coef = c(NA, "types"))
-
 # The cached initial values for the fits: posterior means of every variable
 # of a 4-chain full fit with the centred hierarchy (October 2026), with the
-# columns of its selection design as attribute "columns" and the names of its
-# types, classes, regions and countries as "levels". Not in git: remake it
-# from a fit's draws as in fit_model.R.
+# labels of their dimensions as dimnames (dynamical_variables()). Not in git:
+# remake it from a fit's draws as in fit_model.R.
 dynamical_inits_file <- "temporary/inits_refit.RDS"
 
 
