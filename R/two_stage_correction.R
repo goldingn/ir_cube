@@ -59,6 +59,7 @@
 #   predict_correction(fit, new, m_draws_train, m_draws_new, n_draws)
 #     draws x points m_draw + omega + xi + fresh u + fresh p: the predictive
 #     distribution of new assays' logit mortality, in batches (CV scoring).
+#     noise = FALSE leaves out u and p: the map, m + omega + xi.
 #   Saving without refitting: fit$obj <- NULL; saveRDS(fit, file). Everything
 #     above works on the reloaded fit (it keeps H, H_chol, meshes and levels);
 #     only correction_adfun() needs tmb_data and par_list, which it keeps too.
@@ -545,10 +546,11 @@ iid_noise <- function(fit, new, n_draws) {
 # beta-binomial assay noise. With m_draws_train (K x n_obs) and m_draws_new
 # (K x nrow(new)), the paired dynamical draws, draw d uses dynamical draw
 # ((d - 1) mod K) + 1: its cut-posterior shift and its m at the new points.
-# Generated in batches to bound memory
+# Generated in batches to bound memory. With noise = FALSE, the same without u
+# and p: m + omega + xi, whose inverse logit is what the maps show
 predict_correction <- function(fit, new, m_draws_train = NULL,
                                m_draws_new = NULL, n_draws = 1000,
-                               batch_size = 100) {
+                               batch_size = 100, noise = TRUE) {
   stopifnot(is.null(m_draws_train) == is.null(m_draws_new),
             is.null(m_draws_new) || ncol(m_draws_new) == nrow(new))
   draws <- matrix(NA_real_, n_draws, nrow(new))
@@ -564,7 +566,7 @@ predict_correction <- function(fit, new, m_draws_train = NULL,
       m_new <- t(m_draws_new[k, , drop = FALSE])
     }
     draws[batch, ] <- t(m_new + project_correction(fit, fields, new,
-                                                   noise = TRUE))
+                                                   noise = noise))
   }
   draws
 }
