@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# One #34 experiment (R/two_stage_hyper_folds.R) on a pod: a fold, a type and
+# its methods, with the code of a given commit, in a work directory of its own.
+#
+#   JOB="<name> --in <fold job> -- bash /workspace/ir_cube/ts_hyper/hyper_job.sh \
+#        <experiment> <fold> <type index> <methods> <commit>"
+#
+# hyper_job.sh is a copy of this script on the volume. <fold job> is the
+# dynamical fold's job (e.g. cv5pg_fc2014), whose second stage
+# (ts_v5f/<fold job>/) holds the stage-one cache. Works in
+# /workspace/ir_cube/ts_hyper/<name>/. NUTS chains run in parallel, each with
+# vCPU / chains BLAS threads; the other methods use all the vCPUs.
+set -euo pipefail
+export IR_CUBE_NO_MEMORY_WAIT=1
+experiment=$1; fold=$2; k=$3; methods=$4; ref=$5
+job=$(pwd); fold_job=$(basename "$job"); key=${experiment}__${fold}
+name=${HYPER_NAME:?set HYPER_NAME to the job name}
+work=/workspace/ir_cube/ts_hyper/$name
+threads=${RUNPOD_CPU_COUNT:-$(OMP_NUM_THREADS= nproc)}
+chains=${IR_CUBE_NUTS_CHAINS:-4}
+say() { echo "[$(date -u '+%F %T')] $*"; }
+
+[[ $ref =~ ^[0-9a-f]{40}$ ]] || { echo "the commit must be a full id" >&2; exit 1; }
+say "set up $work"
+mkdir -p "$work"; cd "$work"
+curl -fsSL "https://codeload.github.com/${TS_CODE_REPO:-goldingn/ir_cube}/tar.gz/$ref" \
+  | tar -xz --strip-components=1 --wildcards '*/R/' '*/tmb/'
+mkdir -p outputs/two_stage temporary
+ln -sfn "$(readlink -f "$job/data")" data
+cp "$job"/outputs/bioassay_rho*.csv outputs/
+ln -sfn "/workspace/ir_cube/ts_v5f/$fold_job/outputs/two_stage/stage_one__$key.rds" \
+  "outputs/two_stage/stage_one__$key.rds"
+[ -e "outputs/two_stage/stage_one__$key.rds" ] || { echo "no stage-one cache" >&2; exit 1; }
+
+if [[ $methods == *nuts* ]]; then
+  say "install tmbstan if missing"
+  Rscript -e 'if (!requireNamespace("tmbstan", quietly = TRUE))
+    install.packages("tmbstan", repos = Sys.getenv("CRAN"), Ncpus = 4)'
+fi
+say "compile the correction template"
+Rscript -e 'source("R/two_stage_correction.R"); invisible(load_correction_template())'
+
+# the methods other than nuts with every thread; nuts with threads per chain
+other=$(echo "$methods" | tr ',' '\n' | grep -v '^nuts$' | paste -sd, || true)
+if [ -n "$other" ]; then
+  say "methods $other, $threads threads"
+  OPENBLAS_NUM_THREADS=$threads Rscript R/two_stage_hyper_folds.R \
+    "$experiment" "$fold" "$k" "$other"
+fi
+if [[ ,$methods, == *,nuts,* ]]; then
+  per_chain=$(( threads / chains > 0 ? threads / chains : 1 ))
+  say "nuts, $chains chains x $per_chain threads"
+  OPENBLAS_NUM_THREADS=$per_chain Rscript R/two_stage_hyper_folds.R \
+    "$experiment" "$fold" "$k" nuts
+fi
+say "done"

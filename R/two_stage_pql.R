@@ -28,7 +28,8 @@
 # then moved materially from stage A (RMS change at the data > 0.1), the
 # hyperparameters are re-estimated once, by the stage-A marginal likelihood
 # with the final working (z, v) as data, and the PQL passes are re-run at the
-# new hyperparameters.
+# new hyperparameters; with max_refits > 1 the two alternate until the
+# hyperparameters stop moving.
 #
 # The result is a correction_fit with mode, H, H_chol, precision_obs (= the
 # final D) and the hyperparameters replaced, so the prediction functions use
@@ -162,6 +163,8 @@ fit_correction_pql <- function(fit_a, train,
                                tol = 0.01,
                                max_passes = 30,
                                refit_threshold = 0.1,
+                               max_refits = 1,
+                               theta_tol = 0.01,
                                clamp = 15,
                                verbose = FALSE) {
   start_time <- Sys.time()
@@ -175,25 +178,44 @@ fit_correction_pql <- function(fit_a, train,
                       clamp = clamp, verbose = verbose)
   rms_move <- sqrt(mean((first$lambda - lambda_a) ^ 2))
 
-  # re-estimate the hyperparameters once if lambda moved materially: the
-  # stage-A marginal likelihood with the working (z, v) as the response,
-  # with the stage-A priors and control, started at the stage-A
-  # hyperparameters; then PQL again at the new ones
+  # re-estimate the hyperparameters if lambda moved materially: the stage-A
+  # marginal likelihood with the working (z, v) as the response, with the
+  # stage-A priors and control, started at the previous hyperparameters; then
+  # PQL again at the new ones. Repeated up to max_refits times, until no
+  # hyperparameter moves by more than theta_tol on the optimiser's scale (log
+  # SDs and ranges, logit phi) (#34)
   refit <- rms_move > refit_threshold
   base <- fit_a
   final <- first
+  hyper_names <- setdiff(names(fit_a$par_list), c("w_omega", "x", "iid"))
+  theta_of <- function(fit) unlist(fit$par_list[hyper_names])
+  refits <- list()
   if (refit) {
-    train_w <- train
-    train_w$z <- first$working$z
-    train_w$v <- first$working$v
-    hyper_names <- setdiff(names(fit_a$par_list), c("w_omega", "x", "iid"))
-    base <- fit_stage_a(train_w, t0 = fit_a$t0, T = fit_a$T,
-                        meshes = list(omega = fit_a$mesh, xi = fit_a$mesh_xi),
-                        priors = fit_a$priors, control = fit_a$control,
-                        start = fit_a$par_list[hyper_names])
-    final <- pql_passes(base, died, n, rho, tol = tol,
-                        max_passes = max_passes, clamp = clamp,
-                        verbose = verbose)
+    for (r in seq_len(max_refits)) {
+      train_w <- train
+      train_w$z <- final$working$z
+      train_w$v <- final$working$v
+      previous <- base
+      base <- fit_stage_a(train_w, t0 = fit_a$t0, T = fit_a$T,
+                          meshes = list(omega = fit_a$mesh,
+                                        xi = fit_a$mesh_xi),
+                          priors = fit_a$priors, control = fit_a$control,
+                          start = previous$par_list[hyper_names])
+      lambda_before <- final$lambda
+      final <- pql_passes(base, died, n, rho, tol = tol,
+                          max_passes = max_passes, clamp = clamp,
+                          verbose = verbose)
+      theta_change <- max(abs(theta_of(base) - theta_of(previous)))
+      refits[[r]] <- data.frame(
+        refit = r, max_theta_change = theta_change,
+        rms_lambda_change = sqrt(mean((final$lambda - lambda_before) ^ 2)),
+        objective = base$opt$objective, convergence = base$opt$convergence,
+        pql_passes = final$passes, pql_converged = final$converged)
+      if (verbose) {
+        message(sprintf("refit %i: max |d theta| %.4f", r, theta_change))
+      }
+      if (theta_change < theta_tol) break
+    }
   }
 
   out <- base
@@ -220,6 +242,7 @@ fit_correction_pql <- function(fit_a, train,
     history_second = if (refit) final$history else NULL,
     rms_move_second = if (refit)
       sqrt(mean((final$lambda - first$lambda) ^ 2)) else NA_real_,
+    refits = if (refit) do.call(rbind, refits) else NULL,
     final_change = final$final_change,
     n_clamped = final$working$n_clamped,
     time_stage_a = fit_a$timings[["total"]],

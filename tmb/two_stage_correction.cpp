@@ -25,8 +25,12 @@
 // x -> eta (eta_t = x_t - x_{t-1}) is unit lower triangular, so its Jacobian
 // is 1 and the prior on eta is the prior on x.
 //
-// The model is Gaussian in the random effects, so given the hyperparameters the
-// Laplace approximation is exact.
+// With likelihood = 0 the model is Gaussian in the random effects, so given
+// the hyperparameters the Laplace approximation is exact. With likelihood = 1
+// (#34) the response is instead the bioassay counts, died_i of n_i,
+// beta-binomial with mean ilogit(lambda_i) and intra-class correlation rho_i,
+// and TMB's Laplace approximation integrates the random effects out of that
+// likelihood itself; z and v are then unused.
 
 #include <TMB.hpp>
 
@@ -76,6 +80,10 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(pc_eta);            // as above, for the eta innovations field
   DATA_VECTOR(pc_iid);            // (sigma0, P(sigma > sigma0)) for every iid term
   DATA_VECTOR(persistence_prior); // (meanlog, sdlog) of 1 / (1 - phi)
+  DATA_INTEGER(likelihood);       // 0: Gaussian working response, 1: beta-binomial counts
+  DATA_VECTOR(died);              // the counts, for likelihood = 1
+  DATA_VECTOR(n_mosquito);
+  DATA_VECTOR(rho);               // beta-binomial intra-class correlation
 
   PARAMETER_VECTOR(w_omega);
   PARAMETER_ARRAY(x);
@@ -121,7 +129,21 @@ Type objective_function<Type>::operator() ()
     for (int k = 0; k < iid_index.cols(); k++) lambda(i) += iid(iid_index(i, k));
   }
 
-  nll -= dnorm(z, lambda, sqrt(v), true).sum();
+  if (likelihood == 0) {
+    nll -= dnorm(z, lambda, sqrt(v), true).sum();
+  } else {
+    // log p and log (1 - p) without overflow; the binomial coefficient is a
+    // constant and left out
+    for (int i = 0; i < z.size(); i++) {
+      Type log_p = -logspace_add(Type(0.0), -lambda(i));
+      Type log_q = -logspace_add(Type(0.0), lambda(i));
+      Type c = (Type(1.0) - rho(i)) / rho(i);
+      Type a = c * exp(log_p);
+      Type b = c * exp(log_q);
+      nll -= lgamma(died(i) + a) + lgamma(n_mosquito(i) - died(i) + b) -
+        lgamma(n_mosquito(i) + c) - lgamma(a) - lgamma(b) + lgamma(c);
+    }
+  }
 
   // priors on the hyperparameters: PC priors on both Matern fields,
   // exponential (PC) priors on the iid SDs (with the Jacobian for log sigma),

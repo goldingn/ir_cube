@@ -223,6 +223,24 @@ correction_priors <- function(range0 = 50, alpha_range = 0.05, sigma0 = 1,
 
 # fitting ----------------------------------------------------------------------
 
+# fit$hyper from the template's parameter list
+correction_hyper <- function(par_list) {
+  phi <- plogis(par_list$logit_phi)
+  hyper <- list(sigma_omega = exp(par_list$log_sigma_omega),
+                range_omega = sqrt(8) / exp(par_list$log_kappa_omega),
+                kappa_omega = exp(par_list$log_kappa_omega),
+                sigma_eta = exp(par_list$log_sigma_eta),
+                range_eta = sqrt(8) / exp(par_list$log_kappa_eta),
+                kappa_eta = exp(par_list$log_kappa_eta),
+                phi = phi,
+                persistence = 1 / (1 - phi))
+  for (k in seq_along(correction_iid_terms)) {
+    hyper[[correction_iid_terms[[k]]$sd]] <- exp(par_list$log_sigma_iid[k])
+  }
+  hyper
+}
+
+
 # the TMB object; fix_hyper = TRUE holds the hyperparameters at their values
 # in `parameters` (used by the simulation check)
 correction_adfun <- function(data, parameters, fix_hyper = FALSE,
@@ -274,7 +292,9 @@ fit_stage_a <- function(train, t0, T = max(train$year), meshes,
          A_xi = A_xi, iid_index = iid_index - 1L,
          iid_term = rep(seq_along(iid_levels) - 1L, lengths(iid_levels)),
          spde = correction_fem(meshes$omega),
-         spde_xi = correction_fem(meshes$xi)),
+         spde_xi = correction_fem(meshes$xi),
+         likelihood = 0L, died = train$died,
+         n_mosquito = train$mosquito_number, rho = train$rho),
     priors
   )
 
@@ -319,18 +339,7 @@ fit_stage_a <- function(train, t0, T = max(train$year), meshes,
                                 dims = c(n_obs, sum(lengths(iid_levels))))
 
   par_list <- obj$env$parList(par = par_full)
-  phi <- plogis(par_list$logit_phi)
-  hyper <- list(sigma_omega = exp(par_list$log_sigma_omega),
-                range_omega = sqrt(8) / exp(par_list$log_kappa_omega),
-                kappa_omega = exp(par_list$log_kappa_omega),
-                sigma_eta = exp(par_list$log_sigma_eta),
-                range_eta = sqrt(8) / exp(par_list$log_kappa_eta),
-                kappa_eta = exp(par_list$log_kappa_eta),
-                phi = phi,
-                persistence = 1 / (1 - phi))
-  for (k in seq_along(iid_levels)) {
-    hyper[[correction_iid_terms[[k]]$sd]] <- exp(par_list$log_sigma_iid[k])
-  }
+  hyper <- correction_hyper(par_list)
 
   structure(
     list(t0 = t0, T = T, n_years = T - t0,
@@ -399,6 +408,9 @@ fit_summary <- function(fit) {
          pql_converged_second = get_b("converged_second"),
          pql_rms_move_second = get_b("rms_move_second"),
          pql_n_clamped = get_b("n_clamped"),
+         pql_refits = if (is.null(b$refits)) 0L else nrow(b$refits),
+         pql_last_theta_change = if (is.null(b$refits)) NA_real_ else
+           b$refits$max_theta_change[nrow(b$refits)],
          time_stage_a_s = get_b("time_stage_a"),
          time_pql_s = get_b("time_pql"))
   ))
