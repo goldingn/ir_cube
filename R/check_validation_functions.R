@@ -183,43 +183,6 @@ report("noise floor recovers irreducible MSE",
        abs(floor_estimate / mse_at_truth - 1) < 0.1,
        sprintf("(%.5f vs %.5f)", floor_estimate, mse_at_truth))
 
-# the pooled noise floor ---------------------------------------------------
-
-# the single-assay estimator is the one-assay case of the pooled one
-one_assay <- noise_floor_var_pooled(died[1], mosquito_number[1], rho_true)
-report("pooled floor reduces to the single-assay floor",
-       abs(one_assay - noise_floor_mse(died[1], mosquito_number[1], rho_true)) <
-         1e-12)
-
-# and over many replicate groups it should recover the variance of the pooled
-# proportion around the fraction that generated them
-group_size <- 8
-n_group <- 3000
-p_group <- rbeta(n_group, 6, 2)
-group_died <- matrix(NA_real_, n_group, group_size)
-for (j in seq_len(group_size)) {
-  group_died[, j] <- rbetabinom(n_group, rep(100, n_group), p_group, rho_true)
-}
-pooled_observed <- rowSums(group_died) / (group_size * 100)
-pooled_floor <- mean(vapply(
-  seq_len(n_group),
-  function(i) noise_floor_var_pooled(group_died[i, ], rep(100, group_size),
-                                     rho_true),
-  numeric(1)
-))
-report("pooled floor recovers the variance of a pooled proportion",
-       abs(pooled_floor / mean((pooled_observed - p_group) ^ 2) - 1) < 0.1,
-       sprintf("(%.5f vs %.5f)", pooled_floor,
-               mean((pooled_observed - p_group) ^ 2)))
-
-report("pooling lowers the floor",
-       pooled_floor < mean(vapply(
-         seq_len(n_group),
-         function(i) noise_floor_var_pooled(group_died[i, 1], 100, rho_true),
-         numeric(1))),
-       sprintf("(%.5f pooled over %i assays)", pooled_floor, group_size))
-
-
 # reliability and aggregation ----------------------------------------------
 
 sims <- ppd_simulate(mosquito_number, candidates$calibrated$p,

@@ -294,44 +294,6 @@ model_floor_mse <- function(map, tau, sigma_p) {
   rowMeans(deviation ^ 2)
 }
 
-# The same quantity for a pooled observed proportion: the irreducible variance
-# of `sum(died) / sum(mosquito_number)` over a group of assays that share one
-# population fraction. With N = sum(n_i) and S = sum(n_i (1 + (n_i - 1) rho)),
-#
-#   Var(yhat) = p (1 - p) S / N ^ 2
-#
-# and, exactly as in the single-assay case, p(1 - p) is recovered from the
-# pooled proportion itself:
-#
-#   E[yhat (1 - yhat)] = p (1 - p) [1 - S / N ^ 2]
-#
-# A single assay has S / N ^ 2 = (1 + (n - 1) rho) / n, so noise_floor_mse() is
-# the special case of this with one assay per group. Returns NA where the group
-# carries no information about p(1 - p), which happens when S / N ^ 2 reaches 1:
-# a single assay of a single mosquito, or a group in which every assay is
-# perfectly correlated.
-#
-# This is what a score on the change in mortality between two time windows
-# needs: the floor for a difference of two pooled proportions is the sum of the
-# two windows' variances, since the windows are independent given the fractions.
-noise_floor_var_pooled <- function(died, mosquito_number, rho) {
-  total <- sum(mosquito_number)
-  s <- sum(mosquito_number * (1 + (mosquito_number - 1) * rho))
-  inflation <- s / total ^ 2
-  if (!is.finite(inflation) || inflation >= 1) {
-    return(NA_real_)
-  }
-  yhat <- sum(died) / total
-  pq <- max(yhat * (1 - yhat) / (1 - inflation), 0)
-  pq * inflation
-}
-
-# proportion of the explainable error that a model removes: 0 for the null
-# model, 1 at the noise floor
-mse_skill <- function(mse_model, mse_null, mse_floor) {
-  (mse_null - mse_model) / (mse_null - mse_floor)
-}
-
 # root mean squared error on the proportion scale. (The definition previously
 # used in the validation scripts squared the mean error rather than the errors,
 # which measures bias rather than error; see issue #11)
