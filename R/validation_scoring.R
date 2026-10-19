@@ -51,6 +51,22 @@ draws_files <- function(dir = draws_dir) {
   setNames(files, vapply(parts, `[`, "", 1))
 }
 
+# The dynamical model's logit draws at a fold's training and held-out assays,
+# for the two-stage model (fold_assay_draws(), R/fit_validation_fold.R): saved
+# beside the fold, in assays/, which draws_files() does not list
+assay_draws_file <- function(fold_file) {
+  file.path(dirname(fold_file), "assays", basename(fold_file))
+}
+
+read_assay_draws <- function(fold_file) {
+  file <- assay_draws_file(fold_file)
+  if (!file.exists(file)) {
+    stop(file, " not found: R/run_one_fold.R saves it with the fold, so a ",
+         "fold fitted before it was added has to be refitted")
+  }
+  readRDS(file)
+}
+
 
 # random number streams ---------------------------------------------------------
 

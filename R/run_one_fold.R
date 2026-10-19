@@ -8,6 +8,11 @@
 # One fold per process, so that greta's warmup and sampling progress goes to
 # this fold's own log rather than being buffered out of sight. Dispatched by
 # run_validation_folds.R, but can be run directly to redo a single fold.
+#
+# Saves the fold to <draws dir>/dynamical__<experiment>__<fold>.rds, and the
+# dynamical model's logit draws at its training and held-out assays, which the
+# two-stage folds read (R/run_two_stage_folds.R), to
+# <draws dir>/assays/dynamical__<experiment>__<fold>.rds (fold_assay_draws()).
 
 arguments <- commandArgs(trailingOnly = TRUE)
 experiment_name <- arguments[1]
@@ -40,6 +45,7 @@ settings <- do.call(dynamical_mcmc_settings, setting_overrides)
 
 # find the requested fold
 before <- NULL
+before_years <- NULL
 experiment_label <- experiment_name
 stopifnot(experiment_name %in% validation_experiments)
 if (experiment_name == "spatial_interpolation") {
@@ -62,6 +68,7 @@ if (experiment_name == "spatial_interpolation") {
   # predictions in the before window are needed for the change-based score, and
   # can only be requested at fitting time
   before <- fold$before
+  before_years <- fold$before_years
   # Each origin is scored as its own experiment: pooling a 2014 forecast with
   # a 2018 one would average over holdout windows whose true rates of decline
   # differ by a factor of two. The file name keeps the plain experiment name,
@@ -80,6 +87,11 @@ destination <- file.path(draws_dir,
 
 # resume by file: a fold already on disk is not refitted, so the dispatcher can
 # be restarted without checking anything itself
+assays_destination <- assay_draws_file(destination)
+if (file.exists(destination) && !file.exists(assays_destination)) {
+  stop(destination, " has no assay draws (", assays_destination, "); ",
+       "delete it to refit")
+}
 if (file.exists(destination)) {
   cat(sprintf("%s | %s / %s already fitted, skipping\n",
               format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
@@ -151,4 +163,18 @@ cat(sprintf(paste("%s | saved. p ESS median %.0f, rho ESS median %.0f,",
             max(fold$convergence[, 1], na.rm = TRUE),
             sum(fold$convergence[, 1] > 1.01, na.rm = TRUE),
             nrow(fold$convergence)))
+
+# the logit draws at the assays, for the two-stage folds, saved second so a
+# failure here leaves the fold
+assays <- fold_assay_draws(fold, training, before_years, df = df,
+                           x_cell_years = x_cell_years,
+                           cell_years_index = cell_years_index,
+                           classes_index = classes_index, types = types)
+dir.create(dirname(assays_destination), showWarnings = FALSE)
+saveRDS(c(list(experiment = experiment_label, fold = fold_name,
+               types = types, t0 = baseline_year),
+          assays),
+        assays_destination)
+cat(sprintf("%s | saved %s\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+            assays_destination))
 cat("FOLD COMPLETE\n")

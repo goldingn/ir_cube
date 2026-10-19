@@ -87,6 +87,12 @@ the fold's log with a `WARNING` line; the run continues. It reports the worst
 Rhat over the remaining chains, and the number of parameters above 1.01,
 however high, without stopping. Check the logs for both before scoring.
 
+Each fold also saves the dynamical model's logit draws at its training and
+held-out assays, paired with `p_draws`, to
+`outputs/cv_draws/assays/dynamical__<experiment>__<fold>.rds`
+(`fold_assay_draws()`), which is all the two-stage folds read. A fold on disk
+without it is an error: refit it.
+
 **Run from a frozen copy of the scripts.** R reads `--file=` incrementally, so
 editing a script while a fold is running corrupts that fold — two folds were
 lost this way after 62 h each, both crashing at the `saveRDS` block. Copy `R/`
@@ -100,7 +106,7 @@ Rscript R/run_one_fold.R spatial_blocks 1 2 4 5 5
 ```
 
 takes a few minutes and exercises everything. Delete the resulting `.rds`
-afterwards, or the real fold will be skipped.
+and its `assays/` file afterwards, or the real fold will be skipped.
 
 ### Sampling settings (#25)
 

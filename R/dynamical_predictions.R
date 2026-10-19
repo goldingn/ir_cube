@@ -3,10 +3,12 @@
 #
 # A saved draws object cannot be resumed to ask greta for more predictions, so
 # the two-stage model (paired draw for draw with a fold's stored test
-# predictions), R/predict.R and the figure scripts recompute them from the
-# sampled parameters, with the model's own transforms (dynamical_terms() in
-# R/dynamical_model.R) and its options (fold$options). The recursion is
-# solved in closed form on the logit scale, as in closed_form_states():
+# predictions; for the folds, at fitting time, fold_assay_draws() in
+# R/fit_validation_fold.R), R/predict.R and the figure scripts recompute them
+# from the sampled parameters, with the model's own transforms
+# (dynamical_terms() in R/dynamical_model.R) and its options (fold$options).
+# The recursion is solved in closed form on the logit scale, as in
+# closed_form_states():
 #
 #   logit q_t = logit q_0 - exp(u_s(x)) sum_{s <= t} log w_s - t kappa
 #
