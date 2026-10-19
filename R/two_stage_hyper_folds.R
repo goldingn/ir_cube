@@ -95,6 +95,7 @@ base_fit <- function(latent) {
   set.seed(string_seed(paste(fold_key, type, latent, "fit")))
   fit <- switch(latent,
                 pql = fit_correction(train_k, t0 = t0, meshes = meshes,
+                                     latent = "pql",
                                      pql_args = list(max_refits = 10)),
                 la = fit_correction_laplace(train_k, t0 = t0, meshes = meshes))
   fit$obj <- NULL
@@ -136,7 +137,8 @@ for (method in methods) {
   latent <- sub("_.*$", "", method)
   theta_method <- sub("^[a-z]+_", "", method)
   if (method == "plugin_once") {
-    fit <- fit_correction(train_k, t0 = t0, meshes = meshes)
+    fit <- fit_correction(train_k, t0 = t0, meshes = meshes,
+                          latent = "pql")
   } else {
     fit <- base_fit(latent)
   }

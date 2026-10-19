@@ -469,12 +469,18 @@ fit_correction_laplace <- function(train, t0, T = max(train$year), meshes,
   fit
 }
 
-# The final model: stage A, then stage B (PQL) from it. Arguments as for
+# The final model: the standalone Laplace fit (fit_correction_laplace()), or
+# with latent = "pql" stage A then stage B (PQL) from it. Arguments as for
 # fit_stage_a(); pql_args go to fit_correction_pql()
 fit_correction <- function(train, t0, T = max(train$year), meshes,
                            priors = correction_priors(),
                            control = list(eval.max = 1000, iter.max = 500),
-                           pql_args = list()) {
+                           latent = c("laplace", "pql"), pql_args = list()) {
+  latent <- match.arg(latent)
+  if (latent == "laplace") {
+    return(fit_correction_laplace(train, t0 = t0, T = T, meshes = meshes,
+                                  priors = priors, control = control))
+  }
   fit_a <- fit_stage_a(train[setdiff(names(train), c("z", "v"))], t0 = t0,
                        T = T, meshes = meshes, priors = priors,
                        control = control)

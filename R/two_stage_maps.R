@@ -204,7 +204,7 @@ if (step == "fit") {
                                     prediction_mask_coords())
   time_fit <- system.time(fit <- fit_correction(train_k, t0 = baseline_year,
                                                 meshes = meshes))
-  stopifnot(fit$opt$convergence == 0, isTRUE(fit$stage_b$converged_first),
+  stopifnot(fit$opt$convergence == 0, !isFALSE(fit$stage_b$converged_first),
             !isFALSE(fit$stage_b$converged_second))
 
   # every mapped cell must be inside both meshes, or its correction would be 0
