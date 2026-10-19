@@ -248,6 +248,14 @@ ppd_crps <- function(died, mosquito_number, sims) {
 # dividing by the known factor. Averaged over many assays the noise in that
 # estimate washes out.
 noise_floor_mse <- function(died, mosquito_number, rho) {
+  mean(noise_floor_record(died, mosquito_number, rho), na.rm = TRUE)
+}
+
+# The per-assay terms noise_floor_mse() averages: each is unbiased for that
+# assay's sampling variance but noisy (exactly 0 at 0% or 100%), so only means
+# over many assays are meaningful. NA for an assay that carries no information
+# about p(1 - p)
+noise_floor_record <- function(died, mosquito_number, rho) {
   yhat <- died / mosquito_number
   inflation <- (1 + (mosquito_number - 1) * rho) / mosquito_number
   # An assay of a single mosquito has inflation exactly 1, so the estimator
@@ -255,8 +263,48 @@ noise_floor_mse <- function(died, mosquito_number, rho) {
   # p(1 - p). Such assays are dropped from the floor rather than allowed to
   # make it undefined; there are a handful in the held-out data.
   usable <- mosquito_number > 1 & is.finite(inflation) & inflation < 1
+  out <- rep(NA_real_, length(yhat))
   pq <- pmax(yhat[usable] * (1 - yhat[usable]) / (1 - inflation[usable]), 0)
-  mean(pq * inflation[usable])
+  out[usable] <- pq * inflation[usable]
+  out
+}
+
+
+# the model floor -----------------------------------------------------------
+
+# The two-stage model (#21) treats u (per pixel-year) and p (per pixel) as
+# noise shared by the assays of a site: an assay at a pixel-year samples the
+# population mortality q = plogis(logit(m) + e), e ~ N(0, s^2), around the map
+# value m, with s^2 = tau^2 + sigma_p^2 from the fit. The model floor (#32) is
+# the squared error this adds to the map's, as the model attributes it:
+#
+#   U(m, s) = E[(q - m) ^ 2] = Var(q) + (E[q] - m) ^ 2
+#
+# The second term is the pull: E[q] lies nearer 0.5 than m, because the
+# inverse logit is applied after the noise. It is why the two-stage predictive
+# mean is not the map. Both moments are expectations over a normal
+# (normal_nodes()).
+
+# Nodes for an expectation over e ~ N(0, 1): n evenly spaced normal quantiles,
+# so that E[f(e)] is the plain mean of f over them. With n = 1000 the moments
+# below are within 4e-5 of 60-node Gauss-Hermite quadrature for map values
+# 0.02 to 0.999 and SDs up to 1.5
+normal_nodes <- function(n = 1000) qnorm(ppoints(n))
+
+# E[q] - m and E[(q - m)^2] for q = plogis(qlogis(m) + e), e ~ N(0, sd^2),
+# elementwise over m and sd. m of exactly 0 or 1 gives q = m, both zero
+site_noise_moments <- function(map, sd) {
+  stopifnot(length(sd) %in% c(1, length(map)))
+  e <- normal_nodes()
+  sd <- rep_len(sd, length(map))
+  deviation <- plogis(outer(qlogis(map), rep(1, length(e))) +
+                        outer(sd, e)) - map
+  list(pull = rowMeans(deviation), mse = rowMeans(deviation ^ 2))
+}
+
+# the model floor U at each map value, for a level score: u and p both count
+model_floor_mse <- function(map, tau, sigma_p) {
+  site_noise_moments(map, sqrt(tau ^ 2 + sigma_p ^ 2))$mse
 }
 
 # The same quantity for a pooled observed proportion: the irreducible variance

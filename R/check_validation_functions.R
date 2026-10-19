@@ -246,3 +246,40 @@ report("pooling reduces scatter",
        scatter_pooled < scatter_single,
        sprintf("(%.4f vs %.4f, ratio %.2f)",
                scatter_pooled, scatter_single, scatter_pooled / scatter_single))
+
+
+# the model floor (#32) ----------------------------------------------------
+
+# the per-record floor terms average to the floor
+report("per-record floor terms average to the floor",
+       isTRUE(all.equal(mean(noise_floor_record(died, mosquito_number,
+                                                rho_true), na.rm = TRUE),
+                        noise_floor_mse(died, mosquito_number, rho_true))))
+
+# U and the pull against Monte Carlo, at map values across the range and the
+# site noise SDs the September two-stage fits found (combined 0.2 to 0.85)
+map_values <- c(0.02, 0.2, 0.5, 0.8, 0.98)
+noise_sds <- c(0.2, 0.5, 0.85)
+grid <- expand.grid(map = map_values, sd = noise_sds)
+e <- rnorm(1e6)
+monte_carlo <- t(mapply(function(m, s) {
+  deviation <- plogis(qlogis(m) + s * e) - m
+  c(pull = mean(deviation), mse = mean(deviation ^ 2))
+}, grid$map, grid$sd))
+moments <- site_noise_moments(grid$map, grid$sd)
+report("model floor matches Monte Carlo",
+       max(abs(moments$mse - monte_carlo[, "mse"])) < 1e-4,
+       sprintf("(max |diff| %.1e)",
+               max(abs(moments$mse - monte_carlo[, "mse"]))))
+report("pull towards 0.5 matches Monte Carlo",
+       max(abs(moments$pull - monte_carlo[, "pull"])) < 1e-4,
+       sprintf("(max |diff| %.1e; %.4f at 80%%, sd 0.5)",
+               max(abs(moments$pull - monte_carlo[, "pull"])),
+               moments$pull[grid$map == 0.8 & grid$sd == 0.5]))
+report("pull is towards 0.5, and zero at 0.5",
+       all(sign(moments$pull[grid$map != 0.5]) ==
+             sign(0.5 - grid$map[grid$map != 0.5])) &&
+         max(abs(moments$pull[grid$map == 0.5])) < 1e-12)
+report("model floor combines tau and sigma_p in quadrature",
+       isTRUE(all.equal(model_floor_mse(0.8, 0.3, 0.4),
+                        site_noise_moments(0.8, 0.5)$mse)))
