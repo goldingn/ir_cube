@@ -163,6 +163,7 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
       insecticide_type = test$insecticide_type,
       insecticide_class = test$insecticide_class,
       country_name = test$country_name,
+      citation = test$citation,
       year_start = test$year_start,
       cell = test$cell,
       # One randomisation replicate, not the mean of them. Averaging over
@@ -331,18 +332,23 @@ record_key <- function(x) {
   do.call(paste, x[columns])
 }
 
-# Bootstrap a statistic of a data frame by resampling its pixels (`cell`), all
-# of a pixel's rows together: bioassays cluster hard by pixel, and the assay
-# count badly overstates the information a fold holds. With one column per
-# model in `data`, every model is scored on the same resample, so differences
-# formed within a replicate are paired. Returns n_bootstrap x
-# length(statistic(data))
-pixel_bootstrap <- function(data, statistic, n_bootstrap = 2000) {
-  cells <- unique(data$cell)
-  rows_by_cell <- split(seq_len(nrow(data)), data$cell)
-  t(replicate(n_bootstrap, {
-    picked <- sample(cells, length(cells), replace = TRUE)
-    statistic(data[unlist(rows_by_cell[as.character(picked)],
-                          use.names = FALSE), ])
+# Bootstrap a statistic of a data frame by resampling whole clusters with
+# replacement, by default its pixels (`cell`): bioassays cluster hard by pixel,
+# and the assay count badly overstates the information a fold holds. With one
+# column per model in `data`, every model is scored on the same resample, so
+# differences formed within a replicate are paired. With rho_draws (draws of
+# rho by type, one row per replicate), replicate i is statistic(resample,
+# rho_draws[i, ]), so the intervals carry the uncertainty in rho too. Returns
+# n_bootstrap x length(statistic(data)), one column per named statistic
+cluster_bootstrap <- function(data, statistic, n_bootstrap = 2000,
+                              cluster = data$cell, rho_draws = NULL) {
+  if (!is.null(rho_draws)) n_bootstrap <- nrow(rho_draws)
+  ids <- unique(cluster)
+  rows <- split(seq_len(nrow(data)), cluster)
+  do.call(rbind, lapply(seq_len(n_bootstrap), function(i) {
+    picked <- sample(ids, length(ids), replace = TRUE)
+    resample <- data[unlist(rows[as.character(picked)], use.names = FALSE), ]
+    if (is.null(rho_draws)) statistic(resample) else
+      statistic(resample, rho_draws[i, ])
   }))
 }

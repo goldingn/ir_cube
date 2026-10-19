@@ -8,8 +8,8 @@
 # writes the per-record scores this reads (outputs/cv_scores.csv). Nothing is
 # rescored here: every model's numbers are #12's, and this adds only the
 # comparison with the dynamical model, which is the question for the
-# correction, with paired pixel-bootstrap intervals (pixel_bootstrap(), as in
-# R/variance_explained.R).
+# correction, with paired pixel-bootstrap intervals (cluster_bootstrap(), in
+# R/validation_scoring.R).
 #
 # Per group of held-out records and model:
 #   elpd       mean beta-binomial log predictive density (higher is better)
@@ -97,7 +97,7 @@ measures_for <- function(data) {
 
 summarise_records <- function(data) {
   point <- measures_for(data)
-  replicates <- pixel_bootstrap(data, measures_for, n_bootstrap)
+  replicates <- cluster_bootstrap(data, measures_for, n_bootstrap)
   interval <- function(x, p) unname(quantile(x, p, na.rm = TRUE))
   bind_rows(lapply(models, function(m) {
     row <- tibble(model = m, n = nrow(data), n_pixels = n_distinct(data$cell))

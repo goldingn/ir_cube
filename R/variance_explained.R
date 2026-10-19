@@ -213,8 +213,8 @@ summarise_subset <- function(data, label, stratum = NA_character_) {
 
   variance <- mean((data$observed - mean(data$observed)) ^ 2)
   point <- explained_for(data)
-  # resampling pixels (pixel_bootstrap(), in validation_scoring.R)
-  replicates <- pixel_bootstrap(data, explained_for, n_bootstrap)
+  # resampling pixels (cluster_bootstrap(), in validation_scoring.R)
+  replicates <- cluster_bootstrap(data, explained_for, n_bootstrap)
   noise <- noise_posterior(data)
   noise_point <- 100 * noise_floor_mse(data$died, data$mosquito_number,
                                        data$rho_type) / variance
