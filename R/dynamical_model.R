@@ -569,8 +569,8 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
                                settings = dynamical_mcmc_settings()) {
   list2env(variables, environment())
   inits <- replicate(settings$n_chains, inits_one, simplify = FALSE)
-  sampler <- windowed_hmc(Lmin = settings$Lmin, Lmax = settings$Lmax,
-                          accept_target = settings$accept_target)
+  # TEST ARM for #41: greta's hmc(), not for merging
+  sampler <- hmc(Lmin = settings$Lmin, Lmax = settings$Lmax)
   mcmc(m,
        chains = settings$n_chains,
        initial_values = inits,
