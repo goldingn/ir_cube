@@ -63,6 +63,7 @@ confusing ways if they are disturbed:
 ```bash
 Rscript R/fig_illustrate_bioassay_variability.R  # overdispersion per type; everything downstream needs it
 Rscript R/run_validation_folds.R                 # nulls, then dispatch the model folds
+Rscript R/fit_checks.R                           # every fit's chains in one table and figure (#39)
 # the two-stage folds: doc/two_stage_plan.md, "How to run", step 2
 Rscript R/validation_metrics.R                   # score everything on disk
 Rscript R/validation_geometry.R                  # fold separation, and the leak check
@@ -95,7 +96,18 @@ itself, so the run resumes after an interruption.
 saving it (`drop_fold_chains()`), records it in `stuck_chains`, and flags it in
 the fold's log with a `WARNING` line; the run continues. It reports the worst
 Rhat over the remaining chains, and the number of parameters above 1.01,
-however high, without stopping. Check the logs for both before scoring.
+however high, without stopping.
+
+Every fit, folds and full fit, also checks whether its chains agree
+(`check_chains()`, `R/chain_checks.R`, #39). All chains start from the same
+values, so a chain in another mode shows only as disagreement between chains.
+The log gives the rank-normalised Rhat of the log density over the kept
+chains and each chain's mean, and a `WARNING` line when that Rhat is above
+1.01, naming the elements whose chain means differ most. `R/fit_checks.R` puts
+all of this in one table, `outputs/fit_checks.csv` (one row per fit), and one
+figure, `figures/fit_checks.png` (the floor, smooth, initial-state,
+overdispersion, reversion and selection-sd parameters by fit and chain): read
+both before scoring.
 
 Each fold also saves the dynamical model's logit draws at its training and
 held-out assays, paired with `p_draws`, to
