@@ -9,7 +9,9 @@
 # dynamical fold's job (e.g. cv5pg_fc2014), whose second stage
 # (ts_v5f/<fold job>/) holds the stage-one cache. Works in
 # /workspace/ir_cube/ts_hyper/<name>/. HYPER_FITS_FROM=<earlier name> starts
-# from that job's saved fits (its outputs/two_stage/hyper/fits/). The *_is
+# from that job's saved fits (its outputs/two_stage/hyper/fits/), and
+# STAGE_ONE_DIR=<dir> takes the stage-one cache from <dir> (e.g. a copy with
+# the study labels of #54). The *_is
 # methods evaluate their draws in one single-threaded process per vCPU; the
 # other methods use all the vCPUs.
 set -euo pipefail
@@ -29,7 +31,8 @@ curl -fsSL "https://codeload.github.com/${TS_CODE_REPO:-goldingn/ir_cube}/tar.gz
 mkdir -p outputs/two_stage temporary
 ln -sfn "$(readlink -f "$job/data")" data
 cp "$job"/outputs/bioassay_rho*.csv outputs/
-ln -sfn "/workspace/ir_cube/ts_v5f/$fold_job/outputs/two_stage/stage_one__$key.rds" \
+stage_one_dir=${STAGE_ONE_DIR:-/workspace/ir_cube/ts_v5f/$fold_job/outputs/two_stage}
+ln -sfn "$stage_one_dir/stage_one__$key.rds" \
   "outputs/two_stage/stage_one__$key.rds"
 [ -e "outputs/two_stage/stage_one__$key.rds" ] || { echo "no stage-one cache" >&2; exit 1; }
 
