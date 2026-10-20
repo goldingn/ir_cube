@@ -21,7 +21,6 @@
 source("R/greta_setup.R")
 source("R/model_covariates.R")
 source("R/latent_smooth.R")
-source("R/windowed_hmc.R")
 # stuck_chains()
 source("R/chain_checks.R")
 
@@ -535,12 +534,11 @@ match_labels <- function(x, labels, start, name) {
 # The sampler settings for the dynamical model, used by fit_fold()
 # (R/fit_validation_fold.R) and fit_model.R. The arguments override single
 # settings, e.g. for a smoke test. The defaults, and the evidence for them, are
-# in doc/cv_run_plan.md (section 3, sampling settings): windowed_hmc() with
-# 30 to 60 leapfrog steps, redrawn every 10 iterations, target acceptance
-# 0.65, 4 chains, 2,000 warmup and 1,500 samples.
+# in doc/cv_run_plan.md (section 3, sampling settings): greta's hmc() with
+# 30 to 60 leapfrog steps, redrawn every 10 iterations, 4 chains, 2,000 warmup
+# and 1,500 samples.
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
 #                  burst of iterations
-#   accept_target  target acceptance of the step-size adaptation
 #   pb_update      iterations per burst while sampling, so how often the
 #                  number of leapfrog steps is redrawn. With it fixed for a
 #                  burst, a parameter whose trajectory returns near its start
@@ -550,14 +548,12 @@ dynamical_mcmc_settings <- function(n_chains = 4,
                                     n_samples = 1500,
                                     Lmin = 30,
                                     Lmax = 60,
-                                    accept_target = 0.65,
                                     pb_update = 10) {
   list(n_chains = n_chains,
        warmup = warmup,
        n_samples = n_samples,
        Lmin = Lmin,
        Lmax = Lmax,
-       accept_target = accept_target,
        pb_update = pb_update)
 }
 
@@ -569,13 +565,11 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
                                settings = dynamical_mcmc_settings()) {
   list2env(variables, environment())
   inits <- replicate(settings$n_chains, inits_one, simplify = FALSE)
-  sampler <- windowed_hmc(Lmin = settings$Lmin, Lmax = settings$Lmax,
-                          accept_target = settings$accept_target)
   mcmc(m,
        chains = settings$n_chains,
        initial_values = inits,
        warmup = settings$warmup,
-       sampler = sampler,
+       sampler = hmc(Lmin = settings$Lmin, Lmax = settings$Lmax),
        n_samples = settings$n_samples,
        pb_update = settings$pb_update)
 }

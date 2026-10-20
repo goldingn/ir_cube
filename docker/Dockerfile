@@ -63,7 +63,7 @@ RUN echo "options(repos = c(CRAN = '${CRAN}'), Ncpus = ${NCPUS})" \
        tidyverse readxl lme4 terra tidyterra tidygeocoder \
        future future.apply future.callr DHARMa Hmisc patchwork extraDistr \
        ggtext geodata sf TMB RcppEigen fmesher Matrix coda scales fields mgcv \
-       ggrepel scoringRules posterior loo matrixStats RColorBrewer R6 \
+       ggrepel scoringRules posterior loo matrixStats RColorBrewer \
        processx callr remotes reticulate tensorflow \
   && rm -rf /tmp/downloaded_packages
 
