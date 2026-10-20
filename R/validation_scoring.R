@@ -117,7 +117,7 @@ string_seed <- function(key) {
 #              external rho), on every model; only means over records are
 #              meaningful
 #   model_floor  the two-stage model's floor U at the map value
-#              (model_floor_mse(), from the fold's fitted tau and sigma_p for
+#              (model_floor_mse(), from the fold's fitted noise SDs for
 #              the record's insecticide type); 0 for a type that fell back to
 #              the dynamical draws, NA for every other model
 #   cdf_below_map, pmf_at_map
@@ -166,7 +166,8 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
   map <- map_prediction(fold, summary$predicted)
   site_noise <- site_noise_for_record(fold, test)
   model_floor <- if (is.null(site_noise)) NA_real_ else
-    model_floor_mse(map, site_noise$tau, site_noise$sigma_p)
+    model_floor_mse(map, site_noise$tau, site_noise$sigma_p,
+                    site_noise$sigma_sy)
   without_noise <- data.frame(cdf_below = rep(NA_real_, nrow(test)),
                               pmf_at = NA_real_)
   if (!is.null(site_noise)) {
@@ -237,10 +238,10 @@ map_prediction <- function(fold, predicted) {
   map
 }
 
-# The two-stage model's fitted SDs of u (tau) and p (sigma_p) per held-out
-# record, from the fit summary saved with the fold
-# (R/run_two_stage_folds.R); NULL for a model without them. A type that fell
-# back to the dynamical draws has neither term, so both are 0
+# The two-stage model's fitted SDs of u (tau), p (sigma_p) and sy (sigma_sy,
+# 0 for fits without it) per held-out record, from the fit summary saved with
+# the fold (R/run_two_stage_folds.R); NULL for a model without them. A type
+# that fell back to the dynamical draws has none of the terms, so all are 0
 site_noise_for_record <- function(fold, test) {
   fits <- fold$fit_summary
   if (is.null(fits) || !all(c("tau", "sigma_p") %in% names(fits))) {
@@ -249,8 +250,10 @@ site_noise_for_record <- function(fold, test) {
   fits <- fits[match(test$insecticide_type, fits$insecticide_type), ]
   stopifnot(!anyNA(fits$insecticide_type))
   fell_back <- fits$fallback_dynamical | is.na(fits$tau)
+  sigma_sy <- if (is.null(fits$sigma_sy)) 0 else fits$sigma_sy
   list(tau = ifelse(fell_back, 0, fits$tau),
-       sigma_p = ifelse(fell_back, 0, fits$sigma_p))
+       sigma_p = ifelse(fell_back, 0, fits$sigma_p),
+       sigma_sy = ifelse(fell_back, 0, sigma_sy))
 }
 
 # The expected coverage of each record's central interval at `level`, over the

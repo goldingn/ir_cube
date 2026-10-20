@@ -18,14 +18,15 @@ Per insecticide type, on the logit scale, for assay i at pixel s and year t:
 - Meshes (`build_correction_meshes()`):
   - In the data region, ω has ≤ 5000 nodes (15 km cutoff, inner edges ≤ 150 km) and ξ has ≤ 2500 nodes.
   - Around both, a coarse outer region (edges ≤ 800 km) extends 1500 km beyond the data and the prediction mask, so every map cell is inside the mesh. Callers pass the mask's coordinates (`prediction_mask_coords()`, from `data/clean/raster_mask.tif`).
-- PC priors: P(range < 50 km) = 0.05 and P(σ > 1) = 0.05 for both fields, and P(sd > 1) = 0.05 for u and p. Persistence 1/(1 − φ) is lognormal with median 5 years.
-- Fitting (`fit_correction()`):
-  - Stage A: the empirical logit, with its variance inflated by the external per-type ρ (`outputs/bioassay_rho_hierarchical.csv`). Hyperparameters by penalised maximum marginal likelihood in TMB.
-  - Stage B: PQL on the beta-binomial counts from the stage-A fit (`R/two_stage_pql.R`), with one re-estimation of the hyperparameters.
-  - The latent posterior is N(mode, H⁻¹), with the hyperparameters plugged in.
-- Cut posterior: the dynamical model is never updated. Each dynamical draw shifts the latent mode by H⁻¹A′D(m_ref − m_draw), and is paired with its own latent draw.
+- Priors (`correction_priors()`, #34): the ranges of ω and η are bounded to 10–3,000 km, with 95% of the prior in 50–1,500 km; persistence 1/(1 − φ) is bounded to 2–15 years, with 99% of the prior in 3–10 years; the SDs are half-normal, P(σ_ω > 1) = 0.05, P(σ_η > 0.05) = 0.05, and P(sd > 2) = 0.05 for the noise terms.
+- Noise terms: u (per pixel-year), p (per pixel) and sy (per study-year, #55; the study label of #54).
+- Fitting (`fit_correction()`, #34):
+  - Stage A: the empirical logit, with its variance inflated by the external per-type ρ (`outputs/bioassay_rho_hierarchical.csv`). Hyperparameters by penalised maximum marginal likelihood in TMB, as starting values.
+  - The hyperparameters θ at the penalised maximum of TMB's Laplace approximation to the marginal likelihood of the beta-binomial counts.
+  - The posterior of θ by INLA's central composite design (81 points for the 8 hyperparameters); predictions mix the conditional latent posteriors N(mode(θ_j), H(θ_j)⁻¹) over the points. Importance sampling (`R/two_stage_is.R`, `R/check_two_stage_is.R`) checks the CCD posterior of θ.
+- Cut posterior: the dynamical model is never updated. Each dynamical draw shifts the latent mode by H⁻¹A′W(m_ref − m_draw), linearised at the mode (W the beta-binomial weights), and is paired with its own latent draw.
 
-**Target.** The prediction target is m + ω + ξ: that is what the maps, the published figures and the supplement figures show. u and p are observation-level noise. They are in the fitted model, so that this noise stays out of ω and ξ. They enter predictions only of new assays and the maps' n\*_local, and only as fresh draws, N(0, τ²) per pixel-year and N(0, σ_p²) per pixel, never as their fitted values. This reverses #21, which put u in the target, and an earlier version of this run sheet, which put p in it. Cross-validation scores the predictive distribution of held-out assays, so it includes fresh u and p (`predict_correction()`).
+**Target.** The prediction target is m + ω + ξ: that is what the maps, the published figures and the supplement figures show. u, p and sy are observation-level noise. They are in the fitted model, so that this noise stays out of ω and ξ. They enter predictions only of new assays, and only as fresh draws, N(0, τ²) per pixel-year, N(0, σ_p²) per pixel and N(0, σ_sy²) per study-year, never as their fitted values; fresh u and p also enter the maps' n\*_local. This reverses #21, which put u in the target, and an earlier version of this run sheet, which put p in it. Cross-validation scores the predictive distribution of held-out assays, so it includes fresh noise (`predict_correction()`).
 
 ## Headline results
 
@@ -113,8 +114,7 @@ Scores are from the cross-validation of the time. A decision's numbers can preda
 ## Open issues
 
 - #28: the temporal panel of #12's variance-explained bar charts should score change, not level.
-- #34: check the stage-B inference before the publishable run: convergence of the hyperparameters, PQL against a Laplace fit of the beta-binomial, a Gaussian latent, and plugged-in hyperparameters.
-- Wide intervals away from data. ξ is close to a random walk (φ ≈ 0.01–0.07 at stage B), so its prior SD grows as σ_η√t. Far from data, and at long horizons, the two-stage SD map is wide and the posterior mean mortality is pulled towards 50%. Damping ξ did not help held-out forecasts (Decisions).
+- Wide intervals away from data, from ξ close to a random walk (φ ≈ 0.01–0.07 under the earlier priors), were addressed in #34 and #55: the bounded persistence and half-normal σ_η priors, and the study-year noise term that takes the survey noise ξ was fitting.
 - Residual narrowness. After stage B, interior training residuals are narrower than v implies (SD 0.70 vs 0.95). A lower ρ does not explain it (joint ρ). The stage-A standardisation used by the diagnostic is a candidate.
 
 ## How to run

@@ -20,8 +20,8 @@
 # The target, on the logit scale, is m(s, t) + omega(s) + xi(s, t): m the
 # dynamical model's prediction, xi(s, t) the sum of the annual anomalies eta up
 # to t, eta AR(1) in time with Matern innovations; beyond the last data year T
-# eta is simulated forward. u and p are observation-level noise and appear in
-# neither figure.
+# eta is simulated forward. u, p and sy are observation-level noise and
+# appear in neither figure.
 
 type <- "Deltamethrin"
 figure_dir <- "figures/two_stage"
@@ -183,13 +183,14 @@ new_omega <- tibble(x_km = coords_pix[, 1], y_km = coords_pix[, 2],
 correction <- array(NA_real_, c(n_years_all, n_pix, n_draws))
 omega <- matrix(NA_real_, n_pix, n_draws)
 set.seed(4026 + k)
-for (batch in split(seq_len(n_draws), ceiling(seq_len(n_draws) / 250))) {
-  fields <- correction_node_draws(
-    fit, years_all, length(batch),
-    m_draws_train = dynamical$logit_train[batch, , drop = FALSE])
-  correction[, , batch] <- project_correction(fit, fields, new)
-  omega[, batch] <- project_correction(fit, fields, new_omega)
-}
+# one call for all the draws, so that each CCD point's conditional fit is made
+# once
+fields <- correction_node_draws(
+  fit, years_all, n_draws,
+  m_draws_train = dynamical$logit_train[seq_len(n_draws), , drop = FALSE])
+correction[] <- project_correction(fit, fields, new)
+omega[] <- project_correction(fit, fields, new_omega)
+rm(fields)
 omega_array <- array(rep(omega, each = n_years_all), dim(correction))
 xi <- correction - omega_array
 eta <- xi - xi[c(1, seq_len(n_years_all - 1)), , , drop = FALSE]
@@ -355,7 +356,7 @@ for (ext in c("png", "pdf")) {
 
 # mortality intervals for the population fraction at each pixel-year: the
 # dynamical model alone (plogis(m)) and the two-stage model
-# (plogis(m + omega + xi), with the cut-posterior shift). u and p are
+# (plogis(m + omega + xi), with the cut-posterior shift). u, p and sy are
 # observation noise, like the assay-level (beta-binomial) noise, so none is
 # included
 summarise_draws <- function(values, model) {
