@@ -129,6 +129,10 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
   # the model is reported under its saved name, which is the file's prefix
   stopifnot(identical(fold$model, sub("__.*$", "", basename(file))))
   test <- fold$test_df
+  # folds fitted before the study label (#53) have no study column: refit them
+  # from the current cleaned data (#35) rather than score without it
+  stopifnot("folds need the study label of #53; refit them (#35)" =
+              !is.null(test$study))
 
   # predictions come from the saved object. For model folds these were produced
   # by greta's calculate(values = draws) in MCMC order (or by the two-stage
@@ -180,6 +184,7 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
       insecticide_class = test$insecticide_class,
       country_name = test$country_name,
       citation = test$citation,
+      study = test$study,
       year_start = test$year_start,
       cell = test$cell,
       # One randomisation replicate, not the mean of them. Averaging over

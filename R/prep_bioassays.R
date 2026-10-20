@@ -1022,6 +1022,12 @@ ir_distinct <- ir_everything %>%
 # subset, and the other copy is probably mislabelled), an assigned species
 # complex, a species-level identification, and then the order of the rows
 # (Vector Atlas, MTM, IR Mapper).
+#
+# Each IR Mapper release counts as its own database here: the analysis-ready
+# extracts (mapper_dis_*, mapper_int_complex), the August 2022 download
+# (mapper_source_2022) and the 2024 download (mapper_source_2024). The 2022
+# download repeats records in the extracts under a short citation (e.g.
+# "Ochomo et al. 2014"), often with a different concentration. See issue #53.
 
 # The rows of the records in `keyed` (ir_distinct's records with a model pixel,
 # with their row, database, cell and modal_concentration) to drop as
@@ -1049,11 +1055,41 @@ cross_database_duplicates <- function(keyed) {
     pull(row)
 }
 
+# The first author's surname and the publication year of each citation, e.g.
+# "dabire 2009", or NA where either can't be found, the citation is a DOI, or
+# its first word is generic ("Unpublished", "Personal communication", "pers.
+# comm."). The surname is the citation's first word, ASCII-transliterated and
+# in lower case. The year is the first of: "et al. YYYY", "(YYYY)", the
+# journal year in Vancouver style (a year, optionally with month and day,
+# followed by ";volume"), or else any 19xx or 20xx.
+citation_author_year <- function(citation) {
+  x <- str_squish(stringi::stri_trans_general(citation, "Latin-ASCII"))
+  is_doi <- grepl("^(doi:\\s*|https?://(dx\\.)?doi\\.org/)?10\\.\\d{4,}/", x,
+                  ignore.case = TRUE)
+  is_generic <- grepl("^(unpublished|personal communication|pers\\.? comm)",
+                      x, ignore.case = TRUE)
+  surname <- str_match(x, "^([A-Za-z][A-Za-z'\\-]+)")[, 2]
+  months <- "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
+  year <- coalesce(
+    str_match(x, "et al\\.*,?\\s*\\(?((19|20)\\d{2})")[, 2],
+    str_match(x, "\\(((19|20)\\d{2})[a-z]?\\)")[, 2],
+    str_match(x, paste0("\\b((19|20)\\d{2})[a-z]?(\\s+", months,
+                        "(\\s+\\d{1,2})?)?\\s*;"))[, 2],
+    str_match(x, "\\b((19|20)\\d{2})\\b")[, 2]
+  )
+  if_else(is_doi | is_generic | is.na(surname) | is.na(year),
+          NA_character_,
+          paste(tolower(surname), year))
+}
+
 mask <- rast("data/clean/raster_mask.tif")
 keyed <- ir_distinct %>%
   mutate(
     row = row_number(),
-    database = sub("_.*", "", source),
+    database = if_else(source %in% c("mapper_source_2022",
+                                     "mapper_source_2024"),
+                       source,
+                       sub("_.*", "", source)),
     cell = terra::cellFromXY(mask, cbind(longitude, latitude))
   ) %>%
   group_by(insecticide_type) %>%
@@ -1062,8 +1098,43 @@ keyed <- ir_distinct %>%
   ) %>%
   ungroup() %>%
   filter(!is.na(cell))
+
+# Some sources hold a bioassay split by species (e.g. An. arabiensis and An.
+# gambiae s.s.) and another, or the same, source holds it summed to complex
+# level. We drop a complex-level record when its died and mosquito_number equal
+# exactly the sums over the species-level records (of that complex) of one
+# source and citation at the same pixel, year, insecticide and concentration,
+# keeping the species-level records. In October 2026, comparing against
+# species-level records a year earlier or later found no such matches, so
+# these are not coincidences. See issue #53.
+aggregated_copies <- function(keyed) {
+  species_sums <- keyed %>%
+    filter(!species %in% c("gambiae complex", "funestus complex")) %>%
+    group_by(cell, year_start, insecticide_type, concentration,
+             species_complex, source, citation) %>%
+    filter(n() > 1) %>%
+    summarise(
+      died_sum = sum(died),
+      mosquito_number_sum = sum(mosquito_number),
+      .groups = "drop"
+    )
+  keyed %>%
+    filter(species %in% c("gambiae complex", "funestus complex")) %>%
+    inner_join(species_sums,
+               by = c("cell", "year_start", "insecticide_type",
+                      "concentration", "species_complex"),
+               relationship = "many-to-many") %>%
+    filter(died == died_sum,
+           mosquito_number == mosquito_number_sum) %>%
+    pull(row) %>%
+    unique()
+}
+
 duplicate_rows <- cross_database_duplicates(keyed)
-cat(length(duplicate_rows), "cross-database duplicates dropped\n")
+aggregated_rows <- aggregated_copies(keyed)
+cat(length(duplicate_rows), "cross-database duplicates and",
+    length(aggregated_rows),
+    "complex-level sums of species-level records dropped\n")
 
 # every set of two or more records matched on pixel, year, insecticide and
 # result, for checking: the within-database matches are the sets with a
@@ -1083,7 +1154,9 @@ keyed %>%
   write.csv("outputs/review/bioassay_match_sets.csv", row.names = FALSE)
 
 ir_distinct <- ir_distinct %>%
-  filter(!row_number() %in% duplicate_rows)
+  filter(!row_number() %in% union(duplicate_rows, aggregated_rows))
+
+
 
 # # map distinct records for checking if any remaining duplicates
 # library(mapview)
@@ -1286,6 +1359,22 @@ ir_distinct_gambiae <- ir_distinct_gambiae %>%
   left_join(
     country_region_lookup(),
     by = "country_name"
+  )
+
+# A label for each study, to model noise shared by the bioassays of a study. The
+# databases cite the same paper differently, e.g. "Dabire KR, Diabate A, ...
+# 2009;103(11):1113-20.", "Dabire et al. 2009" and "Dabire et al. (2009)
+# Distribution of ...", so we label a study by the first author's surname and
+# the publication year parsed from the citation, within a country. Where none
+# parses (DOIs, and institutional or missing citations such as "Ministry of
+# Health"), the citation itself is used, within a country. Splitting by country
+# stops these labels, and personal communications of multi-country datasets,
+# pooling surveys across countries. See issue #53.
+ir_distinct_gambiae <- ir_distinct_gambiae %>%
+  mutate(
+    study = paste(coalesce(citation_author_year(citation), citation),
+                  country_name,
+                  sep = ", ")
   )
 
 # check contributions from each database

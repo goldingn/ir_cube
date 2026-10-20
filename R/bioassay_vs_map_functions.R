@@ -1,20 +1,7 @@
-# Functions behind R/bioassay_vs_map.R (#30): survey identifiers, replicate
-# pairs within held-out pixel-years, and the n* summaries. Functions only.
-
-
-# surveys -----------------------------------------------------------------------
-
-# Survey identifier: citation x country x year. Restored from tag
-# two-stage-options-6edcf0d (R/two_stage_correction.R), where it defined the
-# survey effect removed in #29. The citation alone does not identify a study:
-# aggregated sources ("Ministry of Health", "PMI 2016", "VectorBase", personal
-# communications) span countries, so the country splits them (110 of 1434
-# citation-years span more than one country, with 9,902 assays). Assays with no
-# citation (12 in the cleaned data, all Madagascar 2023) are one survey per
-# country-year.
-survey_id <- function(citation, country, year) {
-  paste(citation, country, year, sep = " | ")
-}
+# Functions behind R/bioassay_vs_map.R (#30): replicate pairs within held-out
+# pixel-years, and the n* summaries. Functions only. A survey is a study in a
+# year, paste(study, year_start), with the study label of
+# R/prep_bioassays.R (#53).
 
 
 # replicate pairs ---------------------------------------------------------------
