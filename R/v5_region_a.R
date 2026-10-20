@@ -56,7 +56,8 @@
 #      multiplier) and of the pyrethroid floor plogis(floor_intercept + u_f)
 #      (which, unlike u_f, compares between chains), per fit and chain set,
 #      with regions A, B and C outlined (the continental maps of u_s and u_f
-#      are R/smooth_maps.R's)
+#      are R/smooth_maps.R's; R/smooth_west.R makes these maps and the
+#      table of 1 for any fits, with R/smooth_west_helpers.R)
 #
 # Writes, in outputs/species_runs/west/:
 #   v5_region_a_smooths.csv        1, per fit, chain set and block
@@ -93,6 +94,7 @@ suppressMessages({
 source("R/functions.R")
 source("R/dynamical_predictions.R")
 source("R/species_fit_helpers.R")
+source("R/smooth_west_helpers.R")
 
 scratchpad <- paste0("/tmp/claude-1000/-home-nick-Dropbox-github-ir-cube/",
                      "be75c64a-3bb7-4b3e-a81c-c664fe72f5e2/scratchpad/species")
@@ -101,7 +103,6 @@ fits <- c(wb_v5 = "outputs/pod_jobs/wb_v5/temporary/fitted_model.RData",
 # 250 draws per chain: four chains of wb_v5, two of V5 (USE_CHAINS)
 n_draws <- c(wb_v5 = 1000, V5 = 500)
 profile_fit <- "wb_v5"
-llin_pyrethroids <- c("Alpha-cypermethrin", "Deltamethrin", "Permethrin")
 windows <- c("pre-2010", "2010-15", "2016-18", "2019-24")
 window_of <- function(year) {
   case_when(year < 2010 ~ windows[1], year <= 2015 ~ windows[2],
@@ -115,21 +116,11 @@ dir.create(figure_dir, showWarnings = FALSE, recursive = TRUE)
 options(width = 200)
 
 regions <- read.csv("outputs/species_runs/regions/regions.csv")
-blocks <- c("A", "B", "C")
 block_names <- setNames(regions$region_name[match(blocks, regions$region)],
                         blocks)
 
-# the grid of the West Africa maps: the cells of the water mask aggregated by
-# 3 (about 14 km, as R/smooth_maps.R) in the maps' window
-west_xlim <- c(-17.9, 24.5)
-west_ylim <- c(4, 21)
-west_grid <- terra::crop(
-  terra::aggregate(rast("data/clean/pfpr_water_mask.tif"), 3, fun = "max",
-                   na.rm = TRUE),
-  terra::ext(west_xlim[1] - 1, west_xlim[2] + 1, west_ylim[1] - 1,
-             west_ylim[2] + 1))
-west_cells <- terra::cells(west_grid)
-west_xy <- terra::xyFromCell(west_grid, west_cells)
+# the grid of the West Africa maps (R/smooth_west_helpers.R)
+map_grid <- west_map_grid()
 
 
 # 0. each fit's terms at the bioassays of A, B and C -----------------------------
@@ -149,14 +140,8 @@ fit_terms <- function(fit, label, n) {
             !species_on(options), !kdr_on(options))
   D <- parameters$n_draws
   df <- fit$df
-  rows <- df %>%
-    mutate(row = row_number()) %>%
-    left_join(transmute(regions, country, block = region),
-              by = c("country_name" = "country")) %>%
-    filter(block %in% blocks) %>%
-    mutate(llin = insecticide_type %in% llin_pyrethroids,
-           pyrethroid = insecticide_class == "Pyrethroids",
-           floor_smooth = options$smooth$term_classes[class_id],
+  rows <- region_rows(df, regions) %>%
+    mutate(floor_smooth = options$smooth$term_classes[class_id],
            window = window_of(year_start))
   pairs <- rows %>%
     filter(block == "A", llin) %>%
@@ -234,20 +219,10 @@ fit_terms <- function(fit, label, n) {
   # over the West Africa grid, per chain set: the posterior means of u_s and
   # of the pyrethroid floor plogis(floor_intercept + u_f), which, unlike u_f,
   # compares between chains that split the floor differently between the
-  # two
-  basis_west <- smooth_basis_at(options$smooth,
-                                smooth_coords(west_xy[, 1], west_xy[, 2],
-                                              options$smooth$crs))
-  us_west <- parameters$smooth_weights$selection %*% t(basis_west)
-  pyrethroids <- match("Pyrethroids", fit$classes)
-  floor_west <- plogis(
-    parameters$floor_intercept[, smooth_intercept_index(options, pyrethroids)] +
-      parameters$smooth_weights$floor %*% t(basis_west))
-  west <- lapply(chain_sets(list(label = label, chain = used$chain)),
-                 function(i) {
-                   list(u_s = colMeans(us_west[i, , drop = FALSE]),
-                        floor = colMeans(floor_west[i, , drop = FALSE]))
-                 })
+  # two (R/smooth_west_helpers.R)
+  west <- west_smooth_summaries(parameters, options, fit$classes, map_grid$xy,
+                                chain_sets(list(label = label,
+                                                chain = used$chain)))
   list(label = label, rows = rows, terms = terms, pairs = pairs, west = west,
        pair_C = pair_C,
        pair_terms = lapply(terms[c("l0", "us", "uf", "lf")],
@@ -257,28 +232,14 @@ fit_terms <- function(fit, label, n) {
        chain = used$chain, baseline_year = fit$baseline_year,
        rho = c(parameters$rho_types[1, ]), types = fit$types,
        floor_intercept = parameters$floor_intercept,
+       pyrethroid_intercept = pyrethroid_intercept(parameters, options,
+                                                   fit$classes),
        likelihood = fit$options$likelihood)
 }
 
 # the chain sets of a fit: all its usable chains, then each (wb_v5 only)
 chain_sets <- function(x) {
-  sets <- list(all = seq_along(x$chain))
-  if (x$label == profile_fit) {
-    for (chain in sort(unique(x$chain))) {
-      sets[[paste0("chain ", chain)]] <- which(x$chain == chain)
-    }
-  }
-  sets
-}
-
-# per draw, the means of the columns `columns` of draws x bioassays matrix
-# `m` weighted by `weight`
-weighted_by_draw <- function(m, columns, weight) {
-  c(m[, columns, drop = FALSE] %*% weight[columns]) / sum(weight[columns])
-}
-posterior <- function(x) {
-  c(mean = mean(x), sd = sd(x), lower = unname(quantile(x, 0.025)),
-    upper = unname(quantile(x, 0.975)))
+  draw_chain_sets(x$chain, per_chain = x$label == profile_fit)
 }
 
 results <- list()
@@ -292,45 +253,12 @@ for (label in names(fits)) {
 
 # 1. the smooths at the LLIN-pyrethroid bioassays --------------------------------
 
-smooth_rows <- list()
-for (label in names(results)) {
+# (region_smooth_table(), R/smooth_west_helpers.R)
+smooth_table <- bind_rows(lapply(names(results), function(label) {
   x <- results[[label]]
-  groups <- c(setNames(lapply(blocks, function(b) {
-    which(x$rows$block == b & x$rows$llin)
-  }), blocks),
-  lapply(split(which(x$rows$block == "A" & x$rows$llin),
-               x$rows$country_name[x$rows$block == "A" & x$rows$llin]),
-         identity))
-  names(groups)[-(1:3)] <- paste0("A: ", names(groups)[-(1:3)])
-  weight <- x$rows$mosquito_number
-  for (chain_set in names(chain_sets(x))) {
-    draws <- chain_sets(x)[[chain_set]]
-    for (group in names(groups)) {
-      columns <- groups[[group]]
-      quantities <- list(
-        u_s = x$terms$us[draws, , drop = FALSE],
-        u_f = x$terms$uf[draws, , drop = FALSE],
-        multiplier = exp(x$terms$us[draws, , drop = FALSE]),
-        floor = plogis(x$terms$lf[draws, , drop = FALSE]))
-      for (quantity in names(quantities)) {
-        by_draw <- weighted_by_draw(quantities[[quantity]], columns, weight)
-        cell_means <- colMeans(quantities[[quantity]][, columns, drop = FALSE])
-        w <- weight[columns] / sum(weight[columns])
-        smooth_rows[[length(smooth_rows) + 1]] <- tibble(
-          fit = label, chains = chain_set, group = group, quantity = quantity,
-          bioassays = length(columns), cells = n_distinct(x$rows$cell[columns]),
-          !!!as.list(posterior(by_draw)),
-          spread = sqrt(sum(w * (cell_means - sum(w * cell_means)) ^ 2)))
-      }
-    }
-    pyr <- x$floor_intercept[draws, 1]
-    smooth_rows[[length(smooth_rows) + 1]] <- tibble(
-      fit = label, chains = chain_set, group = "all", quantity = "pyrethroid floor intercept, plogis",
-      bioassays = NA, cells = NA, !!!as.list(posterior(plogis(pyr))),
-      spread = NA)
-  }
-}
-smooth_table <- bind_rows(smooth_rows)
+  region_smooth_table(label, x$rows, x$terms, chain_sets(x),
+                      x$pyrethroid_intercept)
+}))
 write.csv(smooth_table, file.path(output_dir, "v5_region_a_smooths.csv"),
           row.names = FALSE)
 cat("\n1. the smooths at the LLIN-pyrethroid bioassays, weighted by mosquitoes tested (mean, sd, 95%; spread: sd between bioassays of the posterior mean)\n")
@@ -947,73 +875,22 @@ ggsave(file.path(figure_dir, "v5_profile_A.png"), figure, width = 14,
 # 5. maps of the smooths over West Africa --------------------------------------------
 
 # per fit and chain set, the posterior mean of u_s (as the multiplier) and of
-# the pyrethroid floor over the West Africa grid (fit_terms())
-sf_use_s2(FALSE)
-borders <- readRDS("data/clean/country_borders.RDS")
-outlines <- suppressMessages(
-  borders %>%
-    inner_join(transmute(regions, country_name = country, block = region),
-               by = "country_name") %>%
-    filter(block %in% blocks) %>%
-    st_make_valid() %>%
-    group_by(block) %>%
-    summarise(geometry = st_union(geometry), .groups = "drop"))
-missing <- setdiff(regions$country[regions$region %in% blocks],
-                   borders$country_name)
-if (length(missing) > 0) report("no borders for %s", toString(missing))
-centres <- suppressWarnings(st_point_on_surface(outlines))
-map_sets <- bind_rows(lapply(names(results), function(label) {
-  tibble(fit = label, chains = names(results[[label]]$west))
-}))
-map_panel <- function(label, set, kind) {
-  layer <- rast(west_grid)
-  layer[] <- NA_real_
-  layer[west_cells] <- results[[label]]$west[[set]][[kind]]
-  scale <- if (kind == "u_s") {
-    scale_fill_gradientn(colours = RColorBrewer::brewer.pal(11, "RdBu"),
-                         limits = c(-2, 2), oob = scales::squish,
-                         na.value = "transparent",
-                         labels = function(v) sprintf("%.2g", exp(v)),
-                         name = "selection\nmultiplier\nexp(u_s)")
-  } else {
-    scale_fill_viridis_c(option = "magma", limits = c(0, 0.6),
-                         oob = scales::squish, na.value = "transparent",
-                         labels = scales::percent,
-                         name = "pyrethroid\nfloor f")
-  }
-  ggplot() +
-    geom_sf(data = borders, fill = grey(0.92), colour = NA) +
-    geom_spatraster(data = layer) +
-    geom_sf(data = borders, fill = NA, colour = grey(0.5), linewidth = 0.15) +
-    geom_sf(data = outlines, fill = NA, colour = "black", linewidth = 0.6) +
-    geom_sf_label(aes(label = block), data = centres, size = 3.5,
-                  fontface = "bold", label.size = 0, alpha = 0.7) +
-    scale +
-    coord_sf(xlim = west_xlim, ylim = west_ylim, expand = FALSE) +
-    labs(title = sprintf("%s, %s: %s", label,
-                         if (set == "all") "all usable chains" else set,
-                         if (kind == "u_s") "selection multiplier exp(u_s)" else
-                           "pyrethroid floor plogis(intercept + u_f)"),
-         x = NULL, y = NULL) +
-    theme_ir_maps() +
-    theme(plot.title = element_markdown(size = 10))
-}
-map_panels <- list()
-for (i in seq_len(nrow(map_sets))) {
-  for (kind in c("u_s", "floor")) {
-    map_panels[[length(map_panels) + 1]] <- map_panel(map_sets$fit[i],
-                                                      map_sets$chains[i], kind)
+# the pyrethroid floor over the West Africa grid (fit_terms();
+# west_map_figure(), R/smooth_west_helpers.R)
+maps <- list()
+for (label in names(results)) {
+  for (set in names(results[[label]]$west)) {
+    maps[[length(maps) + 1]] <- list(label = chain_set_title(label, set),
+                                     values = results[[label]]$west[[set]])
   }
 }
-figure <- wrap_plots(map_panels, ncol = 2) +
-  plot_layout(guides = "collect") +
-  plot_annotation(
-    title = "The latent smooths over West Africa: posterior means, wb_v5 (all chains and each) and V5 (chains 1 and 2)",
-    caption = paste(
-      "Posterior means over the draws of each chain set (250 per chain). Left: u_s as the multiplier exp(u_s) of the cumulative",
-      "log fitness, clipped at 0.14 and 7.4 (blue: stronger selection);\nright: the pyrethroid floor plogis(floor_intercept + u_f),",
-      "which, unlike u_f, compares between chains. Regions A, B and C of outputs/species_runs/regions/regions.csv outlined."),
-    theme = theme(plot.caption = element_text(hjust = 0, size = 8.5)))
+figure <- west_map_figure(
+  maps, map_grid, west_map_layers(regions),
+  title = "The latent smooths over West Africa: posterior means, wb_v5 (all chains and each) and V5 (chains 1 and 2)",
+  caption = paste(
+    "Posterior means over the draws of each chain set (250 per chain). Left: u_s as the multiplier exp(u_s) of the cumulative",
+    "log fitness, clipped at 0.14 and 7.4 (blue: stronger selection);\nright: the pyrethroid floor plogis(floor_intercept + u_f),",
+    "which, unlike u_f, compares between chains. Regions A, B and C of outputs/species_runs/regions/regions.csv outlined."))
 ggsave(file.path(figure_dir, "smooth_west.png"), figure, width = 12,
        height = 15, dpi = 110, bg = "white")
 report("written %s and figures in %s; peak memory %.1f GB",

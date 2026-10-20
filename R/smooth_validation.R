@@ -201,6 +201,9 @@ at_samples <- smooth_posterior_at(parameters,
 for (kind in kinds) {
   alleles[[kind]] <- at_samples[[kind]][, "mean"]
 }
+# the samples with the posterior mean smooths, for regressions of the kdr
+# counts on the smooths (scratch: kdr_slopes.R)
+saveRDS(alleles, file.path(output_dir, sprintf("%s_kdr_samples.rds", label)))
 groups <- c(list(all = alleles), split(alleles, alleles$species_group))
 records <- bind_rows(lapply(names(groups), function(group) {
   data <- groups[[group]]
