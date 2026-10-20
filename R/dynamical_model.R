@@ -579,11 +579,16 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
 }
 
 
-# The cached initial values for the fits: posterior means of every variable
-# of a 4-chain full fit with the centred hierarchy (October 2026), with the
-# labels of their dimensions as dimnames (dynamical_variables()). Not in git:
-# remake it from a fit's draws as in fit_model.R.
-dynamical_inits_file <- "temporary/inits_refit.RDS"
+# The initial values for every fit: posterior means of every variable of one
+# named full fit, with the labels of their dimensions as dimnames
+# (dynamical_variables()). In git, so that the commit a fit runs from fixes
+# where it starts, and no fit rewrites it; in R/ because the pods take only R/
+# and tmb/ from the commit (docker/run_pod_job.sh). To replace it, run
+# R/make_dynamical_inits.R on a full fit and name that fit here.
+# Now: the 4-chain full fit v5pg_s005_sd025_full of 12 October 2026, the new
+# dynamical model (#46) before its smooths' basis changed, converted to the
+# centred hierarchy (#49) and labelled (#52).
+dynamical_inits_file <- "R/dynamical_inits.RDS"
 
 
 # the model ------------------------------------------------------------------
