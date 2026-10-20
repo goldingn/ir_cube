@@ -2,41 +2,44 @@
 # cross-validation fold of #12, per insecticide type, and save its held-out
 # predictive draws in the #12 fold format, so they are scored by the same code.
 #
-#   Rscript R/run_two_stage_folds.R <experiment> <fold> stage_one
 #   Rscript R/run_two_stage_folds.R <experiment> <fold> <type index>
 #   Rscript R/run_two_stage_folds.R <experiment> <fold> assemble
 #
-# e.g. Rscript R/run_two_stage_folds.R spatial_interpolation all stage_one
-#      Rscript R/run_two_stage_folds.R spatial_interpolation all 3
+# e.g. Rscript R/run_two_stage_folds.R spatial_interpolation all 3
 #
-# Three steps, so that the memory-heavy one runs alone and the per-type fits
-# can run in parallel (one process each):
+# Both read the dynamical fold's logit draws at its training and held-out
+# assays (outputs/cv_draws/assays/dynamical__<experiment>__<fold>.rds, saved
+# by R/run_one_fold.R; fold_assay_draws() in R/fit_validation_fold.R), not the
+# fold itself. The per-type fits run in parallel, one process each:
 #
-#   stage_one  rebuild the fold's training and test sets exactly as
-#              run_one_fold.R did and check the test set against the saved
-#              dynamical fold's; recompute the dynamical model's 2000 paired
-#              posterior logit draws at the training and test assays
-#              (R/dynamical_predictions.R), checking the test draws against
-#              the saved p_draws; save them to
-#              outputs/two_stage/stage_one__<experiment>__<fold>.rds. Loading a
-#              saved fold takes 4-8 GB;
 #   <k>        for insecticide type k, fit the final model to the training
 #              assays with the posterior mean logit as m_ref, and draw at the
 #              type's test assays with the paired dynamical draws, so every
 #              draw sits on its own dynamical draw (the cut posterior):
 #              m + omega + xi plus fresh draws of the noise terms u (per
 #              held-out pixel-year) and p (per held-out pixel), never their
-#              fitted values. Saved to outputs/two_stage/parts/;
+#              fitted values; and the same draws without u and p, the map
+#              plogis(m + omega + xi), whose posterior mean is what the maps
+#              show and what the point metrics score (#32); and, for the
+#              forecasting folds, the map's posterior mean at the type's
+#              before-window assays (training assays in the window before the
+#              cut), for the change score (#36). Saved to
+#              outputs/two_stage/parts/;
 #   assemble   combine the types into
 #              outputs/cv_draws/two_stage__<experiment>__<fold>.rds and the
 #              fold's rows of outputs/two_stage/fit_summary.csv. A type with
-#              no fit keeps the dynamical draws and is listed in
-#              fallback_types.
+#              no fit keeps the dynamical draws, which are also its map, and
+#              is listed in fallback_types.
 #
 # The saved object has the #12 fields (model, experiment, fold, test_df,
-# p_draws) plus rho_type, the per-type rho of the fit (a data frame of
-# insecticide_type and rho, from the table rho_lookup() scores against),
-# fallback_types and fit_summary.
+# p_draws) plus map_draws (draws x held-out assays of the map), rho_type, the
+# per-type rho of the fit (a data frame of insecticide_type and rho, from the
+# table rho_lookup() scores against), fallback_types and fit_summary (which
+# holds each type's tau and sigma_p, the model floor's inputs). The
+# forecasting folds also carry map_before, the map's posterior mean at each
+# assay of the dynamical fold's before_df, in its order (the dynamical
+# posterior mean for fallback types). Parts saved before map_before was added
+# are an error: rerun them.
 #
 # Run with OpenBLAS (reference BLAS is ~10x slower), e.g.
 #   LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=3 nice -n 10 Rscript ...
@@ -52,97 +55,15 @@ output_dir <- "outputs/two_stage"
 parts_dir <- file.path(output_dir, "parts")
 dir.create(parts_dir, showWarnings = FALSE, recursive = TRUE)
 fold_key <- sprintf("%s__%s", experiment_name, fold_name)
-cache_file <- file.path(output_dir, sprintf("stage_one__%s.rds", fold_key))
 part_file <- function(k) file.path(parts_dir, sprintf("%s__%i.rds", fold_key, k))
 
-
-# stage one: the fold and its paired dynamical draws ---------------------------
-
-if (step == "stage_one") {
-
-  wait_for_memory()
-  fold <- readRDS(file.path("outputs/cv_draws",
-                            sprintf("dynamical__%s.rds", fold_key)))
-  # the design matrix is rebuilt with the fold's own model options
-  # (validation_covariates.R), so that it matches the draws
-  model_options <- fold$options
-
-  suppressMessages({
-    sink("/dev/null")
-    source("R/validation_folds.R")
-    source("R/validation_covariates.R")
-    if (experiment_name == "spatial_blocks") source("R/validation_blocks.R")
-    sink()
-  })
-  source("R/dynamical_predictions.R")
-
-  fold_sets <- switch(
-    experiment_name,
-    spatial_interpolation = spatial_interpolation,
-    spatial_blocks = spatial_blocks[[as.integer(fold_name)]],
-    temporal_forecasting = temporal_forecasting_folds[[fold_name]]
-  )
-  training <- fold_sets$training
-  test <- fold_sets$test
-  stopifnot(!is.null(training), !is.null(test))
-  report("%s: %i training, %i held-out assays", fold_key, nrow(training),
-         nrow(test))
-
-  # the rebuilt held-out set must be the fold's, row for row, or the draws
-  # cannot be paired
-  test_df <- fold$test_df
-  stopifnot(
-    nrow(test) == nrow(test_df),
-    identical(as.integer(test$cell_id), as.integer(test_df$cell_id)),
-    identical(as.integer(test$type_id), as.integer(test_df$type_id)),
-    identical(as.integer(test$year_id), as.integer(test_df$year_id)),
-    identical(as.numeric(test$died), as.numeric(test_df$died)),
-    identical(as.numeric(test$mosquito_number),
-              as.numeric(test_df$mosquito_number))
-  )
-
-  # the stored test draws, thinned by the rule the pairing uses (thin_draws())
-  draw_index <- paired_draw_index(fold)
-  p_saved <- thin_draws(fold$p_draws)
-  stopifnot(nrow(p_saved) == length(draw_index))
-  parameters <- dynamical_parameter_draws(fold, classes_index, types,
-                                          draw_index)
-  experiment_label <- fold$experiment
-  rm(fold)
-  invisible(gc())
-
-  logit_test <- dynamical_logit(parameters, test_df, df, x_cell_years,
-                                cell_years_index)
-  logit_train <- dynamical_logit(parameters, training, df, x_cell_years,
-                                 cell_years_index)
-  rm(parameters)
-
-  # The recomputed test draws must reproduce the saved ones, compared on the
-  # logit scale, where the model is additive. The saved draws are
-  # probabilities, which round to exactly 0 or 1 beyond |logit| ~ 37, so both
-  # sides are truncated at +-27.6 (p = 1e-12) for the comparison. 1e-6
-  # because the recursion over long forecast windows accumulates rounding
-  # (4.9e-8 on temporal_forecasting 2014)
-  truncate <- function(x) pmin(pmax(x, -27.6), 27.6)
-  max_logit_diff <- max(abs(truncate(logit_test) - truncate(qlogis(p_saved))))
-  report("recomputed vs saved test draws: max |logit diff| = %.3g",
-         max_logit_diff)
-  stopifnot(max_logit_diff < 1e-6)
-
-  training <- transmute(training, type_id, lon = longitude, lat = latitude,
-                        year = year_start, cell, died, mosquito_number)
-  saveRDS(list(experiment_label = experiment_label, types = types,
-               t0 = baseline_year, training = training, test_df = test_df,
-               p_saved = p_saved, logit_train = logit_train,
-               logit_test = logit_test),
-          cache_file)
-  report("saved %s; peak memory %.1f GB", cache_file, peak_memory_gb())
-  quit(save = "no")
-}
-
 suppressMessages(library(dplyr))
-cache <- readRDS(cache_file)
-types <- cache$types
+assays <- read_assay_draws(file.path("outputs/cv_draws",
+                                     sprintf("dynamical__%s.rds", fold_key)))
+types <- assays$types
+# the forecasting folds' before window: training assays, in before_df's order
+stopifnot((experiment_name == "temporal_forecasting") ==
+            any(assays$training$before))
 # the per-type replicate-based rho every model is scored against
 rho_type <- setNames(rho_for_record(tibble(insecticide_type = types),
                                     rho_lookup()), types)
@@ -151,15 +72,33 @@ rho_type <- setNames(rho_for_record(tibble(insecticide_type = types),
 # assemble the types -----------------------------------------------------------
 
 if (step == "assemble") {
-  test_df <- cache$test_df
-  p_out <- cache$p_saved
+  test_df <- assays$test_df
+  p_out <- plogis(assays$logit_test)
+  # the dynamical model has no u or p, so its draws are also its map
+  map_out <- p_out
+  # the before window's types, in before_df's order
+  before <- assays$training$before
+  before_type <- assays$training$type_id[before]
+  map_before <- if (!any(before)) NULL else
+    colMeans(plogis(assays$logit_train[, before, drop = FALSE]))
+  experiment_label <- assays$experiment
+  rm(assays)
   summaries <- list()
   for (k in seq_along(types)) {
     part <- if (file.exists(part_file(k))) readRDS(part_file(k)) else
       list(summary = tibble(insecticide_type = types[k],
                             error = "no part file"))
     test_rows <- which(test_df$type_id == k)
-    if (!is.null(part$p_draws)) p_out[, test_rows] <- part$p_draws
+    if (!is.null(part$p_draws)) {
+      stopifnot(!is.null(part$map_draws))
+      p_out[, test_rows] <- part$p_draws
+      map_out[, test_rows] <- part$map_draws
+      before_rows <- which(before_type == k)
+      if (length(before_rows) > 0) {
+        stopifnot(!is.null(part$map_before))
+        map_before[before_rows] <- part$map_before
+      }
+    }
     summaries[[k]] <- mutate(part$summary, fallback_dynamical =
                                length(test_rows) > 0 && is.null(part$p_draws))
   }
@@ -168,10 +107,12 @@ if (step == "assemble") {
   draws_file <- file.path("outputs/cv_draws",
                           sprintf("two_stage__%s.rds", fold_key))
   saveRDS(list(model = "two_stage",
-               experiment = cache$experiment_label,
+               experiment = experiment_label,
                fold = fold_name,
                test_df = test_df,
                p_draws = p_out,
+               map_draws = map_out,
+               map_before = map_before,
                rho_type = tibble(insecticide_type = types, rho = rho_type),
                fallback_types = summary_table$insecticide_type[
                  summary_table$fallback_dynamical],
@@ -194,23 +135,41 @@ if (step == "assemble") {
 }
 
 
+# Pixel-centre coordinates for rows of `cell` (and `year`), as the published
+# map uses (R/two_stage_maps.R)
+at_pixel_centres <- function(rows, file = "data/clean/raster_mask.tif") {
+  xy <- terra::xyFromCell(terra::rast(file), rows$cell)
+  tibble(lon = xy[, 1], lat = xy[, 2], year = rows$year, cell = rows$cell)
+}
+
+
 # one insecticide type ---------------------------------------------------------
 
 source("R/two_stage_correction.R")
 k <- as.integer(step)
 stopifnot(!is.na(k), k >= 1, k <= length(types))
 type <- types[k]
-train_rows <- which(cache$training$type_id == k)
-test_rows <- which(cache$test_df$type_id == k)
-m_draws_train <- cache$logit_train[, train_rows, drop = FALSE]
-m_draws_test <- cache$logit_test[, test_rows, drop = FALSE]
-train_k <- mutate(cache$training[train_rows, ], m = colMeans(m_draws_train),
-                  rho = rho_type[[type]])
-test_k <- with(cache$test_df[test_rows, ],
+train_rows <- which(assays$training$type_id == k)
+test_rows <- which(assays$test_df$type_id == k)
+m_draws_train <- assays$logit_train[, train_rows, drop = FALSE]
+m_draws_test <- assays$logit_test[, test_rows, drop = FALSE]
+# the type's before-window assays (forecasting folds only), training assays in
+# before_df's order
+before_rows <- which(assays$training$type_id == k & assays$training$before)
+m_draws_before <- if (length(before_rows) == 0) NULL else
+  assays$logit_train[, before_rows, drop = FALSE]
+before_k <- if (length(before_rows) == 0) NULL else
+  at_pixel_centres(assays$training[before_rows, ])
+train_k <- mutate(select(assays$training[train_rows, ], -before),
+                  m = colMeans(m_draws_train), rho = rho_type[[type]])
+test_k <- with(assays$test_df[test_rows, ],
                tibble(lon = longitude, lat = latitude, year = year_start,
                       cell = cell))
-t0 <- cache$t0
-rm(cache)
+# the map is evaluated where the published map is: at the pixel centre, not
+# the assay's own coordinates (R/two_stage_maps.R)
+test_centres_k <- at_pixel_centres(select(test_k, year, cell))
+t0 <- assays$t0
+rm(assays)
 invisible(gc())
 
 # m_ref is the posterior mean logit at the training assays; T defaults to the
@@ -235,15 +194,38 @@ time_fit <- system.time(
 )[["elapsed"]]
 
 p_draws <- NULL
+map_draws <- NULL
 time_predict <- system.time(
   if (!is.null(fit) && fit$opt$convergence == 0 && length(test_rows) > 0) {
+    # held-out predictive draws at the assays' coordinates, then the map at
+    # their pixel centres in a second call, so the predictive draws are
+    # unchanged by it
     lambda <- predict_correction(fit, test_k, m_draws_train = m_draws_train,
                                  m_draws_new = m_draws_test,
                                  n_draws = nrow(m_draws_train))
     stopifnot(!anyNA(lambda))
     p_draws <- plogis(lambda)
+    lambda <- predict_correction(fit, test_centres_k,
+                                 m_draws_train = m_draws_train,
+                                 m_draws_new = m_draws_test,
+                                 n_draws = nrow(m_draws_train), noise = FALSE)
+    stopifnot(!anyNA(lambda))
+    map_draws <- plogis(lambda)
+    rm(lambda)
   }
 )[["elapsed"]]
+
+# The map's posterior mean at the before-window assays, for the change score
+# (#36): training assays, so omega + xi are fitted there. Drawn after the
+# held-out draws, so those are unchanged
+map_before <- NULL
+if (!is.null(p_draws) && !is.null(m_draws_before)) {
+  map_before <- colMeans(plogis(predict_correction(
+    fit, before_k, m_draws_train = m_draws_train,
+    m_draws_new = m_draws_before, n_draws = nrow(m_draws_train),
+    noise = FALSE)))
+  stopifnot(!anyNA(map_before))
+}
 
 summary <- bind_cols(
   tibble(insecticide_type = type, rho = rho_type[[type]],
@@ -255,7 +237,9 @@ summary <- bind_cols(
   tibble(error = error, time_fit_s = time_fit, time_predict_s = time_predict,
          peak_memory_gb = peak_memory_gb())
 )
-saveRDS(list(summary = summary, p_draws = p_draws), part_file(k))
+saveRDS(list(summary = summary, p_draws = p_draws, map_draws = map_draws,
+             map_before = map_before),
+        part_file(k))
 report("%s %-18s n=%5i test=%4i %s; fit %.0f s, predict %.0f s, peak %.1f GB",
        fold_key, type, nrow(train_k), length(test_rows),
        if (is.null(fit)) paste("FAILED:", error) else

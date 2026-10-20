@@ -1,5 +1,6 @@
 # Fit the dynamical model to one cross-validation training fold and return
-# posterior predictive draws for the held-out data.
+# posterior predictive draws for the held-out data; fold_assay_draws() adds
+# the logit draws at the training and held-out assays, for the two-stage model.
 #
 # The model is build_dynamical_model() in R/dynamical_model.R, which fit_model.R
 # also uses: the likelihood here is restricted to the training fold. Rather than
@@ -13,6 +14,7 @@
 # Because the greta arrays are local to this function they go out of scope when
 # it returns, so the model does not need to be purged by hand between folds.
 
+# dynamical_logit() and paired_draw_index(), also for fold_assay_draws()
 source("R/dynamical_predictions.R")
 
 fit_fold <- function(train_df,
@@ -165,5 +167,66 @@ fit_fold <- function(train_df,
        n_chains = settings$n_chains,
        settings = settings)
 
+}
+
+# The dynamical model's logit draws at a fold's training and held-out assays,
+# which the two-stage model (R/run_two_stage_folds.R) pairs its draws with,
+# from fit_fold()'s result `fit` and its training set `train_df`. At the draws
+# p_draws was thinned to, by dynamical_logit() (R/dynamical_predictions.R):
+# on the logit scale the predictions do not round to 0 or 1, as p_draws does
+# beyond |logit| ~ 37. The before window (forecasting folds) is the training
+# assays in `before_years`, flagged `before`, in the order of fit$before_df.
+# Returns
+#   training     the training assays: type_id, lon, lat, year, cell, died,
+#                mosquito_number, before
+#   test_df      fit$test_df
+#   logit_train  draws x training assays
+#   logit_test   draws x held-out assays
+#   max_difference  max |plogis(logit) - p| against p_draws and
+#                p_draws_before; stops above 1e-6. On the probability scale,
+#                since qlogis(p) loses precision as p nears 0 or 1
+fold_assay_draws <- function(fit, train_df, before_years = NULL, df,
+                             x_cell_years, cell_years_index, classes_index,
+                             types) {
+
+  # the draws p_draws holds, less any chains in fit$stuck_chains
+  index <- paired_draw_index(fit)
+  stopifnot(length(index) == nrow(fit$p_draws))
+  parameters <- dynamical_parameter_draws(fit, classes_index, types, index)
+  logit_train <- dynamical_logit(parameters, train_df, df, x_cell_years,
+                                 cell_years_index)
+  logit_test <- dynamical_logit(parameters, fit$test_df, df, x_cell_years,
+                                cell_years_index)
+  rm(parameters)
+
+  training <- transmute(train_df, type_id, lon = longitude, lat = latitude,
+                        year = year_start, cell, died, mosquito_number,
+                        before = year_start %in% before_years)
+  before_rows <- train_df[training$before, ]
+  stopifnot(nrow(before_rows) == NROW(fit$before_df),
+            identical(paste(before_rows$cell_id, before_rows$type_id,
+                            before_rows$year_id),
+                      paste(fit$before_df$cell_id, fit$before_df$type_id,
+                            fit$before_df$year_id)))
+
+  # the recursion over long forecast windows accumulates rounding (4.9e-8 on
+  # the logit scale on temporal_forecasting 2014)
+  difference <- max(
+    abs(plogis(logit_test) - fit$p_draws),
+    if (!is.null(fit$p_draws_before)) {
+      abs(plogis(logit_train[, training$before, drop = FALSE]) -
+            fit$p_draws_before)
+    })
+  cat(sprintf(paste("%s | assay draws: %i x (%i training + %i held out),",
+                    "max |difference| from p_draws %.3g\n"),
+              format(Sys.time(), "%Y-%m-%d %H:%M:%S"), length(index),
+              ncol(logit_train), ncol(logit_test), difference))
+  stopifnot(difference < 1e-6)
+
+  list(training = training,
+       test_df = fit$test_df,
+       logit_train = logit_train,
+       logit_test = logit_test,
+       max_difference = difference)
 }
 

@@ -1,5 +1,5 @@
 # Scoring the saved cross-validation folds: the functions behind
-# R/validation_metrics.R, R/variance_explained.R and R/two_stage_metrics.R.
+# R/validation_metrics.R, R/two_stage_metrics.R and the scripts built on them.
 # Functions and settings only; sourcing this file scores nothing. Sources
 # R/validation_functions.R, which holds the primitives (the beta-binomial
 # predictive distribution, PIT, CRPS, the noise floor and rho_lookup()).
@@ -51,6 +51,22 @@ draws_files <- function(dir = draws_dir) {
   setNames(files, vapply(parts, `[`, "", 1))
 }
 
+# The dynamical model's logit draws at a fold's training and held-out assays,
+# for the two-stage model (fold_assay_draws(), R/fit_validation_fold.R): saved
+# beside the fold, in assays/, which draws_files() does not list
+assay_draws_file <- function(fold_file) {
+  file.path(dirname(fold_file), "assays", basename(fold_file))
+}
+
+read_assay_draws <- function(fold_file) {
+  file <- assay_draws_file(fold_file)
+  if (!file.exists(file)) {
+    stop(file, " not found: R/run_one_fold.R saves it with the fold, so a ",
+         "fold fitted before it was added has to be refitted")
+  }
+  readRDS(file)
+}
+
 
 # random number streams ---------------------------------------------------------
 
@@ -84,6 +100,29 @@ string_seed <- function(key) {
 # overdispersion of rho_source (rho_lookup()). Returns only what the summaries
 # need: a saved model fold carries the greta draws and arrays, most of a
 # 1.8 GB file, and keeping all of them held 26 GB.
+#
+# Point and distributional scores use different predictions (#32):
+#   map        the map's point prediction, which every point metric scores
+#              (MSE, excess, variance explained, bias, reliability bins,
+#              country-year means). For the two-stage model, the posterior
+#              mean of plogis(m + omega + xi), without u and p, from the
+#              fold's map_draws; for every other model the mean of its
+#              p_draws, `predicted`, which is already its map. A two-stage
+#              fold without map_draws (assembled before #32) is an error
+#   predicted  the predictive mean, mean of p_draws. The log score, PIT,
+#              coverage, CRPS and the reliability envelopes use each model's
+#              own predictive distribution, the two-stage model's with its
+#              fresh u and p
+#   floor      the data floor per record (noise_floor_record(), at the
+#              external rho), on every model; only means over records are
+#              meaningful
+#   model_floor  the two-stage model's floor U at the map value
+#              (model_floor_mse(), from the fold's fitted tau and sigma_p for
+#              the record's insecticide type); 0 for a type that fell back to
+#              the dynamical draws, NA for every other model
+#   cdf_below_map, pmf_at_map
+#              the two-stage model's predictive distribution without u and p,
+#              for its coverage without them; NA for every other model
 score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
 
   fold <- readRDS(file)
@@ -118,6 +157,20 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
   pit <- ppd_pit(summary, n_rep = n_rep)
   sims <- ppd_simulate(test$mosquito_number, p_draws, rho_draws)
 
+  # the map and the two-stage model's floors; nothing here draws random
+  # numbers, so the streams above are as they were
+  map <- map_prediction(fold, summary$predicted)
+  site_noise <- site_noise_for_record(fold, test)
+  model_floor <- if (is.null(site_noise)) NA_real_ else
+    model_floor_mse(map, site_noise$tau, site_noise$sigma_p)
+  without_noise <- data.frame(cdf_below = rep(NA_real_, nrow(test)),
+                              pmf_at = NA_real_)
+  if (!is.null(site_noise)) {
+    without_noise <- ppd_summary(test$died, test$mosquito_number,
+                                 thin_draws(fold$map_draws),
+                                 rho_draws)[c("cdf_below", "pmf_at")]
+  }
+
   scores <- summary %>%
     mutate(
       model = fold$model,
@@ -126,6 +179,7 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
       insecticide_type = test$insecticide_type,
       insecticide_class = test$insecticide_class,
       country_name = test$country_name,
+      citation = test$citation,
       year_start = test$year_start,
       cell = test$cell,
       # One randomisation replicate, not the mean of them. Averaging over
@@ -139,6 +193,14 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
       rho_external = rho_scoring,
       rho_fitted = colMeans(rho_fitted),
       .before = everything()
+    ) %>%
+    mutate(
+      map = map,
+      floor = noise_floor_record(died, mosquito_number, rho_scoring),
+      model_floor = model_floor,
+      cdf_below_map = without_noise$cdf_below,
+      pmf_at_map = without_noise$pmf_at,
+      .after = predicted
     )
 
   list(scores = scores,
@@ -156,6 +218,34 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
                    ess_rho = fold$ess_rho,
                    n_sampled = fold$n_sampled,
                    n_chains = fold$n_chains))
+}
+
+# The map's point prediction per held-out record (score_fold()): the posterior
+# mean of the two-stage fold's map_draws (#32); every other model's
+# predictive mean is its map
+map_prediction <- function(fold, predicted) {
+  if (!identical(fold$model, "two_stage")) return(predicted)
+  stopifnot(!is.null(fold$map_draws),
+            identical(dim(fold$map_draws), dim(fold$p_draws)))
+  map <- colMeans(thin_draws(fold$map_draws))
+  stopifnot(!anyNA(map))
+  map
+}
+
+# The two-stage model's fitted SDs of u (tau) and p (sigma_p) per held-out
+# record, from the fit summary saved with the fold
+# (R/run_two_stage_folds.R); NULL for a model without them. A type that fell
+# back to the dynamical draws has neither term, so both are 0
+site_noise_for_record <- function(fold, test) {
+  fits <- fold$fit_summary
+  if (is.null(fits) || !all(c("tau", "sigma_p") %in% names(fits))) {
+    return(NULL)
+  }
+  fits <- fits[match(test$insecticide_type, fits$insecticide_type), ]
+  stopifnot(!anyNA(fits$insecticide_type))
+  fell_back <- fits$fallback_dynamical | is.na(fits$tau)
+  list(tau = ifelse(fell_back, 0, fits$tau),
+       sigma_p = ifelse(fell_back, 0, fits$sigma_p))
 }
 
 # The expected coverage of each record's central interval at `level`, over the
@@ -177,7 +267,7 @@ expected_coverage <- function(cdf_below, pmf_at, level) {
 
 # one model in one experiment, pooling its folds. Coverage is the exact
 # expectation over the PIT randomisation (expected_coverage()), as in every
-# other table
+# other table. Bias and MSE score the map (score_fold())
 summarise_experiment <- function(scores, pit_list) {
   pit <- do.call(rbind, pit_list)
   data.frame(
@@ -190,8 +280,8 @@ summarise_experiment <- function(scores, pit_list) {
     cvm = pit_statistic(pit, cvm_stat),
     crps = mean(scores$crps),
     elpd = mean(scores$log_score),
-    bias = mean(scores$predicted - scores$observed),
-    mse = mean((scores$observed - scores$predicted) ^ 2),
+    bias = mean(scores$map - scores$observed),
+    mse = mean((scores$observed - scores$map) ^ 2),
     mse_floor = noise_floor_mse(scores$died, scores$mosquito_number,
                                 scores$rho_external)
   )
@@ -210,7 +300,13 @@ aggregate_fold <- function(entry, grouping) {
     country_year = paste(test$country_name, test$year_start,
                          test$insecticide_type)
   )
+  # the pooled map: each assay's map weighted by its mosquitoes, as the
+  # pooled observation weights it
+  pooled_map <- tapply(entry$scores$map * test$mosquito_number, group, sum) /
+    tapply(test$mosquito_number, group, sum)
   ppd_aggregate(test$died, test$mosquito_number, group, entry$sims) %>%
+    mutate(map = unname(pooled_map[as.character(group)]),
+           .after = predicted) %>%
     mutate(model = entry$fold$model,
            experiment = entry$fold$experiment,
            grouping = grouping,
@@ -218,19 +314,20 @@ aggregate_fold <- function(entry, grouping) {
 }
 
 # per-record scores summarised by the grouping columns in `...`; `excess` is
-# mean squared error above the noise floor
+# mean squared error of the map above the noise floor, and mean_predicted is
+# the mean map
 by_group <- function(scores, ...) {
   scores %>%
     group_by(experiment, ..., model) %>%
     summarise(
       n = n(),
       mean_observed = mean(observed),
-      mean_predicted = mean(predicted),
-      bias = mean(predicted - observed),
+      mean_predicted = mean(map),
+      bias = mean(map - observed),
       mean_pit = mean(pit),
       coverage_95 = mean(expected_coverage(cdf_below, pmf_at, 0.95)),
       crps = mean(crps),
-      mse = mean((observed - predicted) ^ 2),
+      mse = mean((observed - map) ^ 2),
       mse_floor = noise_floor_mse(died, mosquito_number, rho_external),
       .groups = "drop"
     ) %>%
@@ -251,18 +348,23 @@ record_key <- function(x) {
   do.call(paste, x[columns])
 }
 
-# Bootstrap a statistic of a data frame by resampling its pixels (`cell`), all
-# of a pixel's rows together: bioassays cluster hard by pixel, and the assay
-# count badly overstates the information a fold holds. With one column per
-# model in `data`, every model is scored on the same resample, so differences
-# formed within a replicate are paired. Returns n_bootstrap x
-# length(statistic(data))
-pixel_bootstrap <- function(data, statistic, n_bootstrap = 2000) {
-  cells <- unique(data$cell)
-  rows_by_cell <- split(seq_len(nrow(data)), data$cell)
-  t(replicate(n_bootstrap, {
-    picked <- sample(cells, length(cells), replace = TRUE)
-    statistic(data[unlist(rows_by_cell[as.character(picked)],
-                          use.names = FALSE), ])
+# Bootstrap a statistic of a data frame by resampling whole clusters with
+# replacement, by default its pixels (`cell`): bioassays cluster hard by pixel,
+# and the assay count badly overstates the information a fold holds. With one
+# column per model in `data`, every model is scored on the same resample, so
+# differences formed within a replicate are paired. With rho_draws (draws of
+# rho by type, one row per replicate), replicate i is statistic(resample,
+# rho_draws[i, ]), so the intervals carry the uncertainty in rho too. Returns
+# n_bootstrap x length(statistic(data)), one column per named statistic
+cluster_bootstrap <- function(data, statistic, n_bootstrap = 2000,
+                              cluster = data$cell, rho_draws = NULL) {
+  if (!is.null(rho_draws)) n_bootstrap <- nrow(rho_draws)
+  ids <- unique(cluster)
+  rows <- split(seq_len(nrow(data)), cluster)
+  do.call(rbind, lapply(seq_len(n_bootstrap), function(i) {
+    picked <- sample(ids, length(ids), replace = TRUE)
+    resample <- data[unlist(rows[as.character(picked)], use.names = FALSE), ]
+    if (is.null(rho_draws)) statistic(resample) else
+      statistic(resample, rho_draws[i, ])
   }))
 }

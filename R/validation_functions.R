@@ -248,6 +248,14 @@ ppd_crps <- function(died, mosquito_number, sims) {
 # dividing by the known factor. Averaged over many assays the noise in that
 # estimate washes out.
 noise_floor_mse <- function(died, mosquito_number, rho) {
+  mean(noise_floor_record(died, mosquito_number, rho), na.rm = TRUE)
+}
+
+# The per-assay terms noise_floor_mse() averages: each is unbiased for that
+# assay's sampling variance but noisy (exactly 0 at 0% or 100%), so only means
+# over many assays are meaningful. NA for an assay that carries no information
+# about p(1 - p)
+noise_floor_record <- function(died, mosquito_number, rho) {
   yhat <- died / mosquito_number
   inflation <- (1 + (mosquito_number - 1) * rho) / mosquito_number
   # An assay of a single mosquito has inflation exactly 1, so the estimator
@@ -255,46 +263,35 @@ noise_floor_mse <- function(died, mosquito_number, rho) {
   # p(1 - p). Such assays are dropped from the floor rather than allowed to
   # make it undefined; there are a handful in the held-out data.
   usable <- mosquito_number > 1 & is.finite(inflation) & inflation < 1
+  out <- rep(NA_real_, length(yhat))
   pq <- pmax(yhat[usable] * (1 - yhat[usable]) / (1 - inflation[usable]), 0)
-  mean(pq * inflation[usable])
+  out[usable] <- pq * inflation[usable]
+  out
 }
 
-# The same quantity for a pooled observed proportion: the irreducible variance
-# of `sum(died) / sum(mosquito_number)` over a group of assays that share one
-# population fraction. With N = sum(n_i) and S = sum(n_i (1 + (n_i - 1) rho)),
-#
-#   Var(yhat) = p (1 - p) S / N ^ 2
-#
-# and, exactly as in the single-assay case, p(1 - p) is recovered from the
-# pooled proportion itself:
-#
-#   E[yhat (1 - yhat)] = p (1 - p) [1 - S / N ^ 2]
-#
-# A single assay has S / N ^ 2 = (1 + (n - 1) rho) / n, so noise_floor_mse() is
-# the special case of this with one assay per group. Returns NA where the group
-# carries no information about p(1 - p), which happens when S / N ^ 2 reaches 1:
-# a single assay of a single mosquito, or a group in which every assay is
-# perfectly correlated.
-#
-# This is what a score on the change in mortality between two time windows
-# needs: the floor for a difference of two pooled proportions is the sum of the
-# two windows' variances, since the windows are independent given the fractions.
-noise_floor_var_pooled <- function(died, mosquito_number, rho) {
-  total <- sum(mosquito_number)
-  s <- sum(mosquito_number * (1 + (mosquito_number - 1) * rho))
-  inflation <- s / total ^ 2
-  if (!is.finite(inflation) || inflation >= 1) {
-    return(NA_real_)
-  }
-  yhat <- sum(died) / total
-  pq <- max(yhat * (1 - yhat) / (1 - inflation), 0)
-  pq * inflation
-}
 
-# proportion of the explainable error that a model removes: 0 for the null
-# model, 1 at the noise floor
-mse_skill <- function(mse_model, mse_null, mse_floor) {
-  (mse_null - mse_model) / (mse_null - mse_floor)
+# the model floor -----------------------------------------------------------
+
+# The two-stage model (#21) treats u (per pixel-year) and p (per pixel) as
+# noise shared by the assays of a site: an assay at a pixel-year samples the
+# population mortality q = plogis(logit(m) + e), e ~ N(0, s^2), around the map
+# value m, with s^2 = tau^2 + sigma_p^2 from the fit. The model floor U (#32)
+# is the squared error this adds to the map's, as the model attributes it, for
+# a level score:
+#
+#   U(m, s) = E[(q - m) ^ 2]
+#
+# The expectation is the plain mean over 1000 evenly spaced normal quantiles,
+# within 4e-5 of 60-node Gauss-Hermite quadrature for map values 0.02 to 0.999
+# and SDs up to 1.5. Elementwise over map; m of exactly 0 or 1 gives U = 0.
+model_floor_mse <- function(map, tau, sigma_p) {
+  sd <- sqrt(tau ^ 2 + sigma_p ^ 2)
+  stopifnot(length(sd) %in% c(1, length(map)))
+  e <- qnorm(ppoints(1000))
+  sd <- rep_len(sd, length(map))
+  deviation <- plogis(outer(qlogis(map), rep(1, length(e))) +
+                        outer(sd, e)) - map
+  rowMeans(deviation ^ 2)
 }
 
 # root mean squared error on the proportion scale. (The definition previously
