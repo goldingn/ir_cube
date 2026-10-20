@@ -161,7 +161,15 @@ for (method in methods) {
       theta_method,
       gauss = hyper_points(fit, obj, "gaussian", n = 100),
       ccd = hyper_points(fit, obj, "ccd"),
-      is = hyper_points(fit, obj, "is", n = 200))
+      is = {
+        # importance sampling starts from the moments of the CCD points
+        ccd_file <- file.path(hyper_dir, "fits",
+                              sprintf("%s_ccd__%s__%i__points.rds", latent,
+                                      fold_key, k))
+        ccd <- if (file.exists(ccd_file)) readRDS(ccd_file) else
+          hyper_points(fit, obj, "ccd")
+        hyper_points(fit, obj, "is", n = 200, start = ccd)
+      })
     saveRDS(hyper, points_file)
     report("%s: %i points of theta in %.0f s", method, nrow(hyper$theta),
            hyper$seconds)

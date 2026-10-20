@@ -7,7 +7,7 @@
 # p(theta | y), with weights w_j:
 #
 #   is       importance sampling: a mixture of multivariate t proposals,
-#            adapted as in AMIS from the Gaussian approximation, then a fresh
+#            adapted as in AMIS from the moments of the CCD points, then a fresh
 #            batch from it weighted by the exact (Laplace) marginal
 #            posterior, the weights Pareto-smoothed (PSIS, Vehtari et al.
 #            2024), and resampled to equally weighted points: the
@@ -220,9 +220,20 @@ log_post_parallel <- function(obj, theta, covariance, cores) {
 # after each adaptation round, and the posterior mean, SD and Monte Carlo SE
 # of each hyperparameter from the final batch
 hyper_is <- function(obj, mode, n = 200, n_adapt = 1000, n_final = 1000,
-                     rounds = 4, df = 3,
+                     rounds = 4, df = 3, start = NULL,
                      cores = as.integer(Sys.getenv("IR_CUBE_IS_CORES", "1"))) {
   d <- length(mode$mode)
+  # the first proposal: the weighted moments of the CCD points (start: their
+  # theta and weight) when given, which follow the posterior's skew along
+  # each axis; otherwise the Gaussian approximation at the mode
+  if (is.null(start)) {
+    centre_0 <- mode$mode
+    scale_0 <- mode$covariance
+  } else {
+    w0 <- start$weight / sum(start$weight)
+    centre_0 <- colSums(start$theta * w0)
+    scale_0 <- crossprod(sweep(start$theta, 2, centre_0) * sqrt(w0))
+  }
   # draws from component k of the proposals, and the log density of their
   # equal mixture
   draw_t <- function(n, centre, scale) {
@@ -243,8 +254,8 @@ hyper_is <- function(obj, mode, n = 200, n_adapt = 1000, n_final = 1000,
 
   # adaptation
   per_round <- ceiling(n_adapt / rounds)
-  centres <- list(mode$mode)
-  scales <- list(mode$covariance)
+  centres <- list(centre_0)
+  scales <- list(scale_0)
   theta <- matrix(numeric(0), 0, d)
   log_target <- numeric(0)
   round_ess <- numeric(rounds)
