@@ -7,8 +7,8 @@
 #
 # Draw d pairs dynamical draw d with a latent draw from N(mode, H^-1), shifted
 # by the cut-posterior formula for it (correction_node_draws()). The target is
-# m + omega + xi on the logit scale. u and p are observation-level noise: they
-# enter only predictions of new assays, as fresh draws (noise = TRUE).
+# m + omega + xi on the logit scale. u, p and sy are observation-level noise:
+# they enter only predictions of new assays, as fresh draws (noise = TRUE).
 
 source("R/two_stage_helpers.R")
 source("R/dynamical_predictions.R")
@@ -39,13 +39,19 @@ two_stage_setup <- function(type, years, data, n_draws = 1000,
                       n_draws)[, 1]
   batches <- split(draws, ceiling(seq_along(draws) / batch_size))
   set.seed(string_seed(seed_key))
-  fields <- lapply(batches, function(d) {
-    f <- correction_node_draws(
-      fit, years, length(d),
-      m_draws_train = dynamical$logit_train[d, , drop = FALSE])
-    f$theta <- NULL
-    f
+  # all the draws in one call, so that each CCD point's conditional fit is
+  # made once, then split into the batches
+  all_fields <- correction_node_draws(
+    fit, years, length(draws),
+    m_draws_train = dynamical$logit_train[draws, , drop = FALSE])
+  offset <- cumsum(c(0, lengths(batches)))
+  fields <- lapply(seq_along(batches), function(b) {
+    columns <- offset[b] + seq_along(batches[[b]])
+    list(omega = all_fields$omega[, columns, drop = FALSE],
+         xi = lapply(all_fields$xi, function(x) x[, columns, drop = FALSE]),
+         point = all_fields$point[columns])
   })
+  rm(all_fields)
   list(type = type,
        k = match(type, dynamical$parameters$types),
        fit = fit,
@@ -123,7 +129,7 @@ project_cells <- function(fit, fields, chunk, years, noise = FALSE) {
     n_cells <- length(chunk$cells)
     fresh <- iid_noise(fit, tibble(cell = rep(chunk$cells, length(years)),
                                    year = rep(years, each = n_cells)),
-                       ncol(omega))
+                       ncol(omega), fields$point)
     for (j in seq_along(years)) {
       out[[j]] <- out[[j]] + fresh[(j - 1) * n_cells + seq_len(n_cells), ,
                                    drop = FALSE]
@@ -133,7 +139,7 @@ project_cells <- function(fit, fields, chunk, years, noise = FALSE) {
 }
 
 # The logit of the dynamical model, m, and of the two-stage model, m + omega +
-# xi (plus fresh u and p if noise = TRUE), for the draws of batch b at the
+# xi (plus fresh noise if noise = TRUE), for the draws of batch b at the
 # cells of `chunk` (two_stage_chunk()): lists by year of draws x cells
 two_stage_logit_batch <- function(setup, b, chunk, noise = FALSE) {
   draws <- setup$batches[[b]]
@@ -159,7 +165,7 @@ two_stage_logit_batch <- function(setup, b, chunk, noise = FALSE) {
 # two_stage_cells()), and `weights` a cells x groups matrix (columns summing to
 # 1 for a weighted mean, or the identity for each cell alone). Returns draws x
 # groups x years arrays of the two-stage model (ilogit(m + omega + xi), with
-# fresh u and p if noise = TRUE) and of the dynamical model (ilogit(m)), with
+# fresh noise if noise = TRUE) and of the dynamical model (ilogit(m)), with
 # the groups and years as dimnames. Cells of zero weight in every group are
 # skipped
 two_stage_weighted_draws <- function(setup, cells, country, weights,

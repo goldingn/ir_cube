@@ -45,8 +45,9 @@
 #            `map llin_effective` maps Alpha-cypermethrin, Deltamethrin and
 #            Permethrin together with llin_effective, their mortality weighted
 #            draw by draw by temporary/ingredient_weights.RDS, as R/predict.R
-#            does. The target is m + omega + xi. u and p are observation-level
-#            noise and are not mapped. Beyond T, xi is the AR(1) forecast;
+#            does. The target is m + omega + xi. u, p and sy are
+#            observation-level noise and are not mapped. Beyond T, xi is the
+#            AR(1) forecast;
 #   figures  the two-stage-specific maps in figures/two_stage/ (posterior SD,
 #            correction, difference from the dynamical model), in the layout
 #            of R/fig_ir_maps.R, which maps the two-stage model's mortality.
@@ -195,6 +196,7 @@ if (step == "fit") {
                     year = df$year_start[rows_k], cell = df$cell[rows_k],
                     died = df$died[rows_k],
                     mosquito_number = df$mosquito_number[rows_k],
+                    study = df$study[rows_k],
                     m = colMeans(dynamical$logit_train),
                     rho = rho_for_record(tibble(insecticide_type = type),
                                          rho_lookup()))
@@ -204,8 +206,7 @@ if (step == "fit") {
                                     prediction_mask_coords())
   time_fit <- system.time(fit <- fit_correction(train_k, t0 = baseline_year,
                                                 meshes = meshes))
-  stopifnot(fit$opt$convergence == 0, isTRUE(fit$stage_b$converged_first),
-            !isFALSE(fit$stage_b$converged_second))
+  stopifnot(fit$opt$convergence == 0)
 
   # every mapped cell must be inside both meshes, or its correction would be 0
   grid <- grid_cells()
@@ -214,7 +215,6 @@ if (step == "fit") {
   for (mesh in list(fit$mesh, fit$mesh_xi)) {
     stopifnot(all(Matrix::rowSums(mesh_basis(mesh, coords)) > 0.5))
   }
-  fit$obj <- NULL
   saveRDS(fit, file.path(type_dir(type), "fit.rds"))
   write.csv(bind_cols(tibble(insecticide_type = type,
                              rho = train_k$rho[1]),
@@ -521,7 +521,7 @@ sd_limit <- ceiling(pooled_quantile("two_stage_sd_pp") / 5) * 5
 
 model_note <- function(type) {
   T_k <- hyperparameters$T[hyperparameters$insecticide_type == type]
-  sprintf(paste("target m + omega + xi (u and p are observation noise, not",
+  sprintf(paste("target m + omega + xi (u, p and sy are observation noise, not",
                 "mapped); data to %i, later years are the AR(1) forecast",
                 "of xi"), T_k)
 }
@@ -591,7 +591,7 @@ hyperparameters %>%
   select(insecticide_type,
          `omega range (km)` = range_omega, `omega SD` = sigma_omega,
          `eta range (km)` = range_eta, `eta SD` = sigma_eta, phi = phi,
-         tau = tau, sigma_p = sigma_p) %>%
+         tau = tau, sigma_p = sigma_p, sigma_sy = sigma_sy) %>%
   pivot_longer(-insecticide_type) %>%
   mutate(name = factor(name, levels = unique(name)),
          insecticide_type = factor(insecticide_type,

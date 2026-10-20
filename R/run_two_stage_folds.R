@@ -164,7 +164,7 @@ train_k <- mutate(select(assays$training[train_rows, ], -before),
                   m = colMeans(m_draws_train), rho = rho_type[[type]])
 test_k <- with(assays$test_df[test_rows, ],
                tibble(lon = longitude, lat = latitude, year = year_start,
-                      cell = cell))
+                      cell = cell, study = study))
 # the map is evaluated where the published map is: at the pixel centre, not
 # the assay's own coordinates (R/two_stage_maps.R)
 test_centres_k <- at_pixel_centres(select(test_k, year, cell))
@@ -245,9 +245,9 @@ report("%s %-18s n=%5i test=%4i %s; fit %.0f s, predict %.0f s, peak %.1f GB",
        if (is.null(fit)) paste("FAILED:", error) else
          sprintf(paste("conv=%i range_omega=%.0f sigma_omega=%.2f",
                        "range_eta=%.0f sigma_eta=%.3f phi=%.2f tau=%.3f",
-                       "sigma_p=%.2f refit=%s"),
+                       "sigma_p=%.2f sigma_sy=%.2f"),
                  fit$opt$convergence, fit$hyper$range_omega,
                  fit$hyper$sigma_omega, fit$hyper$range_eta,
                  fit$hyper$sigma_eta, fit$hyper$phi, fit$hyper$tau,
-                 fit$hyper$sigma_p, fit$stage_b$refit),
+                 fit$hyper$sigma_p, fit$hyper$sigma_sy),
        time_fit, time_predict, peak_memory_gb())
