@@ -38,19 +38,20 @@ using namespace density;
 using namespace R_inla;
 using namespace Eigen;
 
-// log prior density of a d = 2 Matern field's (log kappa, log sigma), the
-// scale the optimiser works on, with range r = sqrt(8) / kappa: log r ~
-// normal(prior(0), prior(1)) (|d log r / d log kappa| = 1), and the Fuglstad
-// et al. (2019) PC prior on sigma, P(sigma > prior(2)) = prior(3)
-// (|d sigma / d log sigma| = sigma)
+// lower + (upper - lower) * invlogit(z): a parameter bounded to (lower,
+// upper), estimated on the unbounded scale z. A normal prior on z gives the
+// parameter a logit-normal prior, whose density tapers to zero at both bounds
 template<class Type>
-Type log_matern_prior(Type log_kappa, Type log_sigma, vector<Type> prior) {
-  Type log_range = log(sqrt(Type(8.0))) - log_kappa;
+Type bounded(Type z, Type lower, Type upper) {
+  return lower + (upper - lower) * invlogit(z);
+}
+
+// log density of log sigma when sigma is half-normal with the given scale,
+// including the Jacobian |d sigma / d log sigma| = sigma
+template<class Type>
+Type log_half_normal_log_sd(Type log_sigma, Type scale) {
   Type sigma = exp(log_sigma);
-  Type lambda_sigma = -log(prior(3)) / prior(2);
-  Type lp = dnorm(log_range, prior(0), prior(1), true);
-  lp += log(lambda_sigma) - lambda_sigma * sigma + log_sigma;
-  return lp;
+  return log(Type(2.0)) + dnorm(sigma, Type(0.0), scale, true) + log_sigma;
 }
 
 // SPDE precision (alpha = 2, d = 2) scaled to have marginal SD sigma
@@ -74,10 +75,9 @@ Type objective_function<Type>::operator() ()
   DATA_IVECTOR(iid_term);         // 0-based term of each level in iid
   DATA_STRUCT(spde, spde_t);      // FEM matrices of the omega mesh
   DATA_STRUCT(spde_xi, spde_t);   // and of the xi mesh
-  DATA_VECTOR(prior_omega);       // (mean log range, sd log range, sigma0, P(sigma > sigma0))
-  DATA_VECTOR(prior_eta);         // as above, for the eta innovations field
-  DATA_VECTOR(pc_iid);            // (sigma0, P(sigma > sigma0)) for every iid term
-  DATA_VECTOR(persistence_prior); // (meanlog, sdlog) of 1 / (1 - phi)
+  DATA_VECTOR(range_prior);       // (log lower, log upper, mean, sd): log range bounded, normal on its logit
+  DATA_VECTOR(persistence_prior); // (lower, upper, mean, sd): persistence bounded, normal on its logit
+  DATA_VECTOR(sd_scale);          // half-normal scales of sigma_omega, sigma_eta and every iid SD
   DATA_INTEGER(likelihood);       // 0: Gaussian working response, 1: beta-binomial counts
   DATA_VECTOR(died);              // the counts, for likelihood = 1
   DATA_VECTOR(n_mosquito);
@@ -87,18 +87,26 @@ Type objective_function<Type>::operator() ()
   PARAMETER_ARRAY(x);
   PARAMETER_VECTOR(iid);
   PARAMETER(log_sigma_omega);
-  PARAMETER(log_kappa_omega);
+  PARAMETER(logit_range_omega);
   PARAMETER(log_sigma_eta);
-  PARAMETER(log_kappa_eta);
-  PARAMETER(logit_phi);
+  PARAMETER(logit_range_eta);
+  PARAMETER(logit_persistence);
   PARAMETER_VECTOR(log_sigma_iid); // one per iid term
 
-  Type phi = invlogit(logit_phi);
+  // range r = sqrt(8) / kappa; persistence L = 1 / (1 - phi)
+  Type log_sqrt8 = log(sqrt(Type(8.0)));
+  Type kappa_omega = exp(log_sqrt8 - bounded(logit_range_omega, range_prior(0),
+                                             range_prior(1)));
+  Type kappa_eta = exp(log_sqrt8 - bounded(logit_range_eta, range_prior(0),
+                                           range_prior(1)));
+  Type persistence = bounded(logit_persistence, persistence_prior(0),
+                             persistence_prior(1));
+  Type phi = Type(1.0) - Type(1.0) / persistence;
   vector<Type> sigma_iid = exp(log_sigma_iid);
   Type nll = 0.0;
 
   // omega: Matern field at the nodes
-  nll += GMRF(matern_precision(spde, exp(log_kappa_omega),
+  nll += GMRF(matern_precision(spde, kappa_omega,
                                exp(log_sigma_omega)))(w_omega);
   vector<Type> lambda = m + A_omega * w_omega;
 
@@ -114,7 +122,7 @@ Type objective_function<Type>::operator() ()
     for (int t = 1; t < n_years; t++) eta(i, t) = x(i, t) - x(i, t - 1);
   }
   nll += SEPARABLE(AR1(phi), GMRF(matern_precision(spde_xi,
-                                                   exp(log_kappa_eta),
+                                                   kappa_eta,
                                                    exp(log_sigma_eta))))(eta);
   vector<Type> x_vec = x.vec();
   lambda += A_xi * x_vec;
@@ -143,19 +151,18 @@ Type objective_function<Type>::operator() ()
     }
   }
 
-  // priors on the hyperparameters: PC priors on both Matern fields,
-  // exponential (PC) priors on the iid SDs (with the Jacobian for log sigma),
-  // and a lognormal prior on persistence L = 1 / (1 - phi) = 1 + exp(logit_phi),
-  // for which d log L / d logit_phi = phi
-  nll -= log_matern_prior(log_kappa_omega, log_sigma_omega, prior_omega);
-  nll -= log_matern_prior(log_kappa_eta, log_sigma_eta, prior_eta);
-  Type lambda_iid = -log(pc_iid(1)) / pc_iid(0);
-  for (int k = 0; k < sigma_iid.size(); k++) {
-    nll -= log(lambda_iid) - lambda_iid * sigma_iid(k) + log_sigma_iid(k);
+  // priors on the hyperparameters, on the optimiser's scale: normal on the
+  // logits of the bounded ranges and persistence (no Jacobian: the prior is
+  // defined on that scale), and half-normal on every SD
+  nll -= dnorm(logit_range_omega, range_prior(2), range_prior(3), true);
+  nll -= dnorm(logit_range_eta, range_prior(2), range_prior(3), true);
+  nll -= dnorm(logit_persistence, persistence_prior(2), persistence_prior(3),
+               true);
+  nll -= log_half_normal_log_sd(log_sigma_omega, sd_scale(0));
+  nll -= log_half_normal_log_sd(log_sigma_eta, sd_scale(1));
+  for (int k = 0; k < log_sigma_iid.size(); k++) {
+    nll -= log_half_normal_log_sd(log_sigma_iid(k), sd_scale(2));
   }
-  Type persistence = Type(1.0) / (Type(1.0) - phi);
-  nll -= dnorm(log(persistence), persistence_prior(0), persistence_prior(1),
-               true) + log(phi);
 
   return nll;
 }

@@ -113,7 +113,7 @@ point_hyper <- function(fit, theta) {
       par_list[[name]] <- unname(theta[j, index + seq_len(size)])
       index <- index + size
     }
-    as.data.frame(correction_hyper(par_list))
+    as.data.frame(correction_hyper(par_list, fit$tmb_data))
   }))
 }
 

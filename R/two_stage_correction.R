@@ -207,36 +207,66 @@ xi_design <- function(mesh_xi, coords, year, t0, T) {
                        dims = c(length(year), mesh_xi$n * (T - t0)))
 }
 
-# Priors: each Matern field's range is lognormal with median 222 km and sdlog
-# 0.84, so 95% of its mass lies in 50-1,500 km (2.5% quantile 43 km) and
-# P(range > 3,000 km) = 0.001: the dynamical model's own fields have 1,500 km
-# ranges, and the second stage only fills in finer-scale error (#34). PC
-# priors on the SDs: P(sigma > 1) = 0.05 for omega, and P(sigma > 0.05) = 0.05
-# for the annual anomalies eta, so that the second stage changes the dynamical
-# model's trend by at most about 0.5 logit per decade (#34); P(sd > 1) = 0.05
-# for each iid term; and persistence 1 / (1 - phi) ~ lognormal(log 5.5, 0.31):
-# a median of 5.5 years, 95% interval 3.0-10.0, 99.9% interval 2.0-15 (phi
-# 0.5-0.93), which rules out both year-to-year random walks of the trend
-# correction and persistences longer than the data can identify (#34)
-correction_priors <- function(range_median = 222, range_sdlog = 0.84,
-                              sigma0 = 1, alpha_sigma = 0.05,
-                              eta_sigma0 = 0.05,
-                              iid_sigma0 = 1, alpha_iid = 0.05,
+# Priors (#34). The second stage only fills gaps the dynamical model leaves:
+# finer-scale level error, and gradual changes of its trend.
+#
+# Ranges of omega and eta: bounded to 10-3,000 km, with a normal prior on the
+# logit of log range placing 95% of the mass in 50-1,500 km (median 359 km;
+# 99.95% quantile 2,270 km). The dynamical model's own fields have 1,500 km
+# ranges, so continent-wide corrections are its job.
+#
+# Persistence of the annual anomalies eta, L = 1 / (1 - phi): bounded to 2-15
+# years, with a normal prior on its logit giving a median of 5.5 years and a
+# 99% interval of 3-10 years. Resistance does not jump up and down from year
+# to year, and longer persistences are neither identified nor needed (omega
+# holds static offsets). Going below 3 years costs increasingly many nats
+# (7 at 2.5 years, 22 at 2.1), and below 2 years is impossible.
+#
+# Half-normal priors on the SDs, so the cost of a large SD grows
+# quadratically: P(sigma_omega > 1) = 0.05 (the level correction);
+# P(sigma_eta > 0.05) = 0.05, so the trend correction xi has a prior SD of
+# about 0.2 logit per decade at the median persistence, up to about 0.8 logit
+# over 30 years at the 95% point of sigma_eta; and P(sd > 2) = 0.05 for the
+# iid noise terms, permissive so that noise is never what forces signal into
+# the structured fields.
+correction_priors <- function(range_bounds = c(10, 3000),
+                              range_interval = c(50, 1500),
+                              persistence_bounds = c(2, 15),
                               persistence_median = 5.5,
-                              persistence_sdlog = 0.31) {
-  list(prior_omega = c(log(range_median), range_sdlog, sigma0, alpha_sigma),
-       prior_eta = c(log(range_median), range_sdlog, eta_sigma0, alpha_sigma),
-       pc_iid = c(iid_sigma0, alpha_iid),
-       persistence_prior = c(log(persistence_median), persistence_sdlog))
+                              persistence_lower_99 = 3,
+                              sigma_omega = 1, sigma_eta = 0.05,
+                              sigma_iid = 2, alpha_sigma = 0.05) {
+  # a range interval is a central 95% interval on the logit of log range
+  log_bounds <- log(range_bounds)
+  range_logit <- qlogis((log(range_interval) - log_bounds[1]) /
+                          diff(log_bounds))
+  persistence_logit <- function(L) {
+    qlogis((L - persistence_bounds[1]) / diff(persistence_bounds))
+  }
+  persistence_mean <- persistence_logit(persistence_median)
+  half_normal_scale <- function(sigma0) sigma0 / qnorm(1 - alpha_sigma / 2)
+  list(range_prior = c(log_bounds, mean(range_logit),
+                       diff(range_logit) / (2 * qnorm(0.975))),
+       persistence_prior = c(persistence_bounds, persistence_mean,
+                             (persistence_mean -
+                                persistence_logit(persistence_lower_99)) /
+                               qnorm(0.995)),
+       sd_scale = half_normal_scale(c(sigma_omega, sigma_eta, sigma_iid)))
+}
+
+# bounded(z, lower, upper) as in the template, and its inverse
+bounded <- function(z, lower, upper) lower + (upper - lower) * plogis(z)
+bounded_logit <- function(value, lower, upper) {
+  qlogis((value - lower) / (upper - lower))
 }
 
 
 # fitting ----------------------------------------------------------------------
 
 # the hyperparameters, on the optimiser's scale, in the template's order
-correction_hyper_names <- c("log_sigma_omega", "log_kappa_omega",
-                            "log_sigma_eta", "log_kappa_eta", "logit_phi",
-                            "log_sigma_iid")
+correction_hyper_names <- c("log_sigma_omega", "logit_range_omega",
+                            "log_sigma_eta", "logit_range_eta",
+                            "logit_persistence", "log_sigma_iid")
 
 # theta of a fit, on the optimiser's scale, named as obj$par
 hyper_vector <- function(fit) {
@@ -287,7 +317,7 @@ conditional_fit <- function(fit, obj, theta) {
   fit$H <- H
   fit$H_chol <- Matrix::update(fit$H_chol, H)
   fit$par_list <- par_list
-  fit$hyper <- correction_hyper(par_list)
+  fit$hyper <- correction_hyper(par_list, obj$env$data)
   data <- obj$env$data
   if (data$likelihood == 1) {
     lambda <- fit$m_ref + as.vector(fit$A_latent %*% fit$mode)
@@ -297,17 +327,23 @@ conditional_fit <- function(fit, obj, theta) {
   fit
 }
 
-# fit$hyper from the template's parameter list
-correction_hyper <- function(par_list) {
-  phi <- plogis(par_list$logit_phi)
+# fit$hyper from the template's parameter list and data (its prior bounds)
+correction_hyper <- function(par_list, data) {
+  range <- function(z) {
+    exp(bounded(z, data$range_prior[1], data$range_prior[2]))
+  }
+  persistence <- bounded(par_list$logit_persistence,
+                         data$persistence_prior[1], data$persistence_prior[2])
+  range_omega <- range(par_list$logit_range_omega)
+  range_eta <- range(par_list$logit_range_eta)
   hyper <- list(sigma_omega = exp(par_list$log_sigma_omega),
-                range_omega = sqrt(8) / exp(par_list$log_kappa_omega),
-                kappa_omega = exp(par_list$log_kappa_omega),
+                range_omega = range_omega,
+                kappa_omega = sqrt(8) / range_omega,
                 sigma_eta = exp(par_list$log_sigma_eta),
-                range_eta = sqrt(8) / exp(par_list$log_kappa_eta),
-                kappa_eta = exp(par_list$log_kappa_eta),
-                phi = phi,
-                persistence = 1 / (1 - phi))
+                range_eta = range_eta,
+                kappa_eta = sqrt(8) / range_eta,
+                phi = 1 - 1 / persistence,
+                persistence = persistence)
   for (k in seq_along(correction_iid_terms)) {
     hyper[[correction_iid_terms[[k]]$sd]] <- exp(par_list$log_sigma_iid[k])
   }
@@ -372,21 +408,19 @@ fit_stage_a <- function(train, t0, T = max(train$year), meshes,
     priors
   )
 
-  # ranges of a few hundred km, well inside the prior, and small SDs: the
+  # the priors' medians for the ranges and persistence, and small SDs: the
   # correction should be modest if the dynamical model is good
   start <- modifyList(list(log_sigma_omega = log(0.5),
-                           log_kappa_omega = log(sqrt(8) / 222),
+                           logit_range_omega = priors$range_prior[3],
                            log_sigma_eta = log(0.03),
-                           log_kappa_eta = log(sqrt(8) / 222),
-                           logit_phi = qlogis(0.8),
+                           logit_range_eta = priors$range_prior[3],
+                           logit_persistence = priors$persistence_prior[3],
                            log_sigma_iid = rep(log(0.3), length(iid_levels))),
                       start)
   parameters <- c(list(w_omega = rep(0, meshes$omega$n),
                        x = matrix(0, meshes$xi$n, T - t0),
                        iid = rep(0, sum(lengths(iid_levels)))),
-                  start[c("log_sigma_omega", "log_kappa_omega",
-                          "log_sigma_eta", "log_kappa_eta", "logit_phi",
-                          "log_sigma_iid")])
+                  start[correction_hyper_names])
 
   obj <- correction_adfun(data, parameters, silent = silent)
   opt <- nlminb(obj$par, obj$fn, obj$gr, control = control)
@@ -413,7 +447,7 @@ fit_stage_a <- function(train, t0, T = max(train$year), meshes,
                                 dims = c(n_obs, sum(lengths(iid_levels))))
 
   par_list <- obj$env$parList(par = par_full)
-  hyper <- correction_hyper(par_list)
+  hyper <- correction_hyper(par_list, data)
 
   structure(
     list(t0 = t0, T = T, n_years = T - t0,
