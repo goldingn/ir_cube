@@ -111,12 +111,21 @@ hyper_gaussian <- function(mode, n) {
 
 # The CCD design in d dimensions, as points x d in the standardised z scale:
 # the centre, the 2d axial points at distance sqrt(d), and a two-level
-# factorial of resolution at least V (full for d <= 4, the half fraction with
-# the last factor the product of the others for d = 5-7), all scaled by f0
+# factorial of resolution at least V (full for d <= 4; the half fraction with
+# the last factor the product of the others for d = 5-7; for d = 8 the quarter
+# fraction with G = ABCD and H = ABEF), all scaled by f0
 ccd_design <- function(d, f0 = 1.1) {
-  stopifnot(d >= 2, d <= 7)
-  full <- as.matrix(expand.grid(rep(list(c(-1, 1)), if (d <= 4) d else d - 1)))
-  factorial <- if (d <= 4) full else cbind(full, apply(full, 1, prod))
+  stopifnot(d >= 2, d <= 8)
+  base <- if (d <= 4) d else if (d <= 7) d - 1 else d - 2
+  full <- as.matrix(expand.grid(rep(list(c(-1, 1)), base)))
+  factorial <- if (d <= 4) {
+    full
+  } else if (d <= 7) {
+    cbind(full, apply(full, 1, prod))
+  } else {
+    cbind(full, full[, 1] * full[, 2] * full[, 3] * full[, 4],
+          full[, 1] * full[, 2] * full[, 5] * full[, 6])
+  }
   axial <- rbind(diag(sqrt(d), d), diag(-sqrt(d), d))
   unname(rbind(0, axial, factorial) * f0)
 }

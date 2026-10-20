@@ -20,8 +20,8 @@
 # The target, on the logit scale, is m(s, t) + omega(s) + xi(s, t): m the
 # dynamical model's prediction, xi(s, t) the sum of the annual anomalies eta up
 # to t, eta AR(1) in time with Matern innovations; beyond the last data year T
-# eta is simulated forward. u and p are observation-level noise and appear in
-# neither figure.
+# eta is simulated forward. u, p and sy are observation-level noise and
+# appear in neither figure.
 
 type <- "Deltamethrin"
 figure_dir <- "figures/two_stage"
@@ -355,7 +355,7 @@ for (ext in c("png", "pdf")) {
 
 # mortality intervals for the population fraction at each pixel-year: the
 # dynamical model alone (plogis(m)) and the two-stage model
-# (plogis(m + omega + xi), with the cut-posterior shift). u and p are
+# (plogis(m + omega + xi), with the cut-posterior shift). u, p and sy are
 # observation noise, like the assay-level (beta-binomial) noise, so none is
 # included
 summarise_draws <- function(values, model) {

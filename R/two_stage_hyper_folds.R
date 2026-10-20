@@ -77,9 +77,9 @@ train_k <- mutate(cache$training[train_rows, ], m = colMeans(m_draws_train),
 test <- cache$test_df[test_rows, c("insecticide_type", "insecticide_class",
                                    "country_name", "year_start", "cell",
                                    "longitude", "latitude", "died",
-                                   "mosquito_number")]
+                                   "mosquito_number", "study")]
 test_k <- with(test, tibble(lon = longitude, lat = latitude,
-                            year = year_start, cell = cell))
+                            year = year_start, cell = cell, study = study))
 t0 <- cache$t0
 rm(cache)
 invisible(gc())

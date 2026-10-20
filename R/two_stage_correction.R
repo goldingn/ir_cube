@@ -10,14 +10,14 @@
 # (m_ref). omega is a Matern field correcting the initial conditions; xi
 # accumulates an AR(1)-in-time, Matern-in-space field of annual anomalies eta
 # from xi(., t0) = 0, so that forecasts of the correction plateau; u (per
-# pixel-year) and p (per pixel) are iid.
+# pixel-year), p (per pixel) and sy (per study-year) are iid.
 #
-# The prediction target (what the maps show) is m + omega + xi. u and p are
-# observation-level noise, shared by the assays of a pixel-year or a pixel:
-# they are fitted so that this noise stays out of omega and xi, and enter
-# predictions of new assays only as fresh draws from N(0, tau^2) and
-# N(0, sigma_p^2), never as their fitted values, even at pixel-years or
-# pixels with training data.
+# The prediction target (what the maps show) is m + omega + xi. u, p and sy
+# are observation-level noise, shared by the assays of a pixel-year, a pixel
+# or a study in a year: they are fitted so that this noise stays out of omega
+# and xi, and enter predictions of new assays only as fresh draws from
+# N(0, tau^2), N(0, sigma_p^2) and N(0, sigma_sy^2), never as their fitted
+# values, even at pixel-years, pixels or study-years with training data.
 #
 # Fitting, per insecticide type (fit_correction()):
 #   stage A  z, v = empirical logit and its variance, inflated by the per-type
@@ -35,11 +35,12 @@
 #                                                  model's meshes, covering the
 #                                                  sites and the mask
 #   fit <- fit_correction(train, t0, T, meshes)    stage A then stage B.
-#     train: lon, lat (or x_km, y_km), year, cell, m (= m_ref), died,
+#     train: lon, lat (or x_km, y_km), year, cell, study, m (= m_ref), died,
 #     mosquito_number, rho. T: last year xi is represented (forecast beyond).
 #     Stops if stage A does not converge; check fit$opt$convergence for the
 #     stage-B re-estimation. fit$hyper: sigma_omega, range_omega, sigma_eta,
-#     range_eta, phi, persistence, tau (SD of u), sigma_p (and the kappas).
+#     range_eta, phi, persistence, tau (SD of u), sigma_p, sigma_sy (and the
+#     kappas).
 #     fit$stage_b: PQL diagnostics, incl. hyper_a and objective_a (stage A).
 #   fit_summary(fit)                               one-row tibble for tables
 #   fields <- correction_node_draws(fit, years, n_draws, m_draws_train = NULL,
@@ -104,10 +105,16 @@ empirical_logit <- function(died, n, rho) {
 
 # The iid noise terms, each as the key grouping assays into its levels, and
 # the name of its SD in fit$hyper. Adding or removing a term here is all the
-# model and the predictions need
+# model and the predictions need. sy is noise shared by the bioassays of a
+# study in a year (the data's study label, #54), so that survey noise is not
+# fitted by xi and mapped (#55). A point with no study (a new bioassay at a
+# map cell) is its own study, so its draw is one per cell-year
 correction_iid_terms <- list(
   u = list(key = function(d) paste(d$cell, d$year), sd = "tau"),
-  p = list(key = function(d) as.character(d$cell), sd = "sigma_p")
+  p = list(key = function(d) as.character(d$cell), sd = "sigma_p"),
+  sy = list(key = function(d) {
+    paste(if (is.null(d$study)) paste("cell", d$cell) else d$study, d$year)
+  }, sd = "sigma_sy")
 )
 
 
@@ -375,7 +382,8 @@ fit_stage_a <- function(train, t0, T = max(train$year), meshes,
                         silent = TRUE) {
 
   start_time <- Sys.time()
-  stopifnot(T > t0, all(train$year >= t0 & train$year <= T))
+  stopifnot(T > t0, all(train$year >= t0 & train$year <= T),
+            !is.null(train$study))
   if (!all(c("z", "v") %in% names(train))) {
     response <- empirical_logit(train$died, train$mosquito_number, train$rho)
     train$z <- response$z

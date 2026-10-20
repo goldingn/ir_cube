@@ -130,7 +130,7 @@ if (step == "stage_one") {
   stopifnot(max_logit_diff < 1e-6)
 
   training <- transmute(training, type_id, lon = longitude, lat = latitude,
-                        year = year_start, cell, died, mosquito_number)
+                        year = year_start, cell, died, mosquito_number, study)
   saveRDS(list(experiment_label = experiment_label, types = types,
                t0 = baseline_year, training = training, test_df = test_df,
                p_saved = p_saved, logit_train = logit_train,
@@ -208,7 +208,7 @@ train_k <- mutate(cache$training[train_rows, ], m = colMeans(m_draws_train),
                   rho = rho_type[[type]])
 test_k <- with(cache$test_df[test_rows, ],
                tibble(lon = longitude, lat = latitude, year = year_start,
-                      cell = cell))
+                      cell = cell, study = study))
 t0 <- cache$t0
 rm(cache)
 invisible(gc())

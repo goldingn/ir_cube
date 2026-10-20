@@ -7,8 +7,8 @@
 #
 # Draw d pairs dynamical draw d with a latent draw from N(mode, H^-1), shifted
 # by the cut-posterior formula for it (correction_node_draws()). The target is
-# m + omega + xi on the logit scale. u and p are observation-level noise: they
-# enter only predictions of new assays, as fresh draws (noise = TRUE).
+# m + omega + xi on the logit scale. u, p and sy are observation-level noise:
+# they enter only predictions of new assays, as fresh draws (noise = TRUE).
 
 source("R/two_stage_helpers.R")
 source("R/dynamical_predictions.R")
