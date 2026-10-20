@@ -179,13 +179,12 @@ new_omega <- tibble(x_km = coords_pix[, 1], y_km = coords_pix[, 2],
 correction <- array(NA_real_, c(n_years_all, n_pix, n_draws))
 omega <- matrix(NA_real_, n_pix, n_draws)
 set.seed(4026 + k)
-for (batch in split(seq_len(n_draws), ceiling(seq_len(n_draws) / 250))) {
-  fields <- correction_node_draws(
-    fit, years_all, length(batch),
-    m_draws_train = dynamical$logit_train[batch, , drop = FALSE])
-  correction[, , batch] <- project_correction(fit, fields, new)
-  omega[, batch] <- project_correction(fit, fields, new_omega)
-}
+fields <- correction_node_draws(
+  fit, years_all, n_draws,
+  m_draws_train = dynamical$logit_train[seq_len(n_draws), , drop = FALSE])
+correction[] <- project_correction(fit, fields, new)
+omega[] <- project_correction(fit, fields, new_omega)
+rm(fields)
 omega_array <- array(rep(omega, each = n_years_all), dim(correction))
 xi <- correction - omega_array
 eta <- xi - xi[c(1, seq_len(n_years_all - 1)), , , drop = FALSE]

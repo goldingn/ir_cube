@@ -39,13 +39,19 @@ two_stage_setup <- function(type, years, data, n_draws = 1000,
                       n_draws)[, 1]
   batches <- split(draws, ceiling(seq_along(draws) / batch_size))
   set.seed(string_seed(seed_key))
-  fields <- lapply(batches, function(d) {
-    f <- correction_node_draws(
-      fit, years, length(d),
-      m_draws_train = dynamical$logit_train[d, , drop = FALSE])
-    f$theta <- NULL
-    f
+  # all the draws in one call, so that each CCD point's conditional fit is
+  # made once, then split into the batches
+  all_fields <- correction_node_draws(
+    fit, years, length(draws),
+    m_draws_train = dynamical$logit_train[draws, , drop = FALSE])
+  offset <- cumsum(c(0, lengths(batches)))
+  fields <- lapply(seq_along(batches), function(b) {
+    columns <- offset[b] + seq_along(batches[[b]])
+    list(omega = all_fields$omega[, columns, drop = FALSE],
+         xi = lapply(all_fields$xi, function(x) x[, columns, drop = FALSE]),
+         point = all_fields$point[columns])
   })
+  rm(all_fields)
   list(type = type,
        k = match(type, dynamical$parameters$types),
        fit = fit,
@@ -130,7 +136,7 @@ project_cells <- function(fit, fields, chunk, years, noise = FALSE) {
     n_cells <- length(chunk$cells)
     fresh <- iid_noise(fit, tibble(cell = rep(chunk$cells, length(years)),
                                    year = rep(years, each = n_cells)),
-                       ncol(omega))
+                       ncol(omega), fields$point)
     for (j in seq_along(years)) {
       out[[j]] <- out[[j]] + fresh[(j - 1) * n_cells + seq_len(n_cells), ,
                                    drop = FALSE]
