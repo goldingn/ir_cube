@@ -4,9 +4,11 @@
 # 10% and 40% of warmup from every warmup draw so far, including the transient
 # from the initial values, and fixes it from 40%. This estimates it in windows
 # that each start afresh: after an initial buffer (step size only), the metric
-# is estimated from the draws in each window alone (all chains pooled), and at
-# the end of each window the metric is set from them and step-size adaptation
-# restarts. The last part of warmup adapts the step size only.
+# is estimated from the draws in each window alone, one metric per chain from
+# that chain's draws, as TensorFlow Probability's windowed_adaptive_hmc()
+# does, and at the end of each window the metric is set from them and
+# step-size adaptation restarts. The last part of warmup adapts the step size
+# only. TEST ARM for #41: not for merging unless it wins.
 #
 # The step size is adapted as greta's hmc() does, one for all chains from
 # their mean acceptance, leaving out proposals whose acceptance is not finite.
@@ -54,20 +56,27 @@ windowed_hmc_class <- function() {
         if (iterations_completed > p$buffer * total_iterations &&
             self$n_windows_done < length(ends)) {
           self$window_draws[[length(self$window_draws) + 1]] <-
-            do.call(rbind, self$last_burst_free_states)
+            self$last_burst_free_states
         }
         if (n_ended > self$n_windows_done) {
           self$n_windows_done <- n_ended
-          draws <- do.call(rbind, self$window_draws)
+          # each chain's draws in the window
+          chains <- lapply(seq_len(self$n_chains), function(chain) {
+            do.call(rbind, lapply(self$window_draws, `[[`, chain))
+          })
           self$window_draws <- list()
-          n <- nrow(draws)
+          n <- if (length(chains[[1]]) == 0) NULL else nrow(chains[[1]])
           if (!is.null(n) && n > 10) {
-            var <- apply(draws, 2, stats::var)
+            # chains x parameters
+            var <- t(vapply(chains, function(x) apply(x, 2, stats::var),
+                            numeric(self$n_free)))
             var <- (n / (n + 5)) * var + 1e-3 * (5 / (n + 5))
-            # the step size of parameter i is epsilon * diag_sd_i /
-            # sum(diag_sd): keep it the same multiple of diag_sd_i
+            # the step size of parameter i in chain c is epsilon * diag_sd_ci /
+            # (the mean over chains of sum_i diag_sd_ci): keep it the same
+            # multiple of diag_sd_ci
+            old <- self$chain_diag_sd()
             self$parameters$epsilon <- self$parameters$epsilon *
-              sum(sqrt(var)) / sum(self$parameters$diag_sd)
+              mean(rowSums(sqrt(var))) / mean(rowSums(old))
             self$parameters$diag_sd <- sqrt(var)
             self$metric_log[[length(self$metric_log) + 1]] <-
               list(iteration = iterations_completed, n = n,
@@ -98,12 +107,20 @@ windowed_hmc_class <- function() {
         }
       },
 
+      # the metric as chains x parameters (one row for all chains until the
+      # first window ends)
+      chain_diag_sd = function() {
+        d <- self$parameters$diag_sd
+        if (is.matrix(d)) d else
+          matrix(d, self$n_chains, self$n_free, byrow = TRUE)
+      },
+
       sampler_parameter_values = function() {
         p <- self$parameters
         self$parameters$epsilon <- rep_len(p$epsilon, self$n_chains)
         list(hmc_l = sample(seq(p$Lmin, p$Lmax), 1),
              hmc_epsilon = matrix(self$parameters$epsilon),
-             hmc_diag_sd = matrix(p$diag_sd))
+             hmc_diag_sd = matrix(t(self$chain_diag_sd())))
       },
 
       define_tf_kernel = function(sampler_param_vec) {
@@ -117,9 +134,10 @@ windowed_hmc_class <- function() {
         epsilon <- tf$reshape(sampler_param_vec[1:n_chains],
                               shape = list(n_chains, 1L))
         diag_sd <- tf$reshape(
-          sampler_param_vec[(n_chains + 1):(n_chains + n)],
-          shape = list(1L, n))
-        step_sizes <- epsilon * diag_sd / tf$reduce_sum(diag_sd)
+          sampler_param_vec[(n_chains + 1):(n_chains + n_chains * n)],
+          shape = list(n_chains, n))
+        step_sizes <- epsilon * diag_sd /
+          (tf$reduce_sum(diag_sd) / tf$cast(n_chains, diag_sd$dtype))
         tfp$mcmc$HamiltonianMonteCarlo(
           target_log_prob_fn = dag$tf_log_prob_function_adjusted,
           step_size = step_sizes,
