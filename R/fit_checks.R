@@ -34,6 +34,7 @@ files <- if (length(arguments) > 0) arguments else
   c("temporary/fitted_model.RData",
     Sys.glob("outputs/cv_draws/dynamical__*.rds"))
 files <- files[file.exists(files)]
+stopifnot(length(files) > 0)
 
 checks <- lapply(files, function(file) {
   if (grepl("\\.RData$", file)) {
@@ -69,10 +70,7 @@ print(as.data.frame(table), digits = 4)
 
 variables <- bind_rows(lapply(checks, function(check) {
   mutate(check$variables, fit = check$fit)
-})) %>%
-  # each element by its labels alone, as the panel names the variable
-  mutate(label = ifelse(grepl("\\[", element),
-                        sub("^[^[]*\\[(.*)\\]$", "\\1", element), ""))
+}))
 panels <- setNames(sprintf("%s (%s)", names(compared_variables),
                            compared_variables), names(compared_variables))
 dodge <- position_dodge(width = 0.7)

@@ -57,20 +57,22 @@ chain_log_density <- function(model, draws, n = 200) {
 #   flagged    lp_rhat, or the Rhat of an element of compared_variables, above
 #              1.01 (Vehtari et al. 2021)
 #   variables  the 5%, 50% and 95% quantiles of each element of
-#              compared_variables, per chain and over the kept chains ("kept")
+#              compared_variables (by its label), per chain and over the kept
+#              chains ("kept")
 check_chains <- function(draws, lp, labels) {
   stuck <- seq_along(draws) %in% stuck_chains(draws)
   kept <- if (all(stuck)) seq_along(draws) else which(!stuck)
   draws <- lapply(draws, as.matrix)
   variable <- sub("\\[.*$", "", colnames(draws[[1]]))
-  element <- label_elements(colnames(draws[[1]]), labels)
+  label <- label_elements(colnames(draws[[1]]), labels)
+  element <- ifelse(label == "", variable, sprintf("%s[%s]", variable, label))
   rhat <- setNames(apply(simplify2array(draws[kept]), 2, posterior::rhat),
                    element)
   lp_rhat <- posterior::rhat(lp[, kept, drop = FALSE])
   compared <- variable %in% names(compared_variables)
   quantiles <- function(x, chain) {
     q <- apply(x[, compared, drop = FALSE], 2, quantile, c(0.05, 0.5, 0.95))
-    data.frame(variable = variable[compared], element = element[compared],
+    data.frame(variable = variable[compared], label = label[compared],
                chain = as.character(chain), q05 = q[1, ], q50 = q[2, ],
                q95 = q[3, ], row.names = NULL)
   }
@@ -84,19 +86,20 @@ check_chains <- function(draws, lp, labels) {
          quantiles(do.call(rbind, draws[kept]), "kept")))
 }
 
-# Greta's names of variable elements, e.g. "init_country_level[12,7]", with
+# The labels of greta's variable elements, e.g. "init_country_level[12,7]":
 # their indices replaced by the labels of the variable's dimensions
-# (`labels`), leaving out dimensions of length one.
+# (`labels`), leaving out dimensions of length one, and "" for a scalar.
 label_elements <- function(elements, labels) {
   vapply(elements, function(element) {
     name <- sub("\\[.*$", "", element)
-    if (name == element || is.null(labels[[name]])) return(element)
-    index <- as.integer(strsplit(sub("^.*\\[(.*)\\]$", "\\1", element),
-                                 ",")[[1]])
+    if (name == element) return("")
+    index <- sub("^.*\\[(.*)\\]$", "\\1", element)
     dimensions <- labels[[name]]
+    if (is.null(dimensions)) return(index)
+    index <- as.integer(strsplit(index, ",")[[1]])
     long <- lengths(dimensions) > 1
-    parts <- mapply(function(d, i) d[i], dimensions[long], index[long])
-    sprintf("%s[%s]", name, paste(parts, collapse = ", "))
+    paste(mapply(function(d, i) d[i], dimensions[long], index[long]),
+          collapse = ", ")
   }, character(1), USE.NAMES = FALSE)
 }
 
