@@ -57,11 +57,11 @@ min_pixels <- 10
 # the two-stage model's per-record scores: the map and the data floor (#32)
 records <- read_csv("outputs/cv_scores.csv", show_col_types = FALSE,
                     col_select = c(model, experiment, fold, insecticide_type,
-                                   insecticide_class, country_name, citation,
+                                   insecticide_class, country_name, study,
                                    year_start, cell, observed, map,
                                    floor)) %>%
   filter(model == "two_stage") %>%
-  mutate(survey = survey_id(citation, country_name, year_start),
+  mutate(survey = paste(study, year_start),
          map_error = (observed - map) ^ 2) %>%
   group_by(experiment, cell, year_start, insecticide_type) %>%
   mutate(pixel_year = cur_group_id(), n_pixel_year = n()) %>%
