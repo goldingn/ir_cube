@@ -42,9 +42,7 @@ fit_fold <- function(train_df,
 
   # use cached posterior means as inits, and the sampler settings
   # (R/dynamical_model.R)
-  inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built$variables,
-                               levels = built$lookups$levels,
-                               columns = colnames(x_cell_years))
+  inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built)
   draws <- run_dynamical_mcmc(built$model, built$variables, inits_one,
                               settings)
 

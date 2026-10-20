@@ -132,16 +132,29 @@ dynamical_lookups <- function(df) {
 
 # parameters -----------------------------------------------------------------
 
+# The labels of a variable's dimensions, as dimnames: a character vector per
+# dimension given, and "1" for the one column of a vector or the one value of
+# a scalar (greta arrays have two dimensions or more)
+dimension_labels <- function(...) {
+  labels <- lapply(list(...), as.character)
+  c(labels, rep(list("1"), 2 - length(labels)))
+}
+
 # The model's variables (the free parameters), with their priors, as a named
-# list of greta arrays. Every element is passed to model(), so every one has
-# named columns in the draws.
+# list of greta arrays (`variables`; every element is passed to model(), so
+# every one has named columns in the draws). Each is declared with the labels
+# of its dimensions (`labels`, dimension_labels()): the names of the types,
+# classes, regions and countries (`levels`, dynamical_lookups()), of the
+# covariates or of the basis functions; and some with a start (`starts`), the
+# initial value of the labels a cached fit lacks (dynamical_inits()).
 dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
-                                n_countries, types, classes_index,
+                                n_countries, types, classes_index, levels,
                                 options = dynamical_model_options(),
                                 country_region_index = NULL) {
 
   init <- init_frac_constants(types)
   noncentred <- seq(n_centred_rows + 1, n_covs)
+  covariates <- selection_column_names(options$selection_columns)
 
   variables <- list(
     # initial fractions susceptible: a prior logit-mean per type, and IID
@@ -158,6 +171,22 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     sigma_class = normal(0, 1, dim = n_covs, truncation = c(0, Inf)),
     logit_init_mean = normal(qlogis(init$relative_prior), 1, dim = n_types)
   )
+  labels <- list(
+    init_region_sd = dimension_labels(levels$types),
+    init_country_sd = dimension_labels(levels$types),
+    init_region_raw = dimension_labels(levels$regions, levels$types),
+    beta_overall = dimension_labels(covariates),
+    beta_class_raw = dimension_labels(covariates[noncentred], levels$classes),
+    beta_type_raw = dimension_labels(covariates[noncentred], levels$types),
+    sigma_overall = dimension_labels(covariates),
+    sigma_class = dimension_labels(covariates),
+    logit_init_mean = dimension_labels(levels$types))
+  # new to a cached fit, the selection effects start weak: a log effect of
+  # -4, with no deviations. The cached pop coefficients put on log
+  # population, which is near 0.8 where raw population is near 0, drove p to
+  # 0 and stalled a short run at its initial values
+  starts <- c(beta_overall = -4, beta_class_raw = 0, beta_type_raw = 0,
+              sigma_overall = 0.5, sigma_class = 0.5)
 
   # The centred rows of the selection effects (n_centred_rows): the class and
   # type effects themselves, with the priors the non-centred rows imply,
@@ -173,6 +202,11 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
                    variables$sigma_class[centred], FUN = "+")
   variables$beta_type_centred <- normal(
     variables$beta_class_centred[, classes_index], type_sd)
+  labels$beta_class_centred <- dimension_labels(covariates[centred],
+                                                levels$classes)
+  labels$beta_type_centred <- dimension_labels(covariates[centred],
+                                               levels$types)
+  starts[c("beta_class_centred", "beta_type_centred")] <- -4
 
   # Observation overdispersion per type, nested in class, on the logit scale,
   # as the replicate-assay estimate in R/fig_illustrate_bioassay_variability.R
@@ -194,6 +228,12 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   logit_rho_class <- rho$rho_mu + rho$rho_sigma_class * rho$rho_class_raw
   rho$logit_rho_type <- normal(logit_rho_class[classes_index],
                                rho$rho_sigma_type)
+  labels <- c(labels, list(
+    rho_mu = dimension_labels(),
+    rho_sigma_class = dimension_labels(),
+    rho_sigma_type = dimension_labels(),
+    rho_class_raw = dimension_labels(levels$classes),
+    logit_rho_type = dimension_labels(levels$types)))
 
   # Floor on bioassay mortality (#14, #47): predicted mortality
   # f + (1 - f) q_t, f the mortality of a fully resistant population
@@ -210,6 +250,13 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
                         truncation = c(0, Inf)),
     floor_sd_type = normal(0, floor_type_sd_scale, truncation = c(0, Inf)),
     floor_type_raw = normal(0, 1, dim = n_types))
+  labels <- c(labels, list(
+    floor_flat = dimension_labels(levels$classes),
+    floor_sd_type = dimension_labels(),
+    floor_type_raw = dimension_labels(levels$types)))
+  # new to a cached fit, the floors start low
+  starts <- c(starts, floor_flat = 0.002, floor_sd_type = 0.3,
+              floor_type_raw = 0)
 
   # The latent smooths of selection and of the floor (#47;
   # R/latent_smooth.R): standard normal raw weights of the basis functions
@@ -221,6 +268,16 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     smooth_sd_selection = normal(0, smooth_sd_scale, truncation = c(0, Inf)),
     smooth_raw_floor = normal(0, 1, dim = n_basis),
     smooth_sd_floor = normal(0, smooth_sd_scale, truncation = c(0, Inf)))
+  basis <- smooth_basis_labels(options$smooth)
+  labels <- c(labels, list(
+    smooth_raw_selection = dimension_labels(basis),
+    smooth_sd_selection = dimension_labels(),
+    smooth_raw_floor = dimension_labels(basis),
+    smooth_sd_floor = dimension_labels()))
+  # new to a cached fit, or of another basis, the smooths start flat, their
+  # sds inside their priors
+  starts <- c(starts, smooth_raw_selection = 0, smooth_sd_selection = 0.02,
+              smooth_raw_floor = 0, smooth_sd_floor = 0.02)
 
   # Coefficients of the standardised initial-state covariates on the logit
   # relative initial state, per type. Independent N(0, 1) rather than
@@ -240,6 +297,9 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     list(init_coef = normal(0, 1, dim = c(n_init_covs, n_types),
                             truncation = c(-Inf, 0)))
   }
+  labels$init_coef <- dimension_labels(options$init_covariates, levels$types)
+  # new to a cached fit, the coefficients start small, inside their constraint
+  starts["init_coef"] <- -0.05
 
   # Reversion to susceptibility (#24), estimated: a per-year rate per class,
   # constrained to move towards susceptibility; see reversion_kappa() for the
@@ -252,6 +312,11 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
     list(reversion_rate = normal(0, 0.3, truncation = c(0, Inf),
                                  dim = n_classes))
   }
+  labels$reversion_rate <- dimension_labels(levels$classes)
+  # new to a cached fit, the rate starts low: left to greta, it starts around
+  # 1 per year, which drives p to 1 at most assays and stalled a short run at
+  # its initial values
+  starts["reversion_rate"] <- 0.01
 
   # Centred countries (#25): init_country_level, each country's logit
   # relative initial state, with prior N(its region's, init_country_sd); the
@@ -277,8 +342,17 @@ dynamical_variables <- function(n_covs, n_classes, n_types, n_regions,
   country_sd <- sweep(zeros(n_countries, n_types), 2,
                       variables$init_country_sd, FUN = "+")
   variables$init_country_level <- normal(country_mean, country_sd)
+  labels$init_country_level <- dimension_labels(levels$countries,
+                                                levels$types)
 
-  c(variables, rho, floor, init_covariates, reversion, smooths)
+  variables <- c(variables, rho, floor, init_covariates, reversion, smooths)
+  labels <- labels[names(variables)]
+  stopifnot(all(vapply(names(variables), function(name) {
+    identical(as.integer(dim(variables[[name]])), lengths(labels[[name]]))
+  }, logical(1))))
+  list(variables = variables,
+       labels = labels,
+       starts = starts[intersect(names(starts), names(variables))])
 }
 
 # Reversion to susceptibility (#24). A fitness cost c of resistance, paid
@@ -407,97 +481,50 @@ floored_logit <- function(l, a) {
 }
 
 
-# Initial values for the model's `variables` from a cached set
-# (dynamical_inits_file, posterior means from an earlier fit): the cached values
-# of the variables the model has (where the dimensions match), and starts for
-# the initial-state coefficients, the reversion rate, the floor and the latent
-# smooths. Other variables start where greta puts them. The cached values are
-# matched to the model by name: `levels` are the model's types, classes, regions
-# and countries (build_dynamical_model()'s lookups$levels), matched to the
-# cached fit's (attribute "levels"), and a level new to the model starts at the
-# mean of the others; `columns` are the columns of the selection design matrix,
-# matched to the cached fit's (attribute "columns").
-dynamical_inits <- function(cached, variables, levels, columns = NULL) {
-  cached_levels <- attr(cached, "levels")
-  cached_columns <- attr(cached, "columns")
-  if (is.null(cached_levels)) {
-    stop("the cached initial values have no levels; remake them as in ",
-         "fit_model.R")
-  }
-  cached <- unclass(cached)
-  for (name in intersect(names(inits_levels), names(cached))) {
-    x <- as.matrix(cached[[name]])
-    for (d in which(!is.na(inits_levels[[name]]))) {
-      level <- inits_levels[[name]][d]
-      i <- match(levels[[level]], cached_levels[[level]])
-      if (d == 1) {
-        x <- x[i, , drop = FALSE]
-        x[is.na(i), ] <- rep(colMeans(x, na.rm = TRUE), each = sum(is.na(i)))
-      } else {
-        x <- x[, i, drop = FALSE]
-        x[, is.na(i)] <- rowMeans(x, na.rm = TRUE)
-      }
+# Initial values for every variable of a model built by
+# build_dynamical_model(), `built`, from a cached set (dynamical_inits_file:
+# posterior means of an earlier fit, with the labels of their dimensions as
+# dimnames, as fit_model.R saves them). Each variable's cached values are
+# matched to it by the labels of its dimensions (built$variable_labels):
+# cached labels the model lacks are dropped, and labels the cache lacks take
+# the variable's start (built$variable_starts) or, for a variable without one,
+# the mean of the cached values along that dimension. A variable the cache
+# lacks takes its start, and one without a start is an error.
+dynamical_inits <- function(cached, built) {
+  values <- lapply(setNames(nm = names(built$variables)), function(name) {
+    match_labels(cached[[name]], built$variable_labels[[name]],
+                 built$variable_starts[name], name)
+  })
+  do.call(greta::initials, values)
+}
+
+# The cached values `x` of the variable `name` (a matrix with dimnames, or
+# NULL if the cache lacks them) on the labels of its dimensions in the model,
+# `labels`, for dynamical_inits(): the labels the cache lacks at `start`, or
+# at the mean along the dimension where `start` is NA. Matched along each
+# dimension in turn, transposing after each so that the next is the rows.
+match_labels <- function(x, labels, start, name) {
+  if (is.null(x)) {
+    if (is.na(start)) {
+      stop("the cached initial values lack ", name, ", which has no start")
     }
-    cached[[name]] <- x
+    return(array(start, lengths(labels), labels))
   }
-  # the selection coefficients, by covariate (row): the cached values where
-  # the column is in the cached fit's design, and weak selection (a log effect
-  # of -4, no deviations) for new columns. The centred effects' rows are the
-  # first n_centred_rows columns, and the deviations' the others. The cached
-  # pop coefficients put on log population, which is near 0.8 where raw
-  # population is near 0, drove p to 0 and stalled a short run at its initial
-  # values
-  if (!is.null(columns)) {
-    stopifnot(!is.null(cached_columns))
-    selection_starts <- c(beta_overall = -4, sigma_overall = 0.5,
-                          sigma_class = 0.5, beta_class_centred = -4,
-                          beta_type_centred = -4, beta_class_raw = 0,
-                          beta_type_raw = 0)
-    centred <- seq_len(n_centred_rows)
-    rows_of <- function(design, name) {
-      if (grepl("_centred$", name)) design[centred] else
-        if (grepl("_raw$", name)) design[-centred] else design
+  for (dimension in labels) {
+    i <- match(dimension, rownames(x))
+    new <- is.na(i)
+    if (all(new) && is.na(start)) {
+      stop("the cached ", name, " has none of the model's labels, and no ",
+           "start")
     }
-    for (name in intersect(names(selection_starts), names(cached))) {
-      old <- as.matrix(cached[[name]])
-      old_columns <- rows_of(cached_columns, name)
-      if (nrow(old) != length(old_columns)) {
-        stop("the cached ", name, " is not in this model's variables; ",
-             "remake the cache from a fit of the model, as in fit_model.R")
-      }
-      new_columns <- rows_of(columns, name)
-      new <- matrix(selection_starts[[name]], length(new_columns), ncol(old))
-      shared <- match(new_columns, old_columns)
-      new[!is.na(shared), ] <- old[shared[!is.na(shared)], ]
-      cached[[name]] <- new
+    x <- t(x[i, , drop = FALSE])
+    if (any(new)) {
+      x[, new] <- if (is.na(start)) rowMeans(x[, !new, drop = FALSE]) else
+        start
     }
   }
-  out <- cached[intersect(names(cached), names(variables))]
-  # only where the dimensions match (a different selection design changes the
-  # number of covariates)
-  matches <- vapply(names(out), function(name) {
-    identical(as.integer(dim(out[[name]])),
-              as.integer(dim(variables[[name]])))
-  }, logical(1))
-  out <- out[matches]
-  # inside the constraint on the initial-state coefficients
-  if (!is.null(out$init_coef)) {
-    out$init_coef <- pmin(as.matrix(out$init_coef), -0.05)
-  }
-  # the other new terms start near the model without them. Left to greta, the
-  # reversion rate starts around 1 per year, which drives p to 1 at most
-  # assays and stalled a short run at its initial values. The floors start
-  # low, and the latent smooths flat (raw weights 0), their sds inside their
-  # priors
-  starts <- c(init_coef = -0.05, reversion_rate = 0.01, floor_flat = 0.002,
-              floor_sd_type = 0.3, floor_type_raw = 0,
-              smooth_raw_selection = 0, smooth_sd_selection = 0.02,
-              smooth_raw_floor = 0, smooth_sd_floor = 0.02)
-  for (name in intersect(names(starts), setdiff(names(variables),
-                                                names(out)))) {
-    out[[name]] <- array(starts[[name]], dim(variables[[name]]))
-  }
-  do.call(greta::initials, out)
+  dimnames(x) <- labels
+  x
 }
 
 
@@ -552,24 +579,10 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
 }
 
 
-# The levels each dimension of a cached variable is indexed by (NA: the
-# selection or initial-state covariates), for dynamical_inits()
-inits_levels <- list(
-  init_region_sd = "types", init_country_sd = "types",
-  logit_init_mean = "types", logit_rho_type = "types",
-  rho_class_raw = "classes", reversion_rate = "classes",
-  floor_flat = "classes", floor_type_raw = "types",
-  init_region_raw = c("regions", "types"),
-  init_country_level = c("countries", "types"),
-  beta_class_raw = c(NA, "classes"), beta_type_raw = c(NA, "types"),
-  beta_class_centred = c(NA, "classes"), beta_type_centred = c(NA, "types"),
-  init_coef = c(NA, "types"))
-
 # The cached initial values for the fits: posterior means of every variable
 # of a 4-chain full fit with the centred hierarchy (October 2026), with the
-# columns of its selection design as attribute "columns" and the names of its
-# types, classes, regions and countries as "levels". Not in git: remake it
-# from a fit's draws as in fit_model.R.
+# labels of their dimensions as dimnames (dynamical_variables()). Not in git:
+# remake it from a fit's draws as in fit_model.R.
 dynamical_inits_file <- "temporary/inits_refit.RDS"
 
 
@@ -588,7 +601,9 @@ dynamical_inits_file <- "temporary/inits_refit.RDS"
 #                     options$init_covariates is set
 #
 # Returns a list with the model, its variables (as passed to model()), the
-# derived terms, and two functions for predictions after sampling:
+# labels of their dimensions and their starts (dynamical_variables(), for
+# dynamical_inits()), the derived terms, and two functions for predictions
+# after sampling:
 # mortality(rows) returns the greta array of predicted bioassay mortality at the
 # (cell_id, type_id, year_id) of `rows`, and all_states() the predicted
 # mortality at every cell, type and year. Mortality is the state (the fraction
@@ -651,16 +666,18 @@ build_dynamical_model <- function(train_df,
     class_cells = unique(df$cell[df$class_id %in% smooth_class_ids]),
     classes = lookups$levels$classes)
 
-  variables <- dynamical_variables(n_covs = n_covs,
-                                   n_classes = n_classes,
-                                   n_types = n_types,
-                                   n_regions = n_regions,
-                                   n_countries = n_countries,
-                                   types = types,
-                                   classes_index = classes_index,
-                                   options = options,
-                                   country_region_index =
-                                     lookups$country_region_index)
+  declared <- dynamical_variables(n_covs = n_covs,
+                                  n_classes = n_classes,
+                                  n_types = n_types,
+                                  n_regions = n_regions,
+                                  n_countries = n_countries,
+                                  types = types,
+                                  classes_index = classes_index,
+                                  levels = lookups$levels,
+                                  options = options,
+                                  country_region_index =
+                                    lookups$country_region_index)
+  variables <- declared$variables
   terms <- dynamical_terms(variables,
                            classes_index = classes_index,
                            types = types,
@@ -732,6 +749,8 @@ build_dynamical_model <- function(train_df,
 
   list(model = m,
        variables = variables,
+       variable_labels = declared$labels,
+       variable_starts = declared$starts,
        terms = terms,
        population_mortality_vec = population_mortality_vec,
        mortality = mortality,

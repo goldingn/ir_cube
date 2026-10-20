@@ -90,9 +90,7 @@ settings <- eval(str2lang(Sys.getenv("IR_CUBE_MCMC_SETTINGS",
                                      "dynamical_mcmc_settings()")))
 
 # used cached posterior means as inits
-inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built$variables,
-                             levels = built$lookups$levels,
-                             columns = colnames(x_cell_years))
+inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built)
 
 system.time(
   draws <- run_dynamical_mcmc(m, built$variables, inits_one, settings)
@@ -108,19 +106,19 @@ summary(rhats$psrf)
 save.image(file = "temporary/fitted_model.RData")
 
 
-# save posterior means as initial values for a future model run
+# save posterior means as initial values for a future model run, with the
+# labels of their dimensions as dimnames, by which dynamical_inits() matches
+# them to a model
 
 # these have to match the arguments to model(), and need to be greta variable
 # nodes (not operation nodes)
 posts <- do.call(calculate,
                  c(built$variables, list(values = draws, nsim = 100)))
 
-post_means <- lapply(posts,
-                     function(x) {
-                       apply(x, 2:3, mean)
-                     })
-attr(post_means, "columns") <- colnames(x_cell_years)
-attr(post_means, "levels") <- built$lookups$levels
+post_means <- Map(function(x, labels) {
+                    array(apply(x, 2:3, mean), lengths(labels), labels)
+                  },
+                  posts, built$variable_labels[names(posts)])
 saveRDS(post_means, dynamical_inits_file)
 
 
