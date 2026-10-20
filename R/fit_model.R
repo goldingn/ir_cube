@@ -13,6 +13,7 @@ source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
 source("R/dynamical_model.R")
+source("R/chain_checks.R")
 
 # set the start of the timeseries considered in modelling (the start of
 # non-negligible levels of resistance) - assume it's before the mass-rollout of
@@ -101,6 +102,12 @@ rhats <- coda::gelman.diag(draws,
                            autoburnin = FALSE,
                            multivariate = FALSE)
 summary(rhats$psrf)
+
+# whether the chains agree (R/chain_checks.R), saved with the fit for
+# R/fit_checks.R
+chain_check <- check_chains(draws, chain_log_density(m, draws),
+                            built$variable_labels)
+cat(chain_check_lines(chain_check), sep = "\n")
 
 # save fitted model to use for plotting and predictions
 save.image(file = "temporary/fitted_model.RData")

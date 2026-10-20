@@ -14,7 +14,8 @@
 # Because the greta arrays are local to this function they go out of scope when
 # it returns, so the model does not need to be purged by hand between folds.
 
-# dynamical_logit() and paired_draw_index(), also for fold_assay_draws()
+# dynamical_logit() and paired_draw_index(), also for fold_assay_draws(), and
+# check_chains() (R/chain_checks.R)
 source("R/dynamical_predictions.R")
 
 fit_fold <- function(train_df,
@@ -57,6 +58,11 @@ fit_fold <- function(train_df,
   ess <- coda::effectiveSize(draws)
   report("sampled %d per chain | raw parameter ESS min %.0f median %.0f",
          sampled, min(ess, na.rm = TRUE), median(ess, na.rm = TRUE))
+
+  # whether the chains agree (R/chain_checks.R)
+  chain_check <- check_chains(draws, chain_log_density(built$model, draws),
+                              built$variable_labels)
+  for (line in chain_check_lines(chain_check)) report("%s", line)
 
   # Predictions at the held-out data, by calculate() on the draws without
   # nsim, which keeps the MCMC order (nsim resamples), so their effective
@@ -158,6 +164,7 @@ fit_fold <- function(train_df,
        p_draws_before = p_draws_before,
        before_df = before_df,
        convergence = convergence,
+       chain_check = chain_check,
        ess = ess,
        ess_p = ess_p,
        ess_rho = ess_rho,

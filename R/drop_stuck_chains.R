@@ -1,5 +1,5 @@
 # Leave out MCMC chains that stopped moving (stuck_chains(), in
-# R/dynamical_predictions.R) from the full fit. A fold's are dropped by
+# R/chain_checks.R) from the full fit. A fold's are dropped by
 # R/run_one_fold.R before it is saved (drop_fold_chains()).
 #
 #   Rscript R/drop_stuck_chains.R <file> [<file> ...]
