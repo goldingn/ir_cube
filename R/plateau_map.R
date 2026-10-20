@@ -18,7 +18,9 @@
 # With a logits file (from R/net_w_screen.R) and the name of one of its
 # elements, the predictions are those logits rather than the fit's.
 #
-# Writes figures/plateau_map_<label>[_w<name>].png.
+# Writes figures/plateau_map_<label>[_w<name>].png and the mapped change as
+# outputs/hinge_screen/plateau_grid_<label>[_w<name>].csv, and the pyrethroid
+# bioassays' residuals as plateau_points_<label>[_w<name>].csv.
 
 arguments <- commandArgs(trailingOnly = TRUE)
 fit_file <- arguments[1]
@@ -61,7 +63,7 @@ window <- case_when(between(df$year_start, early[1], early[2]) ~ 0,
                     between(df$year_start, late[1], late[2]) ~ 1)
 d <- tibble(lon = cell_xy[df$cell_id, 1], lat = cell_xy[df$cell_id, 2],
             residual = qlogis((df$died + 0.5) / (n + 1)) - predicted,
-            late = window,
+            late = window, year = df$year_start, species = df$species,
             w = 1 / ((1 / (df$died + 0.5) + 1 / (n - df$died + 0.5)) *
                        (1 + (n - 1) * rho)))[
   df$insecticide_class == "Pyrethroids" & !is.na(window), ] |>
@@ -106,6 +108,10 @@ p <- ggplot(grid, aes(lon, lat, fill = change)) +
                         "missing plateau); blue: the data fell further.",
                         "Grey: no data in both windows")) +
   theme_minimal()
-ggsave(sprintf("figures/plateau_map_%s%s.png", label,
-               if (is.na(logits_name)) "" else paste0("_w", logits_name)), p, width = 8,
+suffix <- if (is.na(logits_name)) "" else paste0("_w", logits_name)
+ggsave(sprintf("figures/plateau_map_%s%s.png", label, suffix), p, width = 8,
        height = 8, dpi = 130, bg = "white")
+write.csv(grid, sprintf("outputs/hinge_screen/plateau_grid_%s%s.csv", label,
+                        suffix), row.names = FALSE)
+write.csv(d, sprintf("outputs/hinge_screen/plateau_points_%s%s.csv", label,
+                     suffix), row.names = FALSE)
