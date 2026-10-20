@@ -41,18 +41,6 @@ draw_chain <- function(draws) {
   rep(seq_along(draws), vapply(draws, nrow, integer(1)))
 }
 
-# The chains of `draws` that stopped moving: those whose share of distinct
-# draws is below `min_distinct`. With one step size for all chains
-# (windowed_hmc()), a chain can sit where every trajectory at that step size
-# fails, and then repeats one draw: in the October 2026 run, one chain of
-# spatial blocks fold 1 kept a single draw for all 3,000 samples.
-stuck_chains <- function(draws, min_distinct = 0.5) {
-  which(vapply(draws, function(chain) {
-    chain <- as.matrix(chain)
-    nrow(unique(chain)) / nrow(chain) < min_distinct
-  }, logical(1)))
-}
-
 # `draws` (a greta_mcmc_list) with only the chains `keep`, in the raw
 # free-state draws that calculate() reads as well.
 drop_chains <- function(draws, keep) {

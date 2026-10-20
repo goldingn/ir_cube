@@ -22,6 +22,8 @@ source("R/greta_setup.R")
 source("R/model_covariates.R")
 source("R/latent_smooth.R")
 source("R/windowed_hmc.R")
+# stuck_chains()
+source("R/chain_checks.R")
 
 
 # model options ------------------------------------------------------------
@@ -594,6 +596,9 @@ dynamical_inits_file <- "R/dynamical_inits.RDS"
 # saved by fit_model.R, after R/drop_stuck_chains.R): the posterior mean of
 # every variable, whose elements greta's draws hold in R's column-major order.
 write_dynamical_inits <- function(draws, built) {
+  if (length(stuck_chains(draws)) > 0) {
+    stop("drop the stuck chains first (R/drop_stuck_chains.R)")
+  }
   means <- colMeans(as.matrix(draws))
   inits <- lapply(setNames(nm = names(built$variables)), function(name) {
     labels <- built$variable_labels[[name]]
