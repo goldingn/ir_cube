@@ -93,13 +93,13 @@ mkdir -p "$job/temporary" "$job/outputs/cv_draws" "$job/figures"
 curl -fsSL "https://codeload.github.com/$repo/tar.gz/$CODE_REF" \
   | tar -xz -C "$job" --strip-components=1 --wildcards '*/R/' '*/tmb/'
 ln -s "$root/data" "$job/data"
-# copies, not links: fit_model.R rewrites the inits file
+# copies, not links, so a job cannot change the volume's inputs
 cp "$root"/temporary/*.RDS "$job/temporary/"
 cp "$root"/outputs/bioassay_rho*.csv "$job/outputs/"
 printf '%s' "${IR_CUBE_MODEL_OPTIONS:-}" > "$job/job.options"
 cat > "$job/job.spec" <<EOF
 code: $repo@$CODE_REF
-inputs (sha256): bioassays $(sha256sum < "$root/data/clean/all_gambiae_complex_data.RDS" | cut -c1-16), initial values $(sha256sum < "$root/temporary/inits_refit.RDS" | cut -c1-16)
+inputs (sha256): bioassays $(sha256sum < "$root/data/clean/all_gambiae_complex_data.RDS" | cut -c1-16) (the initial values are in the commit, R/dynamical_inits.RDS)
 command: ${command[*]}
 IR_CUBE_MODEL_OPTIONS: ${IR_CUBE_MODEL_OPTIONS:-}
 IR_CUBE_MCMC_SETTINGS: ${IR_CUBE_MCMC_SETTINGS:-}

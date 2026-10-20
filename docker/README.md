@@ -58,8 +58,8 @@ install -D -m 555 docker/irpod ~/.local/bin/irpod
 ```
 
 **Inputs:** from the repository root, `irpod sync` uploads `data/clean/`, the
-UNSD table, `temporary/*.RDS` and `outputs/bioassay_rho*.csv`. Sync again
-after `fit_model.R` rewrites the cached initial values.
+UNSD table, `temporary/*.RDS` and `outputs/bioassay_rho*.csv`. The initial
+values come with the code (`R/dynamical_inits.RDS`).
 
 **A job:** create a pod with the image, the volume at `/workspace`, and these
 environment variables:
@@ -84,8 +84,9 @@ so on a 32 GB pod run two such steps at a time.
 The job runs in `jobs/<name>/` on the volume, with its own `R/`, `tmb/`,
 `temporary/` and `outputs/`, and writes `job.log`, `job.DONE` or
 `job.FAILED` (for `--in`, `<name>.log` and so on), and `job.spec`: the commit,
-checksums of the bioassay data and initial values (the job reads the volume's
-live `data/`, which a later sync changes), the command and the options. A name already taken
+a checksum of the bioassay data (the job reads the volume's live `data/`,
+which a later sync changes), the command and the options. The image's copy of
+`run_pod_job.sh` is updated only when the image is rebuilt. A name already taken
 fails at once, so a restarted container does not run the job twice. Then:
 
 ```bash
