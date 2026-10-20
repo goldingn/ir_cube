@@ -20,8 +20,6 @@
 source("R/dynamical_model.R")
 # thin_draws() and max_draws
 source("R/validation_scoring.R")
-# stuck_chains()
-source("R/chain_checks.R")
 
 # Draw indices into as.matrix(fold$draws) that the stored predictions
 # correspond to: newer folds thin p_draws to `maximum` at fitting time with

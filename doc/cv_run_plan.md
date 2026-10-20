@@ -98,16 +98,9 @@ the fold's log with a `WARNING` line; the run continues. It reports the worst
 Rhat over the remaining chains, and the number of parameters above 1.01,
 however high, without stopping.
 
-Every fit, folds and full fit, also checks whether its chains agree
-(`check_chains()`, `R/chain_checks.R`, #39). All chains start from the same
-values, so a chain in another mode shows only as disagreement between chains.
-The log gives the rank-normalised Rhat of the log density over the kept
-chains and each chain's mean, and a `WARNING` line when that Rhat is above
-1.01, naming the elements whose chain means differ most. `R/fit_checks.R` puts
-all of this in one table, `outputs/fit_checks.csv` (one row per fit), and one
-figure, `figures/fit_checks.png` (the floor, smooth, initial-state,
-overdispersion, reversion and selection-sd parameters by fit and chain): read
-both before scoring.
+Every fit also checks whether its chains agree (`R/chain_checks.R`, #39),
+with a `WARNING` line when they do not. Read `R/fit_checks.R`'s table and
+figure of every fit before scoring.
 
 Each fold also saves the dynamical model's logit draws at its training and
 held-out assays, paired with `p_draws`, to
@@ -139,7 +132,7 @@ leapfrog steps (`Lmin`, `Lmax`), redrawn every 10 iterations, target
 acceptance 0.65, 4 chains, 2,000 warmup and 1,500 samples. The model samples the
 countries' initial states centred and starts every chain from
 `R/dynamical_inits.RDS` (`dynamical_inits_file`): posterior means of a named
-full fit, in git, which no fit rewrites (#39); `R/make_dynamical_inits.R`
+full fit, in git, which no fit rewrites (#39); `write_dynamical_inits()`
 remakes it from a new full fit.
 
 **Centred selection hierarchy (#48).** Since #48 the model also samples the

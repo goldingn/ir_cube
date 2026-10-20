@@ -13,7 +13,6 @@ source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_subset.R")
 source("R/dynamical_model.R")
-source("R/chain_checks.R")
 
 # set the start of the timeseries considered in modelling (the start of
 # non-negligible levels of resistance) - assume it's before the mass-rollout of
@@ -113,4 +112,5 @@ cat(chain_check_lines(chain_check), sep = "\n")
 save.image(file = "temporary/fitted_model.RData")
 
 # the initial values are not rewritten from this fit: to start later fits from
-# it, run R/drop_stuck_chains.R and then R/make_dynamical_inits.R on it
+# it, run R/drop_stuck_chains.R on it, then write_dynamical_inits(draws, built)
+# (R/dynamical_model.R) with the fit loaded

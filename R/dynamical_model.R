@@ -22,6 +22,8 @@ source("R/greta_setup.R")
 source("R/model_covariates.R")
 source("R/latent_smooth.R")
 source("R/windowed_hmc.R")
+# stuck_chains()
+source("R/chain_checks.R")
 
 
 # model options ------------------------------------------------------------
@@ -583,12 +585,29 @@ run_dynamical_mcmc <- function(m, variables, inits_one,
 # named full fit, with the labels of their dimensions as dimnames
 # (dynamical_variables()). In git, so that the commit a fit runs from fixes
 # where it starts, and no fit rewrites it; in R/ because the pods take only R/
-# and tmb/ from the commit (docker/run_pod_job.sh). To replace it, run
-# R/make_dynamical_inits.R on a full fit and name that fit here.
+# and tmb/ from the commit (docker/run_pod_job.sh). To replace it, use
+# write_dynamical_inits() on a full fit and name that fit here.
 # Now: the 4-chain full fit v5pg_s005_sd025_full of 12 October 2026, the new
 # dynamical model (#46) before its smooths' basis changed, converted to the
 # centred hierarchy (#49) and labelled (#52).
 dynamical_inits_file <- "R/dynamical_inits.RDS"
+
+# Write dynamical_inits_file from a full fit's `draws` and model `built` (as
+# saved by fit_model.R, after R/drop_stuck_chains.R): the posterior mean of
+# every variable, whose elements greta's draws hold in R's column-major order.
+write_dynamical_inits <- function(draws, built) {
+  if (length(stuck_chains(draws)) > 0) {
+    stop("drop the stuck chains first (R/drop_stuck_chains.R)")
+  }
+  means <- colMeans(as.matrix(draws))
+  inits <- lapply(setNames(nm = names(built$variables)), function(name) {
+    labels <- built$variable_labels[[name]]
+    x <- means[grep(paste0("^", name, "(\\[|$)"), names(means))]
+    stopifnot(length(x) == prod(lengths(labels)))
+    array(x, lengths(labels), labels)
+  })
+  saveRDS(inits, dynamical_inits_file)
+}
 
 
 # the model ------------------------------------------------------------------
