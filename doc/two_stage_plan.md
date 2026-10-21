@@ -9,21 +9,20 @@ Issue idem-lab/ir_cube#21. Stacked on #12 (`posterior-predictive-validation`). C
 
 Per insecticide type, on the logit scale, for assay i at pixel s and year t:
 
-λ_i = m_i + ω(s) + ξ(s, t) + u(s, t) + p(s)
+λ_i = m_i + ω(s) + ξ(s, t) + u(s, t) + p(s) + sy(study(i), t)
 
 - m: the dynamical model's posterior mean logit at the training assays (`m_ref`).
 - ω: a static Matérn field, correcting the initial conditions.
 - ξ(s, t) = Σ η: the accumulation from ξ(·, t0 = 1995) = 0 of annual anomalies η, AR(1) in time (φ) with Matérn innovations. It is undamped, so a forecast holds the accumulated deviation and its mean plateaus at a rate set by φ.
-- u (per pixel-year, SD τ) and p (per pixel, SD σ_p): iid.
+- u (per pixel-year, SD τ), p (per pixel, SD σ_p) and sy (per study-year, SD σ_sy; #55, with the study label of #54): iid noise.
 - Meshes (`build_correction_meshes()`):
   - In the data region, ω has ≤ 5000 nodes (15 km cutoff, inner edges ≤ 150 km) and ξ has ≤ 2500 nodes.
   - Around both, a coarse outer region (edges ≤ 800 km) extends 1500 km beyond the data and the prediction mask, so every map cell is inside the mesh. Callers pass the mask's coordinates (`prediction_mask_coords()`, from `data/clean/raster_mask.tif`).
-- Priors (`correction_priors()`, #34): the ranges of ω and η are bounded to 10–3,000 km, with 95% of the prior in 50–1,500 km; persistence 1/(1 − φ) is bounded to 2–15 years, with 99% of the prior in 3–10 years; the SDs are half-normal, P(σ_ω > 1) = 0.05, P(σ_η > 0.05) = 0.05, and P(sd > 2) = 0.05 for the noise terms.
-- Noise terms: u (per pixel-year), p (per pixel) and sy (per study-year, #55; the study label of #54).
+- Priors (`correction_priors()`, #34): normal on log range for ω and η, with 95% of the prior in 50–1,500 km (the form of R-INLA's non-PC SPDE priors); normal on logit φ, with 99% of the prior for the persistence 1/(1 − φ) in 3–10 years; half-normal SDs, P(σ_ω > 1) = 0.05, P(σ_η > 0.05) = 0.05, and P(sd > 2) = 0.05 for the noise terms.
+  - Persistence: without the study-year term, ξ fitted survey noise and φ ran to 0.01–0.07, so ξ was close to a random walk. With sy, the data identify φ: for Deltamethrin on the full data, a flat prior on logit φ gives φ = 0.46 (persistence 1.8 years; profile interval roughly 1.3–2.6 years), and the 3–10 year prior raises it to φ = 0.65 (2.9 years) at a cost of 2 nats. The prior is kept: resistance does not swing from year to year. The paper reports both.
 - Fitting (`fit_correction()`, #34):
-  - Stage A: the empirical logit, with its variance inflated by the external per-type ρ (`outputs/bioassay_rho_hierarchical.csv`). Hyperparameters by penalised maximum marginal likelihood in TMB, as starting values.
-  - The hyperparameters θ at the penalised maximum of TMB's Laplace approximation to the marginal likelihood of the beta-binomial counts.
-  - The posterior of θ by INLA's central composite design (81 points for the 8 hyperparameters); predictions mix the conditional latent posteriors N(mode(θ_j), H(θ_j)⁻¹) over the points. Importance sampling (`R/two_stage_is.R`, `R/check_two_stage_is.R`) checks the CCD posterior of θ.
+  - The hyperparameters θ at the penalised maximum of TMB's Laplace approximation to the marginal likelihood of the beta-binomial counts, at the external per-type ρ (`outputs/bioassay_rho_hierarchical.csv`), started from the priors' medians.
+  - The posterior of θ by INLA's central composite design (81 points for the 8 hyperparameters); predictions mix the conditional latent posteriors N(mode(θ_j), H(θ_j)⁻¹) over the points.
 - Cut posterior: the dynamical model is never updated. Each dynamical draw shifts the latent mode by H⁻¹A′W(m_ref − m_draw), linearised at the mode (W the beta-binomial weights), and is paired with its own latent draw.
 
 **Target.** The prediction target is m + ω + ξ: that is what the maps, the published figures and the supplement figures show. u, p and sy are observation-level noise. They are in the fitted model, so that this noise stays out of ω and ξ. They enter predictions only of new assays, and only as fresh draws, N(0, τ²) per pixel-year, N(0, σ_p²) per pixel and N(0, σ_sy²) per study-year, never as their fitted values; fresh u and p also enter the maps' n\*_local. This reverses #21, which put u in the target, and an earlier version of this run sheet, which put p in it. Cross-validation scores the predictive distribution of held-out assays, so it includes fresh noise (`predict_correction()`).
@@ -103,9 +102,11 @@ Scores are from the cross-validation of the time. A decision's numbers can preda
 | ξ (`omega_xi_u` vs `omega_u`) | Forecasting +0.33 log score, +10 points explained; blocks +0.07, +6. Without ξ, forecasting gains nothing over the dynamical model in variance explained. | yes | full tag |
 | Meshes omega5000_xi2500 (vs four coarser configurations) | Best everywhere. Blocks +0.055 log score and +2.1 points over the base mesh; ~11 GB per fit. | yes | full tag |
 | `m_ref` = posterior mean (vs PSIS leave-out mean) | Leave-out shift 0.04–0.05 residual SD; double counting negligible. | posterior mean | full tag |
-| Stage B, PQL on the beta-binomial (vs Gaussian empirical logit) | +0.06 to +0.19 log score; 95% coverage 0.86–0.88 → 0.90–0.92; removes the excess of 100% assays in the training residuals. | yes | — |
+| Stage B, PQL on the beta-binomial (vs Gaussian empirical logit) | +0.06 to +0.19 log score; 95% coverage 0.86–0.88 → 0.90–0.92; removes the excess of 100% assays in the training residuals. | yes, then replaced by Laplace + CCD | — |
+| Laplace + CCD over θ (vs PQL with θ plugged in), #34 | On blocks 1 and forecasting 2014 for Deltamethrin, Fenitrothion and Pirimiphos-methyl, every latent × θ method was within 0.06 nats per assay of the PQL fit, and Laplace with θ plugged in within 0.01 of Laplace with importance sampling over θ. CCD integrates over θ without Monte Carlo error. | yes | — |
 | Pixel effect p | +0.003 to +0.005 log score; about 30% fewer ω hotspots. | yes, as observation noise | — |
-| Survey effect s | +0.006 to +0.013 log score, all from a wider held-out predictive distribution; none in the mean or the map. | no | options tag |
+| Survey effect s | +0.006 to +0.013 log score, all from a wider held-out predictive distribution; none in the mean or the map. | no; superseded by sy | options tag |
+| Study-year noise sy, #55 | Variance explained against the current model's map, blocks 1: +3.8 points pooled, +6.0 for Deltamethrin. Deltamethrin σ_η 0.24 → 0.11–0.15, persistence 2.4 → 3.1–3.6 years; ξ's 95% band at a pixel without data 8.1–9.4 → 5.0–5.6 logit wide. | yes, as observation noise | — |
 | Joint ρ | Estimated ρ is a median of 0.35 × the replicate estimate, with the noise moved into u (a PQL bias also seen in simulation); −0.04 to −0.07 log score at its own ρ. | no | options tag |
 | Damped ξ (ψ) | Forecasting −0.038 log score, −0.12 and −0.16 at 4–5 years; spatial experiments unchanged. | no | options tag |
 | u and p in the target | u and p are observation noise, as fresh draws for new assays only (see Final model). | target m + ω + ξ | — |
@@ -114,8 +115,7 @@ Scores are from the cross-validation of the time. A decision's numbers can preda
 ## Open issues
 
 - #28: the temporal panel of #12's variance-explained bar charts should score change, not level.
-- Wide intervals away from data, from ξ close to a random walk (φ ≈ 0.01–0.07 under the earlier priors), were addressed in #34 and #55: the bounded persistence and half-normal σ_η priors, and the study-year noise term that takes the survey noise ξ was fitting.
-- Residual narrowness. After stage B, interior training residuals are narrower than v implies (SD 0.70 vs 0.95). A lower ρ does not explain it (joint ρ). The stage-A standardisation used by the diagnostic is a candidate.
+- Residual narrowness. Under the PQL fit, interior training residuals were narrower than their working variance implied (SD 0.70 vs 0.95), and a lower ρ did not explain it (joint ρ). Not rechecked under Laplace + CCD.
 
 ## How to run
 

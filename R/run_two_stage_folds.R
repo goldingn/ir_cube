@@ -17,14 +17,15 @@
 #              type's test assays with the paired dynamical draws, so every
 #              draw sits on its own dynamical draw (the cut posterior):
 #              m + omega + xi plus fresh draws of the noise terms u (per
-#              held-out pixel-year) and p (per held-out pixel), never their
-#              fitted values; and the same draws without u and p, the map
-#              plogis(m + omega + xi), whose posterior mean is what the maps
-#              show and what the point metrics score (#32); and, for the
-#              forecasting folds, the map's posterior mean at the type's
-#              before-window assays (training assays in the window before the
-#              cut), for the change score (#36). Saved to
-#              outputs/two_stage/parts/;
+#              held-out pixel-year), p (per held-out pixel) and sy (per
+#              held-out study-year), never their fitted values; and the
+#              same draws without the noise, the map plogis(m + omega + xi),
+#              whose posterior mean is what the maps show and what the point
+#              metrics score (#32); and, for the forecasting folds, the
+#              map's posterior mean at the type's before-window assays
+#              (training assays in the window before the cut), for the
+#              change score (#36). All three from one set of field draws.
+#              Saved to outputs/two_stage/parts/;
 #   assemble   combine the types into
 #              outputs/cv_draws/two_stage__<experiment>__<fold>.rds and the
 #              fold's rows of outputs/two_stage/fit_summary.csv. A type with
@@ -35,7 +36,7 @@
 # p_draws) plus map_draws (draws x held-out assays of the map), rho_type, the
 # per-type rho of the fit (a data frame of insecticide_type and rho, from the
 # table rho_lookup() scores against), fallback_types and fit_summary (which
-# holds each type's tau and sigma_p, the model floor's inputs). The
+# holds each type's tau, sigma_p and sigma_sy, the model floor's inputs). The
 # forecasting folds also carry map_before, the map's posterior mean at each
 # assay of the dynamical fold's before_df, in its order (the dynamical
 # posterior mean for fallback types). Parts saved before map_before was added
@@ -193,39 +194,34 @@ time_fit <- system.time(
   }
 )[["elapsed"]]
 
+# One set of joint draws of the correction fields, mixed over the CCD points
+# and each on its own dynamical draw (the cut posterior), projected to: the
+# held-out assays' coordinates with fresh noise (the predictive draws); their
+# pixel centres without noise (the map); and, for the forecasting folds, the
+# before-window assays without noise (the map's posterior mean there, for the
+# change score, #36: training assays, so omega + xi are fitted there)
 p_draws <- NULL
 map_draws <- NULL
+map_before <- NULL
 time_predict <- system.time(
   if (!is.null(fit) && fit$opt$convergence == 0 && length(test_rows) > 0) {
-    # held-out predictive draws at the assays' coordinates, then the map at
-    # their pixel centres in a second call, so the predictive draws are
-    # unchanged by it
-    lambda <- predict_correction(fit, test_k, m_draws_train = m_draws_train,
-                                 m_draws_new = m_draws_test,
-                                 n_draws = nrow(m_draws_train))
-    stopifnot(!anyNA(lambda))
-    p_draws <- plogis(lambda)
-    lambda <- predict_correction(fit, test_centres_k,
-                                 m_draws_train = m_draws_train,
-                                 m_draws_new = m_draws_test,
-                                 n_draws = nrow(m_draws_train), noise = FALSE)
-    stopifnot(!anyNA(lambda))
-    map_draws <- plogis(lambda)
-    rm(lambda)
+    fields <- correction_node_draws(
+      fit, unique(c(test_k$year, before_k$year)), nrow(m_draws_train),
+      m_draws_train = m_draws_train)
+    p_draws <- plogis(t(t(m_draws_test) +
+                          project_correction(fit, fields, test_k,
+                                             noise = TRUE)))
+    map_draws <- plogis(t(t(m_draws_test) +
+                            project_correction(fit, fields, test_centres_k)))
+    if (!is.null(m_draws_before)) {
+      map_before <- rowMeans(plogis(t(m_draws_before) +
+                                      project_correction(fit, fields,
+                                                         before_k)))
+    }
+    rm(fields)
+    stopifnot(!anyNA(p_draws), !anyNA(map_draws), !anyNA(map_before))
   }
 )[["elapsed"]]
-
-# The map's posterior mean at the before-window assays, for the change score
-# (#36): training assays, so omega + xi are fitted there. Drawn after the
-# held-out draws, so those are unchanged
-map_before <- NULL
-if (!is.null(p_draws) && !is.null(m_draws_before)) {
-  map_before <- colMeans(plogis(predict_correction(
-    fit, before_k, m_draws_train = m_draws_train,
-    m_draws_new = m_draws_before, n_draws = nrow(m_draws_train),
-    noise = FALSE)))
-  stopifnot(!anyNA(map_before))
-}
 
 summary <- bind_cols(
   tibble(insecticide_type = type, rho = rho_type[[type]],

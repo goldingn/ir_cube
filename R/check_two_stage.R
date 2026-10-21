@@ -6,36 +6,31 @@
 # Data are simulated from the final model, omega + xi + u + p + sy, on the
 # Lambda-cyhalothrin bioassay sites with the final model's meshes, as
 # beta-binomial counts. The dynamical prediction m puts much of the latent
-# lambda near mortality 1 (and some near 0), as in the real data, where the
-# empirical logit of stage A is pinned by its +0.5 correction. A subset of
+# lambda near mortality 1 (and some near 0), as in the real data. A subset of
 # sites is revisited often, so that p is identified, and each pixel-year
 # belongs to a study, most studies covering several pixels in a year, so that
 # sy is identified. The truth is simulated on the fitting meshes, so this
 # checks the implementation, not discretisation.
 #
-#   1. the stage-A mode is H^-1 A' D (z - m): the Hessian identity the
-#      cut-posterior shift relies on;
-#   2. the cut-posterior shift H^-1 A' D (m_ref - m_new) of stage A against
-#      refitting its latent mode in TMB with the perturbed m and the
-#      hyperparameters fixed (exact for the Gaussian working model), and the
-#      error of the linearised shift H^-1 A' W (m_ref - m_new) of the final
-#      (Laplace) fit, which is read, not asserted;
-#   3. the final fit's latent mode solves the score equation of the
-#      beta-binomial log posterior;
-#   4. the CCD design weights reproduce a Gaussian's mean and covariance;
-#   5. recovery of the hyperparameters: at theta_hat and their CCD posterior
+#   1. the fit's latent mode solves the score equation of the beta-binomial
+#      log posterior;
+#   2. the CCD weights (ccd_weights()) reproduce a Gaussian's mean and
+#      covariance;
+#   3. the error of the linearised cut-posterior shift H^-1 A' W
+#      (m_ref - m_new) against refitting the latent mode in TMB with a
+#      perturbed m at the same theta;
+#   4. recovery of the hyperparameters: at theta_hat and their CCD posterior
 #      means and 95% intervals;
-#   6. coverage, at new pixels, new years at training pixels, training
+#   5. coverage, at new pixels, new years at training pixels, training
 #      pixel-years and 1-5 year forecasts: of a new assay's lambda by
-#      predict_correction() (fresh noise), stage A vs the final fit mixed over
-#      the CCD points, and of the target m + omega + xi by the final fit's
-#      draws without noise;
-#   7. the posterior-mean fields (correction_node_draws(mean = TRUE)) against
+#      predict_correction() (fresh noise), mixed over the CCD points, and of
+#      the target m + omega + xi by the draws without noise;
+#   6. the posterior-mean fields (correction_node_draws(mean = TRUE)) against
 #      the mean of the draws, for the smooth terms the maps show.
 #
-# Checks 1-4 are identities, met to ~1e-10 when the code is right; the script
-# stops if any misses by more than `tolerance`. The others are statistical and
-# are read, not asserted.
+# Checks 1 and 2 are identities, met to ~1e-10 when the code is right; the
+# script stops if either misses by more than `tolerance`. The others are
+# statistical and are read, not asserted.
 
 source("R/two_stage_correction.R")
 
@@ -180,46 +175,13 @@ cat(sprintf(paste("simulated %i assays (%.0f%% at 100%%, %.0f%% at 0%%),",
 
 # fits ------------------------------------------------------------------------------
 
-fit_a <- fit_stage_a(train, t0 = t0, T = T_data, meshes = meshes)
 fit <- fit_correction(train, t0 = t0, T = T_data, meshes = meshes)
-cat(sprintf(paste("stage A: convergence %i, %.0f s. Final: convergence %i,",
-                  "max gradient %.1e, %i CCD points; stage A %.0f s, Laplace",
-                  "%.0f s, CCD %.0f s\n"),
-            fit_a$opt$convergence, fit_a$timings[["total"]],
+cat(sprintf(paste("fit: convergence %i, max gradient %.1e, %i CCD points;",
+                  "Laplace %.0f s, CCD %.0f s\n"),
             fit$opt$convergence, fit$max_gradient, nrow(fit$ccd$theta),
-            fit$timings[["stage_a"]], fit$timings[["laplace"]],
-            fit$timings[["ccd"]]))
+            fit$timings[["laplace"]], fit$timings[["ccd"]]))
 
-cat("\n1. stage-A mode vs H^-1 A' D (z - m): max |diff| = ")
-rhs <- Matrix::crossprod(fit_a$A_latent, fit_a$precision_obs *
-                           (fit_a$tmb_data$z - fit_a$m_ref))
-check_1 <- max(abs(as.vector(Matrix::solve(fit_a$H_chol, rhs)) - fit_a$mode))
-cat(sprintf("%.2e\n", check_1))
-stopifnot(check_1 < tolerance)
-
-m_perturbed <- train$m + 0.3 * sin(train$x_km / 400) + rnorm(nrow(train), 0, 0.1)
-refit_mode <- function(f, likelihood) {
-  data <- f$tmb_data
-  data$m <- m_perturbed
-  data$likelihood <- likelihood
-  obj <- correction_adfun(data, f$par_list, fix_hyper = TRUE)
-  invisible(obj$fn(obj$par))
-  obj$env$last.par[obj$env$random]
-}
-cat("2. stage-A cut-posterior shift vs refit with perturbed m: max |diff| = ")
-shifted_a <- fit_a$mode + correction_mode_shift(fit_a, m_perturbed)[, 1]
-check_2 <- max(abs(shifted_a - refit_mode(fit_a, 0L)))
-cat(sprintf("%.2e (max |shift| %.3f)\n", check_2,
-            max(abs(shifted_a - fit_a$mode))))
-stopifnot(check_2 < tolerance)
-shifted <- fit$mode + correction_mode_shift(fit, m_perturbed)[, 1]
-cat(sprintf(paste("   final fit, linearised shift vs refit: max |diff| %.3f,",
-                  "RMS %.4f (max |shift| %.3f)\n"),
-            max(abs(shifted - refit_mode(fit, 1L))),
-            sqrt(mean((shifted - refit_mode(fit, 1L)) ^ 2)),
-            max(abs(shifted - fit$mode))))
-
-cat("3. beta-binomial score at the final fit's mode: max |gradient| = ")
+cat("\n1. beta-binomial score at the fit's mode: max |gradient| = ")
 A <- fit$A_latent
 lambda_hat <- fit$m_ref + as.vector(A %*% fit$mode)
 p_hat <- plogis(lambda_hat)
@@ -236,26 +198,35 @@ score <- as.vector(Matrix::crossprod(A, dloglik)) - q_theta
 cat(sprintf("%.2e (max |Q theta| %.2e)\n", max(abs(score)), max(abs(q_theta))))
 stopifnot(max(abs(score)) < 1e-6 * max(1, abs(q_theta)))
 
-cat("4. CCD weights on a Gaussian: max |mean|, max |cov - I| = ")
+cat("2. CCD weights on a Gaussian: max |mean|, max |cov - I| = ")
 d <- ncol(fit$ccd$theta)
 z <- ccd_design(d)
-n_points <- nrow(z)
-w <- c(1, rep(exp(d * 1.1 ^ 2 / 2) / ((n_points - 1) * (1.1 ^ 2 - 1)),
-              n_points - 1)) * exp(-rowSums(z ^ 2) / 2)
-w <- w / sum(w)
+w <- ccd_weights(-rowSums(z ^ 2) / 2, d)
 z_mean <- colSums(z * w)
-check_4 <- max(abs(crossprod(z * sqrt(w)) - tcrossprod(z_mean) - diag(d)))
-cat(sprintf("%.2e, %.2e\n", max(abs(z_mean)), check_4))
-stopifnot(max(abs(z_mean)) < tolerance, check_4 < tolerance)
+check_2 <- max(abs(crossprod(z * sqrt(w)) - tcrossprod(z_mean) - diag(d)))
+cat(sprintf("%.2e, %.2e\n", max(abs(z_mean)), check_2))
+stopifnot(max(abs(z_mean)) < tolerance, check_2 < tolerance)
 
-cat("\n5. hyperparameters\n")
+cat("3. linearised cut-posterior shift vs refit with perturbed m: ")
+m_perturbed <- train$m + 0.3 * sin(train$x_km / 400) + rnorm(nrow(train), 0, 0.1)
+data <- fit$tmb_data
+data$m <- m_perturbed
+obj <- correction_adfun(data, fit$par_list)
+invisible(obj$fn(hyper_vector(fit)))
+refit <- obj$env$last.par[obj$env$random]
+shifted <- fit$mode + correction_mode_shift(fit, m_perturbed)[, 1]
+cat(sprintf("max |diff| %.3f, RMS %.4f (max |shift| %.3f)\n",
+            max(abs(shifted - refit)), sqrt(mean((shifted - refit) ^ 2)),
+            max(abs(shifted - fit$mode))))
+rm(obj, data)
+
+cat("\n4. hyperparameters\n")
 ccd_quantile <- function(name, q) {
   x <- fit$ccd$hyper[[name]]
   o <- order(x)
   x[o][findInterval(q, cumsum(fit$ccd$weight[o])) + 1]
 }
 print(tibble(parameter = names(truth), truth = unlist(truth),
-             stage_a = unlist(fit_a$hyper[names(truth)]),
              theta_hat = unlist(fit$hyper[names(truth)]),
              ccd_mean = vapply(names(truth), function(x) {
                sum(fit$ccd$hyper[[x]] * fit$ccd$weight)
@@ -293,26 +264,20 @@ coverage <- function(draws, stage, truth = new$lambda) {
   }))
 }
 
-cat("\n6. coverage of a new assay's lambda (1000 draws)\n")
-set.seed(1)
-draws_a <- predict_correction(fit_a, new, n_draws = 1000)
+cat("\n5. coverage of a new assay's lambda (1000 draws)\n")
 set.seed(1)
 draws_b <- predict_correction(fit, new, n_draws = 1000)
-print(as.data.frame(bind_rows(coverage(draws_a, "A"),
-                              coverage(draws_b, "final")) %>%
-                      arrange(group, stage)),
-      digits = 3, row.names = FALSE)
+print(as.data.frame(coverage(draws_b, "final")), digits = 3, row.names = FALSE)
 forecast <- new$type == "forecast"
 lower <- apply(draws_b[, forecast], 2, quantile, 0.025)
 upper <- apply(draws_b[, forecast], 2, quantile, 0.975)
-cat("final fit's 95% coverage of forecasts by horizon:\n")
+cat("95% coverage of forecasts by horizon:\n")
 print(round(tapply(new$lambda[forecast] >= lower &
                      new$lambda[forecast] <= upper,
                    new$year[forecast] - T_data, mean), 3))
 
 
-cat("coverage of the target m + omega + xi by the final fit's draws without",
-    "noise:\n")
+cat("coverage of the target m + omega + xi by the draws without noise:\n")
 years <- sort(unique(new$year))
 smooth_draws <- new$m + project_correction(
   fit, correction_node_draws(fit, years, 2000), new)
@@ -322,7 +287,7 @@ print(as.data.frame(coverage(t(smooth_draws), "final", new$target)),
 
 # mean fields ------------------------------------------------------------------------
 
-cat("\n7. posterior-mean omega + xi vs the mean of 2000 draws: ")
+cat("\n6. posterior-mean omega + xi vs the mean of 2000 draws: ")
 smooth_mean <- new$m + project_correction(
   fit, correction_node_draws(fit, years, mean = TRUE), new)[, 1]
 z <- (rowMeans(smooth_draws) - smooth_mean) /
