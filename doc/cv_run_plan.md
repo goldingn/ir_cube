@@ -63,6 +63,7 @@ confusing ways if they are disturbed:
 ```bash
 Rscript R/fig_illustrate_bioassay_variability.R  # overdispersion per type; everything downstream needs it
 Rscript R/run_validation_folds.R                 # nulls, then dispatch the model folds
+Rscript R/fit_checks.R                           # every fit's chains in one table and figure (#39)
 # the two-stage folds: doc/two_stage_plan.md, "How to run", step 2
 Rscript R/validation_metrics.R                   # score everything on disk
 Rscript R/validation_geometry.R                  # fold separation, and the leak check
@@ -95,7 +96,11 @@ itself, so the run resumes after an interruption.
 saving it (`drop_fold_chains()`), records it in `stuck_chains`, and flags it in
 the fold's log with a `WARNING` line; the run continues. It reports the worst
 Rhat over the remaining chains, and the number of parameters above 1.01,
-however high, without stopping. Check the logs for both before scoring.
+however high, without stopping.
+
+Every fit also checks whether its chains agree (`R/chain_checks.R`, #39),
+with a `WARNING` line when they do not. Read `R/fit_checks.R`'s table and
+figure of every fit before scoring.
 
 Each fold also saves the dynamical model's logit draws at its training and
 held-out assays, paired with `p_draws`, to
@@ -125,8 +130,10 @@ and its `assays/` file afterwards, or the real fold will be skipped.
 take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 30 to 60
 leapfrog steps (`Lmin`, `Lmax`), redrawn every 10 iterations, target
 acceptance 0.65, 4 chains, 2,000 warmup and 1,500 samples. The model samples the
-countries' initial states centred and starts from `temporary/inits_refit.RDS`
-(`dynamical_inits_file`).
+countries' initial states centred and starts every chain from
+`R/dynamical_inits.RDS` (`dynamical_inits_file`): posterior means of a named
+full fit, in git, which no fit rewrites (#39); `write_dynamical_inits()`
+remakes it from a new full fit.
 
 **Centred selection hierarchy (#48).** Since #48 the model also samples the
 class and type levels of the net use, IRS and population selection effects,
@@ -302,10 +309,10 @@ goes into concurrent folds rather than threads.
 
 **Initial values.** `temporary/inits.RDS`, from the fits before the refit,
 has no `logit_init_mean`, which the centred levels need (it started wherever
-greta put it). `temporary/inits_refit.RDS` (not in git) holds the posterior
+greta put it). `temporary/inits_refit.RDS` (not in git) held the posterior
 means of the default model on the interpolation fold from the `hmc()` run
 above, before reversion was added (reversion starts at 0.01), and
-`fit_model.R` rewrites it from the full fit. From the old inits the four
+`fit_model.R` rewrote it from each full fit until #39. From the old inits the four
 chains of that run agreed in their means: the stuck chains above came from
 the sampler and the funnels, not from the starting values.
 

@@ -89,7 +89,7 @@ cell_country_lookup <- built$lookups$cell_country_lookup
 settings <- eval(str2lang(Sys.getenv("IR_CUBE_MCMC_SETTINGS",
                                      "dynamical_mcmc_settings()")))
 
-# used cached posterior means as inits
+# start from the initial values in git (dynamical_inits_file)
 inits_one <- dynamical_inits(readRDS(dynamical_inits_file), built)
 
 system.time(
@@ -102,23 +102,15 @@ rhats <- coda::gelman.diag(draws,
                            multivariate = FALSE)
 summary(rhats$psrf)
 
+# whether the chains agree (R/chain_checks.R), saved with the fit for
+# R/fit_checks.R
+chain_check <- check_chains(draws, chain_log_density(m, draws),
+                            built$variable_labels)
+cat(chain_check_lines(chain_check), sep = "\n")
+
 # save fitted model to use for plotting and predictions
 save.image(file = "temporary/fitted_model.RData")
 
-
-# save posterior means as initial values for a future model run, with the
-# labels of their dimensions as dimnames, by which dynamical_inits() matches
-# them to a model
-
-# these have to match the arguments to model(), and need to be greta variable
-# nodes (not operation nodes)
-posts <- do.call(calculate,
-                 c(built$variables, list(values = draws, nsim = 100)))
-
-post_means <- Map(function(x, labels) {
-                    array(apply(x, 2:3, mean), lengths(labels), labels)
-                  },
-                  posts, built$variable_labels[names(posts)])
-saveRDS(post_means, dynamical_inits_file)
-
-
+# the initial values are not rewritten from this fit: to start later fits from
+# it, run R/drop_stuck_chains.R on it, then write_dynamical_inits(draws, built)
+# (R/dynamical_model.R) with the fit loaded
