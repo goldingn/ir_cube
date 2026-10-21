@@ -24,12 +24,10 @@ log_dmvt <- function(x, mu, sigma, df) {
 }
 
 # The log marginal posterior at the rows of theta, in `cores` forked
-# processes, each taking its share in a nearest-neighbour order, so that each
-# inner solve starts from the mode at a nearby theta; -Inf where it fails
+# processes; -Inf where it fails
 log_post_parallel <- function(obj, theta, covariance, cores) {
   shares <- split(seq_len(nrow(theta)), rep_len(seq_len(cores), nrow(theta)))
   parts <- parallel::mclapply(shares, function(rows) {
-    rows <- rows[point_order(theta[rows, , drop = FALSE], covariance)]
     start <- Sys.time()
     out <- numeric(length(rows))
     for (r in seq_along(rows)) {
@@ -170,8 +168,7 @@ theta_is <- function(fit, n = 200, ...) {
   colnames(out$theta) <- names(theta_hat)
   out$covariance <- fit$ccd$covariance
   out$hyper <- bind_rows(lapply(seq_len(nrow(out$theta)), function(j) {
-    as_tibble(correction_hyper(theta_par_list(fit, out$theta[j, ]),
-                               obj$env$data))
+    as_tibble(correction_hyper(theta_par_list(fit, out$theta[j, ])))
   }))
   out
 }

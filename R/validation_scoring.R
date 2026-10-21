@@ -238,22 +238,20 @@ map_prediction <- function(fold, predicted) {
   map
 }
 
-# The two-stage model's fitted SDs of u (tau), p (sigma_p) and sy (sigma_sy,
-# 0 for fits without it) per held-out record, from the fit summary saved with
-# the fold (R/run_two_stage_folds.R); NULL for a model without them. A type
-# that fell back to the dynamical draws has none of the terms, so all are 0
+# The two-stage model's fitted SDs of u (tau), p (sigma_p) and sy (sigma_sy)
+# per held-out record, from the fit summary saved with the fold
+# (R/run_two_stage_folds.R); NULL for a model without one. A type that fell
+# back to the dynamical draws has none of the terms, so all are 0
 site_noise_for_record <- function(fold, test) {
   fits <- fold$fit_summary
-  if (is.null(fits) || !all(c("tau", "sigma_p") %in% names(fits))) {
-    return(NULL)
-  }
+  if (is.null(fits)) return(NULL)
+  stopifnot(all(c("tau", "sigma_p", "sigma_sy") %in% names(fits)))
   fits <- fits[match(test$insecticide_type, fits$insecticide_type), ]
   stopifnot(!anyNA(fits$insecticide_type))
   fell_back <- fits$fallback_dynamical | is.na(fits$tau)
-  sigma_sy <- if (is.null(fits$sigma_sy)) 0 else fits$sigma_sy
   list(tau = ifelse(fell_back, 0, fits$tau),
        sigma_p = ifelse(fell_back, 0, fits$sigma_p),
-       sigma_sy = ifelse(fell_back, 0, sigma_sy))
+       sigma_sy = ifelse(fell_back, 0, fits$sigma_sy))
 }
 
 # The expected coverage of each record's central interval at `level`, over the
