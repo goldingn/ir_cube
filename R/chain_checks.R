@@ -5,10 +5,11 @@
 # with the fit, for R/fit_checks.R, which tabulates every fit.
 
 # The chains of `draws` that stopped moving: those whose share of distinct
-# draws is below `min_distinct`. With one step size for all chains
-# (windowed_hmc()), a chain can sit where every trajectory at that step size
-# fails, and then repeats one draw: in the October 2026 run, one chain of
-# spatial blocks fold 1 kept a single draw for all 3,000 samples.
+# draws is below `min_distinct`. With one step size for all chains (as in
+# greta's hmc(), and the windowed sampler before #41), a chain can sit where
+# every trajectory at that step size fails, and then repeats one draw: in the
+# October 2026 run, with the windowed sampler, one chain of spatial blocks fold
+# 1 kept a single draw for all 3,000 samples.
 stuck_chains <- function(draws, min_distinct = 0.5) {
   which(vapply(draws, function(chain) {
     chain <- as.matrix(chain)

@@ -127,13 +127,30 @@ and its `assays/` file afterwards, or the real fold will be skipped.
 
 `dynamical_mcmc_settings()` in `R/dynamical_model.R` holds them, and
 `fit_fold()`, `run_one_fold.R`, `run_validation_folds.R` and `fit_model.R` all
-take them from there: `windowed_hmc()` (`R/windowed_hmc.R`) with 30 to 60
-leapfrog steps (`Lmin`, `Lmax`), redrawn every 10 iterations, target
-acceptance 0.65, 4 chains, 2,000 warmup and 1,500 samples. The model samples the
+take them from there: greta's `hmc()` with 30 to 60 leapfrog steps (`Lmin`,
+`Lmax`), redrawn every 10 iterations, 4 chains, 2,000 warmup and 1,500
+samples. The model samples the
 countries' initial states centred and starts every chain from
 `R/dynamical_inits.RDS` (`dynamical_inits_file`): posterior means of a named
 full fit, in git, which no fit rewrites (#39); `write_dynamical_inits()`
 remakes it from a new full fit.
+
+**greta's `hmc()` (#41).** From #38 to #41 the sampler was our own windowed
+warmup (Stan-style windows for the diagonal of the mass matrix, pooled over
+chains). On the 2014 forecasting fold at the settings above (one run each,
+8 vCPU RunPod pods; ESS over the kept chains), `hmc()` had higher ESS, lost
+no chain and had similar Rhat, so the windowed sampler was removed. The tables below, from before #41, used
+it unless they say `hmc()`.
+
+| sampler | chains kept | rank Rhat, log density / worst element | elements > 1.01 | bulk ESS min / median | tail ESS min |
+|---|---|---|---|---|---|
+| windowed | 3 of 4 | 1.002 / 1.008 | 0 | 467 / 2,749 | 312 |
+| **`hmc()`** | 4 of 4 | 1.001 / 1.010 | 2 | 561 / 4,104 | 422 |
+| windowed, a mass matrix per chain (as TFP) | 4 of 4 | 1.012 / 1.025 | 3 | 261 / 3,483 | 164 |
+
+One windowed chain repeated a single draw for all 1,500 samples. The windowed
+and `hmc()` fits ran on the same host, in 1.7 h each. The worst-mixing element
+in all three is `sigma_class` for IRS.
 
 **Centred selection hierarchy (#48).** Since #48 the model also samples the
 class and type levels of the net use, IRS and population selection effects,
@@ -196,36 +213,10 @@ slower per iteration than the 2014 fold at 15-30 steps, so it should have
 taken about 6 h, and the full fit, at the same settings, about as long. It was roughly 62 h per fold with
 the greta.dynamics loop.
 
-**Result.** On the 2014 forecasting fold, for the default model, against
-greta's `hmc()` with the non-centred hierarchy (on the interpolation fold, the
-only fold that baseline was run on):
-
-| | fold | draws | worst rank Rhat | params > 1.01 / > 1.05 | bulk ESS min / median |
-|---|---|---|---|---|---|
-| `hmc()`, non-centred, 15-30 steps | interpolation | 20,000 | 1.156 | 575 / 83 | 18 / 232 |
-| windowed, centred, 15-30 steps | 2014 | 20,000 | 1.049 | 207 / 0 | 104 / 600 |
-| windowed, centred, 60-120 steps (2,500 samples) | 2014 | 10,000 | 1.013 | 1 / 0 | 361 / 2,723 |
-
-At 3,000 samples, the setting before #48, the minimum should have reached
-about 430. These settings were not
-run on the interpolation fold, which mixed worse than the 2014 fold at every
-setting tried (at 15-30 steps, minimum ESS 33 against 104). The worst-mixing
-parameters are the countries' initial levels for type 7 (`init_country_level[,
-7]`, ESS 361-630) and `init_country_sd[7]` (586); on the interpolation fold at
-15-30 steps they were `mortality_floor`, the levels of countries with few data
-for a type, and the levels of all countries of types 2 and 3 together.
-
 **What limits mixing,** found from the posterior correlations, the principal
 components of the draws and the per-chain means, not tried blind:
 
-1. *greta's warmup.* `hmc()` sets the diagonal of the mass matrix between 10%
-   and 40% of warmup from every warmup draw so far, transient included. On the
-   interpolation fold its final `diag_sd` was 0.06 to 20 times the posterior
-   sd; on 20 independent normals with sds 0.01-100 it was 0.04 to 9.3 times,
-   with minimum ESS 14 of 4,000. `windowed_hmc()` estimates it in windows that
-   start afresh, as Stan does (0.94-1.07 times the true sds, minimum ESS 933),
-   pooled over chains.
-2. *The non-centred hierarchy on the initial state.* Most countries have data
+1. *The non-centred hierarchy on the initial state.* Most countries have data
    for most types, which fixes each country's initial state, so the
    non-centred deviations of all countries in a region move together against
    their region's (correlations above 0.9, in the September fits too). The
@@ -239,7 +230,7 @@ components of the draws and the per-chain means, not tried blind:
    `init_region_sd` 0.06); levels at covariates of 0 traded off against the
    covariates' coefficients (-0.6), since the covariates are standardised over
    the whole mask and the data cells lie above its mean.
-3. *Trajectory length.* The step size adapts to the acceptance target, but
+2. *Trajectory length.* The step size adapts to the acceptance target, but
    the number of leapfrog steps does not, and 15-30 steps were too few to
    move along the directions that remain slow: the mortality floor against
    the initial levels of many countries at once (correlations 0.4-0.5), the
@@ -257,24 +248,17 @@ time varied with the machine's load, 8 to 20 of 16 cores):
 | run | fold | s/it | worst rank Rhat | > 1.05 | ESS min / median | per core-hour min / median |
 |---|---|---|---|---|---|---|
 | `hmc()`, non-centred | interp | 3.36 | 1.156 | 83 | 18 / 232 | 0.7 / 8.9 |
-| windowed, regions and countries centred as deviations | interp | 2.68 | 1.407 | 267 | 9 / 134 | 0.4 / 6.5 |
-| windowed, regions and countries centred as levels | 2014 | 1.20 | 1.233 | 480 | 14 / 164 | 1.5 / 17.6 |
-| windowed, countries centred | interp | 2.00 | 1.168 | 53 | 22 / 254 | 1.4 / 16.3 |
-| windowed, countries centred | 2014 | 1.19 | 1.059 | 7 | 56 / 539 | 6.0 / 58.2 |
+| regions and countries centred as deviations | interp | 2.68 | 1.407 | 267 | 9 / 134 | 0.4 / 6.5 |
+| regions and countries centred as levels | 2014 | 1.20 | 1.233 | 480 | 14 / 164 | 1.5 / 17.6 |
+| countries centred | interp | 2.00 | 1.168 | 53 | 22 / 254 | 1.4 / 16.3 |
+| countries centred | 2014 | 1.19 | 1.059 | 7 | 56 / 539 | 6.0 / 58.2 |
 | same, dense mass matrix | 2014 | 1.16 | 1.163 | 134 | 19 / 188 | 2.1 / 20.8 |
 | + levels at the overall mean covariates | interp | 2.17 | 1.102 | 16 | 28 / 319 | 1.7 / 18.9 |
 | + levels at the overall mean covariates | 2014 | 1.20 | 1.050 | 0 | 68 / 596 | 7.3 / 64.1 |
 | + at each country's mean (**these settings**) | 2014 | 1.37 | 1.049 | 0 | 104 / 600 | 9.8 / 56.2 |
-| + step size per chain | interp | 1.97 | 1.118 | 25 | 33 / 250 | 2.1 / 16.3 |
-| + step size per chain | 2014 | 1.01 | 1.120 | 146 | 28 / 250 | 3.5 / 31.6 |
-| shared step, failed proposals as rejections | 2014 | 1.93 | 1.066 | 19 | 44 / 374 | 2.9 / 24.9 |
 | **60-120 steps** (2,000 + 2,500) | 2014 | 2.98 | 1.013 | 0 | 361 / 2,723 | 24.2 / 182.5 |
 
-The per-chain step size freed a chain that moved once in 1,000 draws among 8
-on the screening subset, but on the 2014 fold one chain then rejected 35% of
-its proposals while sampling; both it and the change to failed proposals were
-worse there, so the step size is adapted as `hmc()` does. Runs of one setting
-vary by about as much as some of these differences.
+Runs of one setting vary by about as much as some of these differences.
 
 **Chains, warmup and trajectory length,** screened on a smaller model: 12
 countries from all 5 regions, 7,053 assays, with the model restricted to them.
@@ -325,9 +309,11 @@ the samples are asked for directly; the two are statistically equivalent, since
 
 ### Production run, October 2026
 
-The full fit and the five folds at the settings above, from frozen copies of
-`R/` (commit `ecad4ba`), 4 threads each, the full fit and three folds at once
-(16 threads, load 17-19 of 16 cores). Wall time includes prediction; the old
+The full fit and the five folds from frozen copies of `R/` (commit
+`ecad4ba`): the windowed sampler, 60 to 120 steps and 3,000 samples, the
+settings before #48 and #41, so every row is from that sampler. 4 threads
+each, the full fit and three folds at once (16 threads, load 17-19 of 16
+cores). Wall time includes prediction; the old
 inits file is kept as `temporary/inits_refit_before_production.RDS`, and
 `fit_model.R` rewrote `inits_refit.RDS` from this fit. Diagnostics over the
 raw parameters (733), rank-normalised (`posterior`):
