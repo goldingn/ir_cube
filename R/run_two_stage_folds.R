@@ -123,10 +123,13 @@ if (step == "assemble") {
          paste(summary_table$insecticide_type[summary_table$fallback_dynamical],
                collapse = ", "))
 
-  # one row per experiment x fold x type; a rerun replaces its fold's rows
+  # one row per experiment x fold x type; a rerun replaces its fold's rows.
+  # error is read as character, as it is when written: a file whose errors
+  # are all NA would otherwise read it as logical
   summary_file <- file.path(output_dir, "fit_summary.csv")
-  if (file.exists(summary_file)) {
-    previous <- read.csv(summary_file, colClasses = c(fold = "character")) %>%
+  if (file.exists(summary_file) && file.size(summary_file) > 0) {
+    previous <- read.csv(summary_file, colClasses = c(fold = "character",
+                                                      error = "character")) %>%
       filter(!(experiment == experiment_name & fold == fold_name))
     summary_table <- bind_rows(previous, summary_table)
   }
