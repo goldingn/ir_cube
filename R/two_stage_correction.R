@@ -1,6 +1,7 @@
 # Second-stage geostatistical correction to the dynamical model (#21).
 #
-# A Gaussian model for the dynamical model's residuals on the logit scale,
+# A latent Gaussian model for the bioassay counts, beta-binomial on the
+# dynamical model's logit prediction plus spatial and noise terms,
 # conditioning on the dynamical model without ever updating it (a cut
 # posterior):
 #
@@ -21,14 +22,10 @@
 # values, even at pixel-years, pixels or study-years with training data.
 #
 # Fitting, per insecticide type (fit_correction(), #34):
-#   stage A  z, v = empirical logit and its variance, inflated by the per-type
-#            replicate-based rho; hyperparameters by penalised maximum
-#            marginal likelihood (TMB, tmb/two_stage_correction.cpp), latent
-#            posterior exactly Gaussian given them (fit_stage_a()): starting
-#            values only;
 #   Laplace  the hyperparameters theta at the penalised maximum of TMB's
 #            Laplace approximation to the marginal likelihood of the
-#            beta-binomial counts, started from stage A;
+#            beta-binomial counts (tmb/two_stage_correction.cpp), started from
+#            the priors' medians;
 #   CCD      the posterior of theta by INLA's central composite design
 #            (ccd_points()); predictions mix the conditional latent posteriors
 #            N(mode(theta_j), H(theta_j)^-1) over its points theta_j.
@@ -39,14 +36,13 @@
 #                                                  list(omega, xi): the final
 #                                                  model's meshes, covering the
 #                                                  sites and the mask
-#   fit <- fit_correction(train, t0, T, meshes)    stage A, Laplace, CCD.
+#   fit <- fit_correction(train, t0, T, meshes)    Laplace, then CCD.
 #     train: lon, lat (or x_km, y_km), year, cell, study, m (= m_ref), died,
 #     mosquito_number, rho. T: last year xi is represented (forecast beyond).
-#     Stops if stage A does not converge; check fit$opt$convergence for the
-#     Laplace fit. fit$hyper: sigma_omega, range_omega, sigma_eta, range_eta,
-#     phi, persistence, tau (SD of u), sigma_p, sigma_sy (and the kappas) at
-#     theta_hat; fit$ccd: the CCD points (theta), their weights and the
-#     hyperparameters at each (hyper).
+#     Check fit$opt$convergence. fit$hyper: sigma_omega, range_omega,
+#     sigma_eta, range_eta, phi, persistence, tau (SD of u), sigma_p, sigma_sy
+#     (and the kappas) at theta_hat; fit$ccd: the CCD points (theta), their
+#     weights and the hyperparameters at each (hyper).
 #   fit_summary(fit)                               one-row tibble for tables
 #   fields <- correction_node_draws(fit, years, n_draws, m_draws_train = NULL,
 #                                   mean = FALSE)
@@ -62,19 +58,16 @@
 #     noise = TRUE adds fresh u per distinct pixel-year, p per distinct pixel
 #     and sy per distinct study-year of `new` (shared by its rows within a
 #     draw; caller's RNG), as for new assays; maps use noise = FALSE. Warns for
-#     points outside the mesh (their fields are 0).
+#     points outside the mesh (their fields are 0). One set of fields can be
+#     projected to several sets of points.
 #   predict_correction(fit, new, m_draws_train, m_draws_new, n_draws)
-#     draws x points m_draw + omega + xi + fresh noise: the predictive
-#     distribution of new assays' logit mortality, mixed over the CCD points,
-#     in batches (CV scoring). noise = FALSE leaves out the noise: the map,
-#     m + omega + xi.
+#     draws x points m_draw + omega + xi + fresh noise, (a) then (b): the
+#     predictive distribution of new assays' logit mortality, mixed over the
+#     CCD points. noise = FALSE leaves out the noise: the map, m + omega + xi.
 #   Saving: saveRDS(fit, file). Everything above works on the reloaded fit
 #     (it keeps H, H_chol, meshes, levels, tmb_data and par_list); the TMB
 #     object the mixture over theta needs is rebuilt once per session
 #     (correction_obj()).
-#
-# The posterior of theta can be checked against importance sampling
-# (R/two_stage_is.R, R/check_two_stage_is.R).
 #
 # Speed depends heavily on the BLAS used by CHOLMOD's supernodal
 # factorisation: run with OpenBLAS (reference BLAS is ~10x slower), and the
@@ -104,14 +97,6 @@ load_correction_template <- function(path = correction_template) {
     dyn.load(dll_path)
   }
   dll_name
-}
-
-# empirical logit of bioassay mortality, and its approximate sampling variance
-# inflated by the beta-binomial design effect 1 + (n - 1) rho
-empirical_logit <- function(died, n, rho) {
-  z <- log((died + 0.5) / (n - died + 0.5))
-  v <- (1 / (died + 0.5) + 1 / (n - died + 0.5)) * (1 + (n - 1) * rho)
-  list(z = z, v = v)
 }
 
 # The iid noise terms, each as the key grouping assays into its levels, and
@@ -228,63 +213,46 @@ xi_design <- function(mesh_xi, coords, year, t0, T) {
 # Priors (#34). The second stage only fills gaps the dynamical model leaves:
 # finer-scale level error, and gradual changes of its trend.
 #
-# Ranges of omega and eta: bounded to 10-3,000 km, with a normal prior on the
-# logit of log range placing 95% of the mass in 50-1,500 km (median 359 km;
-# 99.95% quantile 2,270 km). The dynamical model's own fields have 1,500 km
-# ranges, so continent-wide corrections are its job.
+# Ranges of omega and eta: normal on log range, with 95% of the mass in
+# 50-1,500 km (median 274 km; 99.7% below 3,000 km), the form of R-INLA's
+# non-PC SPDE priors (Lindgren & Rue 2015). The dynamical model's own fields
+# have 1,500 km ranges, so continent-wide corrections are its job. (PC priors,
+# Fuglstad et al. 2019, favour long ranges, against this intent.)
 #
-# Persistence of the annual anomalies eta, L = 1 / (1 - phi): bounded to 2-15
-# years, with a normal prior on its logit giving a median of 5.5 years and a
-# 99% interval of 3-10 years. Resistance does not jump up and down from year
-# to year, and longer persistences are neither identified nor needed (omega
-# holds static offsets). Going below 3 years costs increasingly many nats
-# (7 at 2.5 years, 22 at 2.1), and below 2 years is impossible.
+# AR(1) coefficient phi of the annual anomalies eta: normal on logit phi, with
+# a 99% interval for the persistence L = 1 / (1 - phi) = 1 + exp(logit phi) of
+# 3-10 years (median 5.2 years). Resistance does not jump up and down from
+# year to year, and longer persistences are neither identified nor needed
+# (omega holds static offsets).
 #
-# Half-normal priors on the SDs, so the cost of a large SD grows
+# Half-normal priors on the SDs (Gelman 2006), so the cost of a large SD grows
 # quadratically: P(sigma_omega > 1) = 0.05 (the level correction);
 # P(sigma_eta > 0.05) = 0.05, so the trend correction xi has a prior SD of
 # about 0.2 logit per decade at the median persistence, up to about 0.8 logit
 # over 30 years at the 95% point of sigma_eta; and P(sd > 2) = 0.05 for the
 # iid noise terms, permissive so that noise is never what forces signal into
 # the structured fields.
-correction_priors <- function(range_bounds = c(10, 3000),
-                              range_interval = c(50, 1500),
-                              persistence_bounds = c(2, 15),
-                              persistence_median = 5.5,
-                              persistence_lower_99 = 3,
+correction_priors <- function(range_interval = c(50, 1500),
+                              persistence_interval = c(3, 10),
                               sigma_omega = 1, sigma_eta = 0.05,
                               sigma_iid = 2, alpha_sigma = 0.05) {
-  # a range interval is a central 95% interval on the logit of log range
-  log_bounds <- log(range_bounds)
-  range_logit <- qlogis((log(range_interval) - log_bounds[1]) /
-                          diff(log_bounds))
-  persistence_logit <- function(L) {
-    qlogis((L - persistence_bounds[1]) / diff(persistence_bounds))
+  # a central interval, at `level`, of a normal prior
+  normal_prior <- function(interval, level) {
+    c(mean(interval), diff(interval) / (2 * qnorm((1 + level) / 2)))
   }
-  persistence_mean <- persistence_logit(persistence_median)
   half_normal_scale <- function(sigma0) sigma0 / qnorm(1 - alpha_sigma / 2)
-  list(range_prior = c(log_bounds, mean(range_logit),
-                       diff(range_logit) / (2 * qnorm(0.975))),
-       persistence_prior = c(persistence_bounds, persistence_mean,
-                             (persistence_mean -
-                                persistence_logit(persistence_lower_99)) /
-                               qnorm(0.995)),
+  list(range_prior = normal_prior(log(range_interval), 0.95),
+       phi_prior = normal_prior(log(persistence_interval - 1), 0.99),
        sd_scale = half_normal_scale(c(sigma_omega, sigma_eta, sigma_iid)))
-}
-
-# bounded(z, lower, upper) as in the template, and its inverse
-bounded <- function(z, lower, upper) lower + (upper - lower) * plogis(z)
-bounded_logit <- function(value, lower, upper) {
-  qlogis((value - lower) / (upper - lower))
 }
 
 
 # fitting ----------------------------------------------------------------------
 
 # the hyperparameters, on the optimiser's scale, in the template's order
-correction_hyper_names <- c("log_sigma_omega", "logit_range_omega",
-                            "log_sigma_eta", "logit_range_eta",
-                            "logit_persistence", "log_sigma_iid")
+correction_hyper_names <- c("log_sigma_omega", "log_range_omega",
+                            "log_sigma_eta", "log_range_eta", "logit_phi",
+                            "log_sigma_iid")
 
 # theta of a fit, on the optimiser's scale, named as obj$par
 hyper_vector <- function(fit) {
@@ -293,21 +261,23 @@ hyper_vector <- function(fit) {
                  lengths(fit$par_list[correction_hyper_names])))
 }
 
-# The TMB object of the fit's Laplace-approximate marginal posterior of theta
-# for the beta-binomial counts (likelihood = 1 in the template), started at
-# the fit's latent mode and theta
-correction_marginal <- function(fit) {
-  data <- fit$tmb_data
-  data$likelihood <- 1L
-  correction_adfun(data, fit$par_list)
+# the TMB object, with the latent effects integrated out by TMB's Laplace
+# approximation
+correction_adfun <- function(data, parameters, silent = TRUE) {
+  TMB::MakeADFun(data = data, parameters = parameters,
+                 random = c("w_omega", "x", "iid"),
+                 DLL = load_correction_template(), silent = silent)
 }
 
-# The TMB object of a fit, built once per session (it is not saved with the
-# fit, and building it reloads the template)
+# The TMB object of a fit's Laplace-approximate marginal posterior of theta,
+# built once per session (it is not saved with the fit, and building it
+# reloads the template), started at the fit's latent mode and theta
 correction_obj <- local({
   cache <- new.env()
   function(fit) {
-    if (is.null(cache[[fit$id]])) cache[[fit$id]] <- correction_marginal(fit)
+    if (is.null(cache[[fit$id]])) {
+      cache[[fit$id]] <- correction_adfun(fit$tmb_data, fit$par_list)
+    }
     cache[[fit$id]]
   }
 })
@@ -328,10 +298,10 @@ beta_binomial_weight <- function(lambda, died, n, rho) {
   -(d2 * s ^ 2 + d1 * s * (1 - 2 * p))
 }
 
-# The correction_fit at theta (optimiser scale): the latent mode solved at
-# theta, its Hessian, and the factor of that, updated from fit's symbolic
-# factorisation (the sparsity pattern does not depend on theta). For the
-# beta-binomial marginal, precision_obs becomes W at the mode, for the
+# The conditional fit at theta (optimiser scale): the latent mode solved at
+# theta, its Hessian, and the factor of that (updated from fit's symbolic
+# factorisation when it has one: the sparsity pattern does not depend on
+# theta), the hyperparameters, and W at the mode as precision_obs, for the
 # linearised cut-posterior shift
 conditional_fit <- function(fit, obj, theta) {
   obj$fn(theta)
@@ -339,76 +309,49 @@ conditional_fit <- function(fit, obj, theta) {
   random <- obj$env$random
   H <- obj$env$spHess(par_full, random = TRUE)
   H <- Matrix::forceSymmetric(as(H, "CsparseMatrix"), uplo = "L")
-  par_list <- obj$env$parList(par = par_full)
-  fit$mode <- setNames(par_full[random], names(fit$mode))
+  fit$par_list <- obj$env$parList(par = par_full)
+  fit$hyper <- correction_hyper(fit$par_list)
+  fit$mode <- par_full[random]
   fit$H <- H
-  fit$H_chol <- Matrix::update(fit$H_chol, H)
-  fit$par_list <- par_list
-  fit$hyper <- correction_hyper(par_list, obj$env$data)
-  data <- obj$env$data
-  if (data$likelihood == 1) {
-    lambda <- fit$m_ref + as.vector(fit$A_latent %*% fit$mode)
-    fit$precision_obs <- beta_binomial_weight(lambda, data$died,
-                                              data$n_mosquito, data$rho)
+  fit$H_chol <- if (is.null(fit$H_chol)) {
+    Matrix::Cholesky(H, perm = TRUE, LDL = FALSE, super = TRUE)
+  } else {
+    Matrix::update(fit$H_chol, H)
   }
+  data <- obj$env$data
+  lambda <- fit$m_ref + as.vector(fit$A_latent %*% fit$mode)
+  fit$precision_obs <- beta_binomial_weight(lambda, data$died,
+                                            data$n_mosquito, data$rho)
   fit
 }
 
-# fit$hyper from the template's parameter list and data (its prior bounds)
-correction_hyper <- function(par_list, data) {
-  range <- function(z) {
-    exp(bounded(z, data$range_prior[1], data$range_prior[2]))
-  }
-  persistence <- bounded(par_list$logit_persistence,
-                         data$persistence_prior[1], data$persistence_prior[2])
-  range_omega <- range(par_list$logit_range_omega)
-  range_eta <- range(par_list$logit_range_eta)
+# fit$hyper from the template's parameter list
+correction_hyper <- function(par_list) {
+  range_omega <- exp(par_list$log_range_omega)
+  range_eta <- exp(par_list$log_range_eta)
   hyper <- list(sigma_omega = exp(par_list$log_sigma_omega),
                 range_omega = range_omega,
                 kappa_omega = sqrt(8) / range_omega,
                 sigma_eta = exp(par_list$log_sigma_eta),
                 range_eta = range_eta,
                 kappa_eta = sqrt(8) / range_eta,
-                phi = 1 - 1 / persistence,
-                persistence = persistence)
+                phi = plogis(par_list$logit_phi),
+                persistence = 1 + exp(par_list$logit_phi))
   for (k in seq_along(correction_iid_terms)) {
     hyper[[correction_iid_terms[[k]]$sd]] <- exp(par_list$log_sigma_iid[k])
   }
   hyper
 }
 
-
-# the TMB object; fix_hyper = TRUE holds the hyperparameters at their values
-# in `parameters` (used by the simulation check)
-correction_adfun <- function(data, parameters, fix_hyper = FALSE,
-                             silent = TRUE) {
-  map <- list()
-  if (fix_hyper) {
-    hyper <- setdiff(names(parameters), c("w_omega", "x", "iid"))
-    map <- lapply(parameters[hyper], function(x) factor(rep(NA, length(x))))
-  }
-  TMB::MakeADFun(data = data, parameters = parameters, map = map,
-                 random = c("w_omega", "x", "iid"),
-                 DLL = load_correction_template(), silent = silent)
-}
-
-# Stage A, or a refit of the hyperparameters to given (z, v). train as for
-# fit_correction(); if it has z and v they are the response, otherwise the
-# empirical logit is. meshes from build_correction_meshes()
-fit_stage_a <- function(train, t0, T = max(train$year), meshes,
-                        priors = correction_priors(),
-                        start = list(),
-                        control = list(eval.max = 1000, iter.max = 500),
-                        silent = TRUE) {
-
-  start_time <- Sys.time()
+# The model's TMB data and starting parameters for train (as fit_correction()),
+# and the parts of a fit that do not depend on theta: the meshes, the iid
+# levels, the latent blocks and the map from observations to the latent
+# vector. The start is the latent field at 0 and theta at the priors' medians
+# for the ranges and persistence, with small SDs (the correction should be
+# modest if the dynamical model is good)
+correction_setup <- function(train, t0, T, meshes, priors) {
   stopifnot(T > t0, all(train$year >= t0 & train$year <= T),
             !is.null(train$study))
-  if (!all(c("z", "v") %in% names(train))) {
-    response <- empirical_logit(train$died, train$mosquito_number, train$rho)
-    train$z <- response$z
-    train$v <- response$v
-  }
   coords <- coords_km(train)
   n_obs <- nrow(train)
 
@@ -426,76 +369,44 @@ fit_stage_a <- function(train, t0, T = max(train$year), meshes,
   A_omega <- mesh_basis(meshes$omega, coords)
   A_xi <- xi_design(meshes$xi, coords, train$year, t0, T)
   data <- c(
-    list(z = train$z, v = train$v, m = train$m, A_omega = A_omega,
-         A_xi = A_xi, iid_index = iid_index - 1L,
+    list(m = train$m, A_omega = A_omega, A_xi = A_xi,
+         iid_index = iid_index - 1L,
          iid_term = rep(seq_along(iid_levels) - 1L, lengths(iid_levels)),
          spde = correction_fem(meshes$omega),
          spde_xi = correction_fem(meshes$xi),
-         likelihood = 0L, died = train$died,
-         n_mosquito = train$mosquito_number, rho = train$rho),
+         died = train$died, n_mosquito = train$mosquito_number,
+         rho = train$rho),
     priors
   )
+  parameters <- list(w_omega = rep(0, meshes$omega$n),
+                     x = matrix(0, meshes$xi$n, T - t0),
+                     iid = rep(0, sum(lengths(iid_levels))),
+                     log_sigma_omega = log(0.5),
+                     log_range_omega = priors$range_prior[1],
+                     log_sigma_eta = log(0.03),
+                     log_range_eta = priors$range_prior[1],
+                     logit_phi = priors$phi_prior[1],
+                     log_sigma_iid = rep(log(0.3), length(iid_levels)))
 
-  # the priors' medians for the ranges and persistence, and small SDs: the
-  # correction should be modest if the dynamical model is good
-  start <- modifyList(list(log_sigma_omega = log(0.5),
-                           logit_range_omega = priors$range_prior[3],
-                           log_sigma_eta = log(0.03),
-                           logit_range_eta = priors$range_prior[3],
-                           logit_persistence = priors$persistence_prior[3],
-                           log_sigma_iid = rep(log(0.3), length(iid_levels))),
-                      start)
-  parameters <- c(list(w_omega = rep(0, meshes$omega$n),
-                       x = matrix(0, meshes$xi$n, T - t0),
-                       iid = rep(0, sum(lengths(iid_levels)))),
-                  start[correction_hyper_names])
-
-  obj <- correction_adfun(data, parameters, silent = silent)
-  opt <- nlminb(obj$par, obj$fn, obj$gr, control = control)
-  optimise_time <- Sys.time()
-
-  # latent mode and its Hessian at the optimum; evaluating fn at opt$par
-  # leaves the inner problem solved at exactly these hyperparameters
-  obj$fn(opt$par)
-  par_full <- obj$env$last.par
-  random <- obj$env$random
-  block <- names(par_full)[random]
-  blocks <- split(seq_along(random), factor(block, levels = unique(block)))
-  blocks <- c(blocks[c("w_omega", "x")],
+  # the latent vector's blocks, in the template's order
+  n_x <- meshes$xi$n * (T - t0)
+  blocks <- c(list(w_omega = seq_len(meshes$omega$n),
+                   x = meshes$omega$n + seq_len(n_x)),
               lapply(seq_along(iid_levels), function(k) {
-                blocks$iid[(offset[k] + 1):offset[k + 1]]
+                meshes$omega$n + n_x + (offset[k] + 1):offset[k + 1]
               }) |> setNames(names(iid_levels)))
-  H <- obj$env$spHess(par_full, random = TRUE)
-  H <- Matrix::forceSymmetric(as(H, "CsparseMatrix"), uplo = "L")
-
-  # observations -> latent vector, in the latent order, for the
-  # cut-posterior shift
+  # observations -> latent vector, for the cut-posterior shift
   A_iid <- Matrix::sparseMatrix(i = rep(seq_len(n_obs), ncol(iid_index)),
                                 j = as.vector(iid_index), x = 1,
                                 dims = c(n_obs, sum(lengths(iid_levels))))
-
-  par_list <- obj$env$parList(par = par_full)
-  hyper <- correction_hyper(par_list, data)
-
-  structure(
-    list(t0 = t0, T = T, n_years = T - t0,
-         mesh = meshes$omega, mesh_xi = meshes$xi,
-         fem_xi = data$spde_xi,
-         obj = obj, opt = opt,
-         max_gradient = max(abs(obj$gr(opt$par))),
-         par_list = par_list, tmb_data = data, priors = priors,
-         control = control, hyper = hyper,
-         mode = par_full[random], blocks = blocks, H = H,
-         H_chol = Matrix::Cholesky(H, perm = TRUE, LDL = FALSE, super = TRUE),
-         A_latent = cbind(A_omega, A_xi, A_iid),
-         precision_obs = 1 / data$v, m_ref = train$m,
-         iid_levels = iid_levels, n_obs = n_obs,
-         timings = c(optimise = as.numeric(optimise_time - start_time,
-                                           units = "secs"),
-                     total = as.numeric(Sys.time() - start_time,
-                                        units = "secs"))),
-    class = "correction_fit"
-  )
+  list(data = data, parameters = parameters,
+       fit = structure(
+         list(t0 = t0, T = T, n_years = T - t0,
+              mesh = meshes$omega, mesh_xi = meshes$xi,
+              fem_xi = data$spde_xi, tmb_data = data, priors = priors,
+              blocks = blocks, A_latent = cbind(A_omega, A_xi, A_iid),
+              m_ref = train$m, iid_levels = iid_levels, n_obs = n_obs),
+         class = "correction_fit"))
 }
 
 # The CCD design in d dimensions, as points x d in the standardised z scale:
@@ -519,34 +430,27 @@ ccd_design <- function(d, f0 = 1.1) {
   unname(rbind(0, axial, factorial) * f0)
 }
 
-# An order of the points of theta (rows) in which each is near the last, a
-# greedy nearest-neighbour chain from the first in the metric of covariance,
-# so that each inner solve starts from the mode at a nearby theta
-point_order <- function(theta, covariance) {
-  z <- theta %*% t(solve(chol(covariance)))
-  order <- 1
-  left <- seq_len(nrow(z))[-1]
-  while (length(left) > 0) {
-    last <- z[order[length(order)], ]
-    d <- colSums((t(z[left, , drop = FALSE]) - last) ^ 2)
-    order <- c(order, left[which.min(d)])
-    left <- left[-which.min(d)]
-  }
-  order
+# The normalised CCD weights of the points of ccd_design(d, f0), given the log
+# posterior density at each relative to the mode: the density times the
+# design weight, 1 at the centre and exp(d f0^2 / 2) / ((n_p - 1)(f0^2 - 1)) at
+# the other n_p - 1 points, which all lie at radius f0 sqrt(d). If the
+# posterior is Gaussian, the weighted points have its mean and covariance
+ccd_weights <- function(log_density, d, f0 = 1.1) {
+  n_points <- length(log_density)
+  design_weight <- c(1, rep(exp(d * f0 ^ 2 / 2) /
+                              ((n_points - 1) * (f0 ^ 2 - 1)), n_points - 1))
+  weight <- design_weight * exp(log_density)
+  weight / sum(weight)
 }
 
 # INLA's central composite design integration over theta (Rue, Martino &
 # Chopin 2009, sec. 6.5), on the optimiser's scale, at the mode theta_hat of
-# the marginal posterior (obj, as correction_marginal()): theta = theta_hat +
+# the marginal posterior (obj, as correction_obj()): theta = theta_hat +
 # V S^1/2 z for the eigen-decomposition V S V' of the inverse Hessian there,
 # each axis stretched separately on its two sides so that the log density
 # falls by 1 at z = +-sqrt(2), as it would for a Gaussian (INLA's skewness
-# correction). Weights: the posterior density times the design weight, 1 at
-# the centre and exp(d f0^2 / 2) / ((n_p - 1)(f0^2 - 1)) at the other n_p - 1
-# points, which all lie at radius f0 sqrt(d); if the posterior is Gaussian,
-# the weighted points have its mean and covariance. Returns the points
-# (theta), their weights (summing to 1), the covariance, and the log
-# densities relative to the mode
+# correction), with ccd_weights(). Returns the points (theta), their weights
+# (summing to 1), the covariance, and the log densities relative to the mode
 ccd_points <- function(obj, theta_hat, f0 = 1.1) {
   log_post <- function(theta) -obj$fn(theta)
   log_post_hat <- log_post(theta_hat)
@@ -571,16 +475,11 @@ ccd_points <- function(obj, theta_hat, f0 = 1.1) {
                        rep(stretch[, 2], each = nrow(design)))
   theta <- t(apply(z, 1, to_theta))
   colnames(theta) <- names(theta_hat)
-  log_density <- numeric(nrow(theta))
-  for (j in point_order(theta, covariance)) {
-    log_density[j] <- log_post(theta[j, ]) - log_post_hat
-  }
-  n_points <- nrow(design)
-  design_weight <- c(1, rep(exp(d * f0 ^ 2 / 2) /
-                              ((n_points - 1) * (f0 ^ 2 - 1)), n_points - 1))
-  weight <- design_weight * exp(log_density)
-  list(theta = theta, weight = weight / sum(weight), covariance = covariance,
-       stretch = stretch, log_density = log_density)
+  log_density <- apply(theta, 1, log_post) - log_post_hat
+  # a failed inner solve would otherwise give NaN weights
+  stopifnot(all(is.finite(log_density)))
+  list(theta = theta, weight = ccd_weights(log_density, d, f0),
+       covariance = covariance, stretch = stretch, log_density = log_density)
 }
 
 # The template's parameter list of fit with theta (optimiser scale) in place
@@ -596,48 +495,38 @@ theta_par_list <- function(fit, theta) {
   par_list
 }
 
-# The final model (#34). Stage A for starting values; then theta at the
-# penalised maximum of TMB's Laplace approximation to the marginal likelihood
-# of the beta-binomial counts (likelihood = 1 in the template), started from
-# stage A's hyperparameters and latent mode; then the posterior of theta by
-# CCD (ccd_points()), with the hyperparameters at each point in
-# fit$ccd$hyper. The fit itself is the conditional fit at theta_hat: latent
-# posterior N(mode, H^-1), with precision_obs W there for the linearised
-# cut-posterior shift (conditional_fit()). Predictions mix over the CCD points
-# (correction_node_draws(), predict_correction()). Arguments as for
-# fit_stage_a()
+# The final model (#34). theta at the penalised maximum of TMB's Laplace
+# approximation to the marginal likelihood of the beta-binomial counts,
+# started from correction_setup(); then the posterior of theta by CCD
+# (ccd_points()), with the hyperparameters at each point in fit$ccd$hyper.
+# The fit itself is the conditional fit at theta_hat: latent posterior
+# N(mode, H^-1), with precision_obs W there for the linearised cut-posterior
+# shift (conditional_fit()). Predictions mix over the CCD points
+# (correction_node_draws(), predict_correction()). train, t0, T and meshes as
+# in the API above
 fit_correction <- function(train, t0, T = max(train$year), meshes,
                            priors = correction_priors(),
                            control = list(eval.max = 1000, iter.max = 500)) {
   start_time <- Sys.time()
   elapsed <- function() as.numeric(Sys.time() - start_time, units = "secs")
-  fit_a <- fit_stage_a(train[setdiff(names(train), c("z", "v"))], t0 = t0,
-                       T = T, meshes = meshes, priors = priors,
-                       control = control)
-  if (fit_a$opt$convergence != 0) {
-    stop("stage A did not converge: ", fit_a$opt$message)
-  }
-  time_a <- elapsed()
-  obj <- correction_marginal(fit_a)
-  opt <- nlminb(hyper_vector(fit_a), obj$fn, obj$gr, control = control)
+  setup <- correction_setup(train, t0, T, meshes, priors)
+  obj <- correction_adfun(setup$data, setup$parameters)
+  opt <- nlminb(obj$par, obj$fn, obj$gr, control = control)
   max_gradient <- max(abs(obj$gr(opt$par)))
   time_laplace <- elapsed()
   ccd <- ccd_points(obj, setNames(opt$par, names(obj$par)))
+  fit <- conditional_fit(setup$fit, obj, opt$par)
   ccd$hyper <- bind_rows(lapply(seq_len(nrow(ccd$theta)), function(j) {
-    as_tibble(correction_hyper(theta_par_list(fit_a, ccd$theta[j, ]),
-                               obj$env$data))
+    as_tibble(correction_hyper(theta_par_list(fit, ccd$theta[j, ])))
   }))
-  fit <- conditional_fit(fit_a, obj, opt$par)
-  fit$obj <- NULL
-  fit$tmb_data$likelihood <- 1L
   fit$opt <- opt
+  fit$control <- control
   fit$max_gradient <- max_gradient
   fit$ccd <- ccd
-  fit$objective_a <- fit_a$opt$objective
   fit$id <- sprintf("%s-%i", format(Sys.time(), "%Y%m%d%H%M%OS6"),
                     Sys.getpid())
-  fit$timings <- c(stage_a = time_a, laplace = time_laplace - time_a,
-                   ccd = elapsed() - time_laplace, total = elapsed())
+  fit$timings <- c(laplace = time_laplace, ccd = elapsed() - time_laplace,
+                   total = elapsed())
   fit
 }
 
@@ -662,9 +551,7 @@ fit_summary <- function(fit) {
          nlminb_message = fit$opt$message,
          iterations = fit$opt$iterations,
          max_gradient = fit$max_gradient,
-         stage_a_objective = fit$objective_a,
          ccd_points = nrow(fit$ccd$theta),
-         time_stage_a_s = fit$timings[["stage_a"]],
          time_laplace_s = fit$timings[["laplace"]],
          time_ccd_s = fit$timings[["ccd"]])
   ))
@@ -746,21 +633,18 @@ correction_node_draws_at <- function(fit, years, n_draws,
 }
 
 # The point of p(theta | y) each of n_draws draws uses: the CCD points
-# allotted by systematic resampling of their weights (caller's RNG)
+# allotted by systematic resampling of their weights, in random order, so that
+# no point is paired with a contiguous run of the (MCMC-ordered) dynamical
+# draws (caller's RNG)
 ccd_allocation <- function(weight, n_draws) {
   u <- (seq_len(n_draws) - runif(1)) / n_draws
-  findInterval(u, cumsum(weight) / sum(weight)) + 1
+  sample(findInterval(u, cumsum(weight) / sum(weight)) + 1)
 }
 
-# The conditional fits at the CCD points `points` of fit, one at a time in an
-# order in which each is near the last, so that each inner solve starts from
-# a nearby mode: calls use(j, fit_j) for each
+# The conditional fits at the CCD points `points` of fit: calls use(j, fit_j)
+# for each. TMB starts each inner solve from the best mode so far
 for_ccd_points <- function(fit, points, use) {
   obj <- correction_obj(fit)
-  if (length(points) > 2) {
-    points <- points[point_order(fit$ccd$theta[points, , drop = FALSE],
-                                 fit$ccd$covariance)]
-  }
   for (j in points) use(j, conditional_fit(fit, obj, fit$ccd$theta[j, ]))
 }
 
@@ -771,9 +655,6 @@ for_ccd_points <- function(fit, points, use) {
 # mean of the conditional means
 correction_node_draws <- function(fit, years, n_draws, m_draws_train = NULL,
                                   mean = FALSE) {
-  if (is.null(fit$ccd)) {
-    return(correction_node_draws_at(fit, years, n_draws, m_draws_train, mean))
-  }
   out <- NULL
   fill <- function(fields, columns, scale = 1) {
     fields$theta <- NULL
@@ -852,41 +733,24 @@ iid_noise <- function(fit, new, n_draws, point = NULL) {
 # Draws x points predictive draws of m + omega + xi + fresh noise (u, p, sy)
 # at the rows of `new` (lon/lat or x_km/y_km, year, cell, study, and m, used
 # when there are no dynamical draws): the logit mortality of new assays,
-# before the beta-binomial assay noise, mixed over theta. With m_draws_train
+# before the beta-binomial assay noise, mixed over theta
+# (correction_node_draws(), project_correction()). With m_draws_train
 # (K x n_obs) and m_draws_new (K x nrow(new)), the paired dynamical draws,
 # draw d uses dynamical draw ((d - 1) mod K) + 1: its cut-posterior shift and
-# its m at the new points; and CCD point j(d), allotted by the weights, whose
-# conditional fit is made once. Generated in batches to bound memory. With
-# noise = FALSE, the same without the noise: m + omega + xi, whose inverse
-# logit is what the maps show
+# its m at the new points. With noise = FALSE, the same without the noise:
+# m + omega + xi, whose inverse logit is what the maps show
 predict_correction <- function(fit, new, m_draws_train = NULL,
                                m_draws_new = NULL, n_draws = 1000,
-                               batch_size = 100, noise = TRUE) {
+                               noise = TRUE) {
   stopifnot(is.null(m_draws_train) == is.null(m_draws_new),
             is.null(m_draws_new) || ncol(m_draws_new) == nrow(new))
-  draws <- matrix(NA_real_, n_draws, nrow(new))
-  predict_at <- function(fit_j, rows) {
-    for (batch in split(rows, ceiling(seq_along(rows) / batch_size))) {
-      if (is.null(m_draws_train)) {
-        fields <- correction_node_draws_at(fit_j, new$year, length(batch))
-        m_new <- new$m
-      } else {
-        k <- ((batch - 1) %% nrow(m_draws_train)) + 1
-        fields <- correction_node_draws_at(fit_j, new$year, length(batch),
-                                           m_draws_train[k, , drop = FALSE])
-        m_new <- t(m_draws_new[k, , drop = FALSE])
-      }
-      draws[batch, ] <<- t(m_new + project_correction(fit_j, fields, new,
-                                                      noise = noise))
-    }
+  m_train <- NULL
+  m_new <- new$m
+  if (!is.null(m_draws_train)) {
+    k <- ((seq_len(n_draws) - 1) %% nrow(m_draws_train)) + 1
+    m_train <- m_draws_train[k, , drop = FALSE]
+    m_new <- t(m_draws_new[k, , drop = FALSE])
   }
-  if (is.null(fit$ccd)) {
-    predict_at(fit, seq_len(n_draws))
-  } else {
-    point <- ccd_allocation(fit$ccd$weight, n_draws)
-    for_ccd_points(fit, unique(point), function(j, fit_j) {
-      predict_at(fit_j, which(point == j))
-    })
-  }
-  draws
+  fields <- correction_node_draws(fit, unique(new$year), n_draws, m_train)
+  t(m_new + project_correction(fit, fields, new, noise = noise))
 }
