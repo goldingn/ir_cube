@@ -481,8 +481,13 @@ bioassays <- bioassays %>%
   keep_records(!record %in% dropped_sums, "sum of species records") %>%
   keep_records(!record %in% dropped_pooled, "pooled separate tests")
 
-# each record kept takes the best coordinates and species of its copies
-bioassays <- merge_copies(bioassays, candidates, links, finer_pairs)
+# Each record kept takes the best location and species of its copies (see
+# merge_copies()). The IR Mapper extracts are the analysis-ready datasets of
+# Moyes et al. (2019). In October 2026, of the tests where their copy was more
+# than 5 km from IR Mapper 2022's, MTM's copy agreed with the extracts in 392
+# and with IR Mapper 2022 in 192; against the Vector Atlas, 94 and 11.
+bioassays <- merge_copies(bioassays, candidates, links, finer_pairs,
+                          analysis_ready = "IR Mapper extracts")
 
 # ---- country labels ----
 

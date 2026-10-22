@@ -353,12 +353,14 @@ location_ranks <- function(all_records, links) {
 # copy in another database). Copies are ranked by location_ranks(), except that
 # a record a reviewer judged located more coarsely than its copy (`finer`: the
 # record keys `finer` and `coarser`) ranks just below that copy; a reviewer saw
-# only the two, so this never raises a record above a third copy. Ties keep the
-# record's own coordinates, else take a copy with the same site name, else the
-# nearest. `coordinates_from` names the copy the coordinates came from.
+# only the two, so this never raises a record above a third copy. Among
+# equally ranked copies, a copy in an `analysis_ready` database is preferred,
+# then the record's own coordinates, then a copy with the same site name, then
+# the nearest. `coordinates_from` names the copy the coordinates came from.
 merge_copies <- function(records, all_records, links,
                          finer = tibble(finer = character(),
-                                        coarser = character())) {
+                                        coarser = character()),
+                         analysis_ready = character()) {
   copies <- links %>%
     filter(!is.na(kept)) %>%
     distinct(dropped, kept)
@@ -367,7 +369,7 @@ merge_copies <- function(records, all_records, links,
     found <- members %>%
       inner_join(copies, by = c("member" = "kept"),
                  relationship = "many-to-many") %>%
-      transmute(kept, member = dropped) %>%
+      distinct(kept, member = dropped) %>%
       anti_join(members, by = c("kept", "member"))
     if (nrow(found) == 0) break
     members <- bind_rows(members, found)
@@ -384,7 +386,8 @@ merge_copies <- function(records, all_records, links,
                 own_lon = longitude, own_site = site)
   members <- members %>%
     left_join(all_records %>%
-                select(record, record_key, latitude, longitude, site, species),
+                select(record, record_key, database, latitude, longitude,
+                       site, species),
               by = c("member" = "record")) %>%
     left_join(select(ranks, record, rank), by = c("member" = "record")) %>%
     left_join(reviewed_ranks, by = "record_key") %>%
@@ -395,7 +398,8 @@ merge_copies <- function(records, all_records, links,
                                         cbind(own_lon, own_lat),
                                         miles = FALSE))
   location <- members %>%
-    arrange(kept, desc(rank), member != kept, !same_name, km) %>%
+    arrange(kept, desc(rank), !database %in% analysis_ready, member != kept,
+            !same_name, km) %>%
     distinct(kept, .keep_all = TRUE) %>%
     select(record = kept, latitude, longitude, site,
            coordinates_from = record_key)
