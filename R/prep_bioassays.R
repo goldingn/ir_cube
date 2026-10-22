@@ -316,12 +316,13 @@ finer_records <- reviewed %>%
   pull(key)
 
 record_info <- bioassays %>%
-  select(record, record_key, database, citation, month, generation,
+  select(record, record_key, database, citation, site, month, generation,
          preference)
 pairs <- agreeing_pairs(bioassays, max_km, max_km_within) %>%
   left_join(record_info, by = c("a" = "record")) %>%
   left_join(record_info, by = c("b" = "record"), suffix = c("_a", "_b")) %>%
-  mutate(pair_id = pair_id(record_key_a, record_key_b)) %>%
+  mutate(pair_id = pair_id(record_key_a, record_key_b),
+         name_match = same_site_name(site_a, site_b)) %>%
   left_join(select(decisions, pair_id, decision), by = "pair_id")
 
 # Within a database. Two records with the same citation are one entered twice

@@ -255,12 +255,38 @@ agreeing_pairs <- function(records, max_km, max_km_within) {
     distinct(a = record, b = record_b, agreement, extreme, km, within)
 }
 
-# Choose pairs of copies one-to-one: in order of distance, accept a pair unless
-# either record is already in an accepted pair with a record of the other's
-# database (or citation, given `between`). So one record can't remove several
-# separate tests of another database that share its result.
+# Whether two site names name the same place, ignoring case, accents and
+# punctuation: the same, one within the other (for names of four or more
+# characters), or differing in at most a fifth of their characters (spelling),
+# provided any numbers in them are the same ("Houeyiho (1)" and "Houeyiho (2)"
+# are two sites)
+same_site_name <- function(x, y) {
+  key <- function(s) {
+    ascii <- stringi::stri_trans_general(s, "Latin-ASCII")
+    gsub("[^a-z0-9]", "", tolower(ascii))
+  }
+  kx <- coalesce(key(x), "")
+  ky <- coalesce(key(y), "")
+  ok <- nchar(kx) >= 4 & nchar(ky) >= 4 &
+    gsub("[^0-9]", "", kx) == gsub("[^0-9]", "", ky)
+  same <- rep(FALSE, length(kx))
+  i <- which(ok)
+  edits <- mapply(function(a, b) utils::adist(a, b)[1, 1], kx[i], ky[i])
+  same[i] <- kx[i] == ky[i] | str_detect(kx[i], fixed(ky[i])) |
+    str_detect(ky[i], fixed(kx[i])) |
+    edits <= 0.2 * pmax(nchar(kx[i]), nchar(ky[i]))
+  same
+}
+
+# Choose pairs of copies one-to-one: pairs of records with the same site name
+# (`name_match`) first, then in order of distance, accept a pair unless either
+# record is already in an accepted pair with a record of the other's database
+# (or citation, given `between`). So one record can't remove several separate
+# tests of another database that share its result, and where the databases
+# place sites inconsistently, records are paired by site name rather than by
+# the nearest coordinates.
 one_to_one <- function(pairs, between = c("database_a", "database_b")) {
-  pairs <- arrange(pairs, km)
+  pairs <- arrange(pairs, !name_match, km)
   key_a <- paste(pairs$a, pairs[[between[2]]])
   key_b <- paste(pairs$b, pairs[[between[1]]])
   used <- new.env(hash = TRUE)
