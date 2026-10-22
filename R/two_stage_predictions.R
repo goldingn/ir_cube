@@ -8,7 +8,8 @@
 # Draw d pairs dynamical draw d with a latent draw from N(mode, H^-1), shifted
 # by the cut-posterior formula for it (correction_node_draws()). The target is
 # m + omega + xi on the logit scale. u and p are observation-level noise: they
-# enter only predictions of new assays, as fresh draws (noise = TRUE).
+# enter as fresh draws, in predictions of new assays (noise = TRUE) and in the
+# maps' n*_local (cell_noise()).
 
 source("R/two_stage_helpers.R")
 source("R/dynamical_predictions.R")
@@ -108,10 +109,9 @@ two_stage_chunk <- function(setup, cells, rows = seq_along(cells$cells)) {
 # every year of the setup, as project_correction() computes it for the rows
 # of a cells x years table, but projecting omega and each year's xi once per
 # cell rather than once per cell-year: a list by year of cells x draws. With
-# noise = TRUE, fresh draws of the iid terms are added (iid_noise()), one per
-# level of each key in the cells x years table, as project_correction() does.
-# The meshes cover the prediction mask (checked by the fit step of
-# R/two_stage_maps.R)
+# noise = TRUE, fresh draws of the iid terms are added (cell_noise()), as
+# project_correction() does. The meshes cover the prediction mask (checked by
+# the fit step of R/two_stage_maps.R)
 project_cells <- function(fit, fields, chunk, years, noise = FALSE) {
   omega <- as.matrix(mesh_basis(fit$mesh, chunk$coords) %*% fields$omega)
   A_xi <- mesh_basis(fit$mesh_xi, chunk$coords)
@@ -119,17 +119,22 @@ project_cells <- function(fit, fields, chunk, years, noise = FALSE) {
     if (year <= fit$t0) return(omega)
     omega + as.matrix(A_xi %*% fields$xi[[as.character(year)]])
   })
-  if (noise) {
-    n_cells <- length(chunk$cells)
-    fresh <- iid_noise(fit, tibble(cell = rep(chunk$cells, length(years)),
-                                   year = rep(years, each = n_cells)),
-                       ncol(omega))
-    for (j in seq_along(years)) {
-      out[[j]] <- out[[j]] + fresh[(j - 1) * n_cells + seq_len(n_cells), ,
-                                   drop = FALSE]
-    }
-  }
+  if (noise) out <- Map(`+`, out, cell_noise(fit, chunk, years, ncol(omega)))
   out
+}
+
+# Fresh draws of the iid terms named in `terms` (iid_noise()) at the cells of
+# `chunk` and `years`, one per level of each key in the cells x years table: a
+# list by year of cells x n_draws
+cell_noise <- function(fit, chunk, years, n_draws,
+                       terms = names(correction_iid_terms)) {
+  n_cells <- length(chunk$cells)
+  fresh <- iid_noise(fit, tibble(cell = rep(chunk$cells, length(years)),
+                                 year = rep(years, each = n_cells)),
+                     n_draws, terms)
+  lapply(seq_along(years), function(j) {
+    fresh[(j - 1) * n_cells + seq_len(n_cells), , drop = FALSE]
+  })
 }
 
 # The logit of the dynamical model, m, and of the two-stage model, m + omega +

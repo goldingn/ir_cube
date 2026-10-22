@@ -98,3 +98,39 @@ col_sds <- function(x) {
   mu <- colMeans(x)
   sqrt(pmax(colSums(x ^ 2) - n * mu ^ 2, 0) / (n - 1))
 }
+
+# n* (#40): the number of independent bioassays of N mosquitoes at a
+# pixel-year whose mean would estimate population mortality as precisely as
+# the prediction. Unlike the posterior SD, it is scaled by a bioassay's noise,
+# which also shrinks towards mortality 0 or 1.
+#
+# A bioassay of type k has variance p_k (1 - p_k) D_k / N about the population
+# mortality p_k, with D_k = 1 + (N - 1) rho_k, rho_k the bioassay overdispersion
+# from replicate pairs (rho_lookup()). The prediction is q = sum_k w_k p_k (one
+# type, or llin_effective). n bioassays split by weight, n w_k of type k, have
+# a weighted mean with error variance sum_k w_k p_k (1 - p_k) D_k / (n N).
+# Averaging over the posterior (E[p_k (1 - p_k)] = m_k (1 - m_k) - s_k^2) and
+# equating it to the posterior variance of q, s^2:
+#   n* = sum_k w_k [m_k (1 - m_k) - s_k^2] D_k / (N s^2),
+# for one type [m (1 - m) / s^2 - 1] D / N. Averaging rho over the types
+# instead would use q (1 - q) >= sum_k w_k p_k (1 - p_k), overstating n*.
+#
+# s = sum_k w_k s_k: the types' errors perfectly correlated, which gives the
+# largest s the marginal SDs allow, and so the smallest n*. The corrections are
+# fitted per type, so in the posterior the types' errors are nearly
+# independent. At held-out pixel-years with two pyrethroids the map's errors
+# correlate at 0.99 (95% CI 0.94-1.03) once the bioassay noise is removed
+# (PR #59), but that includes u, p and survey error shared by the
+# pyrethroids, which n*_pop leaves out. So s rests on being the largest, not
+# on the 0.99.
+#
+# means, sds: lists of the types' posterior means and SDs (numbers, matrices
+# or rasters), of m + omega + xi for n*_pop or with u and p for n*_local;
+# rho, weights: one per type
+n_star <- function(means, sds, rho, weights = 1, N = 100) {
+  noise <- Map(function(m, s_k, rho_k, w) {
+    w * (m * (1 - m) - s_k ^ 2) * (1 + (N - 1) * rho_k)
+  }, means, sds, rho, weights)
+  s <- Reduce(`+`, Map(`*`, sds, weights))
+  Reduce(`+`, noise) / (N * s ^ 2)
+}

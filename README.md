@@ -33,8 +33,8 @@ Running order of scripts:
 13. mtm_ir_explore.R
 14. ploidy_demo.R
 15. predict.R
-16. two_stage_maps.R: `prepare`, `fit` 1-9, `map` for the six types not
-    in LLINs and `llin_effective`, then `figures`
+16. two_stage_maps.R: `prepare`, `fit` 1-9, `map` 1-9, `map
+    llin_effective`, then `figures`
     (`doc/two_stage_plan.md`). The figure scripts below that show
     predictions read its outputs
 17. summarise_model_fit.R
