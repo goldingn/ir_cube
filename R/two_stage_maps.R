@@ -485,6 +485,9 @@ read_map <- function(type, quantity) {
               n_star_local = n_star_map(
                 function(t) rast(raster_file(t, "local_mean")),
                 function(t) rast(raster_file(t, "local_sd"))),
+              n_star_cv = kappa_cv * n_star_map(
+                function(t) rast(raster_file(t, "local_mean")),
+                function(t) rast(raster_file(t, "local_sd"))),
               difference_pp = 100 * (yearly("susceptibility") -
                                        rast(raster_file(type,
                                                         "dynamical_mortality"))),
@@ -548,8 +551,16 @@ model_note <- function(type) {
 }
 
 # the posterior uncertainty as n*, under both readings of u and p
-# (local_terms). The posterior mean is mapped by R/fig_ir_maps.R
+# (local_terms), and n*_local adjusted by cross-validation: times kappa, the
+# map's predicted over observed error variance at held-out bioassays
+# (R/n_star_calibration.R; the V5pg folds, all experiments pooled). The
+# posterior mean is mapped by R/fig_ir_maps.R
+kappa_cv <- 0.49
 n_star_target <- c(
+  cv = paste("ilogit(m + omega + xi + u + p), times 0.49: n*_CV / n*_local at",
+             "held-out bioassays, the map's predicted over observed error",
+             "variance (cross-validation, all experiments pooled; 95% CI",
+             "0.46-0.53)"),
   pop = paste("ilogit(m + omega + xi), u and p taken as data error: the upper",
               "bound on the map's worth"),
   local = paste("ilogit(m + omega + xi + u + p), u and p taken as real local",
