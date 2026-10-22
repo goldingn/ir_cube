@@ -452,6 +452,8 @@ cross_pairs <- pairs %>%
 
 dropped_sums <- aggregated_copies(
   filter(bioassays, !record %in% dropped_within))
+dropped_pooled <- pooled_copies(
+  filter(bioassays, !record %in% dropped_within))
 
 # every copy dropped, with the record kept in its place
 links <- bind_rows(
@@ -462,7 +464,9 @@ links <- bind_rows(
                           "between databases: wrong scale",
                           "between databases: copy")),
   tibble(dropped = dropped_sums,
-         rule = "sum of species-level records of one study")
+         rule = "sum of species-level records of one study"),
+  tibble(dropped = dropped_pooled,
+         rule = "separate tests of one study pooled into one record")
 ) %>%
   select(rule, km, dropped, kept)
 
@@ -473,7 +477,8 @@ bioassays <- bioassays %>%
   keep_records(!record %in% dropped_within, "copy within a database") %>%
   keep_records(!record %in% dropped_cross, "copy in another database") %>%
   keep_records(!record %in% dropped_scale, "number dead given as mortality") %>%
-  keep_records(!record %in% dropped_sums, "sum of species records")
+  keep_records(!record %in% dropped_sums, "sum of species records") %>%
+  keep_records(!record %in% dropped_pooled, "pooled separate tests")
 
 # each record kept takes the best coordinates and species of its copies
 bioassays <- merge_copies(bioassays, candidates, links, finer_records)

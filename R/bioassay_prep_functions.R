@@ -379,6 +379,43 @@ merge_copies <- function(records, all_records, links, finer = character()) {
     left_join(species, by = "record")
 }
 
+# Some databases pool a study's separate tests at a site (in different months,
+# say) into one record, summing the mosquitoes tested, where another database
+# holds the tests. The pooled records: those whose number tested equals the sum
+# over two or more records of one study at one site (to 0.01 degrees), year
+# and insecticide in another database, within 25 km, and whose mortality is
+# within 5 percentage points of theirs pooled. In October 2026, 55 records
+# matched within 5 points, 39 of them within half a point; the 17 more than 10
+# points apart are coincidences.
+pooled_copies <- function(records) {
+  tests <- records %>%
+    filter(n_recorded) %>%
+    mutate(study = coalesce(citation_author_year(citation), citation),
+           site_key = paste(round(latitude, 2), round(longitude, 2)))
+  sets <- tests %>%
+    group_by(database, study, site_key, year_start, insecticide_type) %>%
+    filter(n() >= 2) %>%
+    summarise(n_sum = sum(mosquito_number),
+              pooled_mortality = 100 * sum(died) / n_sum,
+              latitude = mean(latitude), longitude = mean(longitude),
+              .groups = "drop")
+  sets %>%
+    inner_join(tests %>%
+                 select(record, database_pooled = database, year_start,
+                        insecticide_type, n_sum = mosquito_number,
+                        mortality_adjusted, lat_p = latitude,
+                        lon_p = longitude),
+               by = c("year_start", "insecticide_type", "n_sum"),
+               relationship = "many-to-many") %>%
+    filter(database_pooled != database,
+           abs(mortality_adjusted - pooled_mortality) <= 5,
+           fields::rdist.earth.vec(cbind(longitude, latitude),
+                                   cbind(lon_p, lat_p),
+                                   miles = FALSE) <= 25) %>%
+    pull(record) %>%
+    unique()
+}
+
 # Some sources hold a bioassay split by species (e.g. An. arabiensis and An.
 # gambiae s.s.) and another, or the same, source holds it summed to complex
 # level. The complex-level records whose died and mosquito_number equal exactly
