@@ -140,6 +140,16 @@ paper_link <- function(link, citation) {
            url, search)
 }
 
+# the fewest decimal places given in either coordinate
+coordinate_places <- function(latitude, longitude) {
+  places <- function(x) {
+    p <- rep(6L, length(x))
+    for (d in 5:0) p[abs(x * 10 ^ d - round(x * 10 ^ d)) < 1e-7] <- d
+    p
+  }
+  pmin(places(latitude), places(longitude))
+}
+
 # ---- finding copies ----
 
 # The groups of records joined by a set of pairs (`a`, `b` record numbers), as
@@ -263,6 +273,84 @@ one_to_one <- function(pairs, between = c("database_a", "database_b")) {
     }
   }
   pairs[accept, ]
+}
+
+# How precisely each record is located, from 0 (coarse) to 2, given the copies
+# found (`links`: dropped and kept records). A record is coarsely located (0)
+# if its point, under one site name, matches copies in another citation at two
+# or more differently named sites more than 1 km apart: a database that gives
+# a district's separate tests at one point (a many-to-one structure). It is
+# less precisely located (1) if its site is named as a centre point or
+# centroid, or a coordinate has at most one decimal place (about 5-11 km).
+location_ranks <- function(all_records, links) {
+  copies <- links %>%
+    filter(!is.na(kept)) %>%
+    distinct(dropped, kept)
+  info <- all_records %>%
+    transmute(record, site, latitude, longitude,
+              group = paste(database, citation),
+              point = paste(round(latitude, 4), round(longitude, 4)))
+  both_ways <- bind_rows(transmute(copies, record = dropped, partner = kept),
+                         transmute(copies, record = kept, partner = dropped))
+  many_to_one <- both_ways %>%
+    left_join(select(info, record, group, point, site), by = "record") %>%
+    left_join(select(info, partner = record, partner_group = group,
+                     partner_point = point, partner_site = site,
+                     plat = latitude, plon = longitude),
+              by = "partner") %>%
+    group_by(group, point, partner_group) %>%
+    filter(n_distinct(site) == 1, n_distinct(partner_site) >= 2,
+           n_distinct(partner_point) >= 2) %>%
+    summarise(km = max(fields::rdist.earth(cbind(plon, plat), miles = FALSE)),
+              .groups = "drop") %>%
+    filter(km > 1) %>%
+    distinct(group, point) %>%
+    mutate(many_to_one = TRUE)
+  info %>%
+    left_join(many_to_one, by = c("group", "point")) %>%
+    transmute(
+      record,
+      many_to_one = coalesce(many_to_one, FALSE),
+      rank = case_when(
+        many_to_one ~ 0,
+        grepl("cent(re|er) ?point|centroid", site, ignore.case = TRUE) |
+          coordinate_places(latitude, longitude) <= 1 ~ 1,
+        .default = 2
+      )
+    )
+}
+
+# The records kept, each with its coordinates and site name from the most
+# precisely located of its copies (location_ranks(), or `finer`, the record
+# keys a reviewer judged located more finely; ties keep its own) and its
+# species from the most specific identification, since copies are one test.
+# `coordinates_from` names the copy the coordinates came from.
+merge_copies <- function(records, all_records, links, finer = character()) {
+  copies <- links %>%
+    filter(!is.na(kept)) %>%
+    distinct(dropped, kept)
+  members <- bind_rows(transmute(records, kept = record, member = record),
+                       filter(copies, kept %in% records$record) %>%
+                         transmute(kept, member = dropped)) %>%
+    left_join(all_records %>%
+                select(record, record_key, latitude, longitude, site, species),
+              by = c("member" = "record")) %>%
+    left_join(location_ranks(all_records, links),
+              by = c("member" = "record")) %>%
+    mutate(rank = if_else(record_key %in% finer, 3, rank))
+  location <- members %>%
+    arrange(kept, desc(rank), member != kept) %>%
+    distinct(kept, .keep_all = TRUE) %>%
+    select(record = kept, latitude, longitude, site,
+           coordinates_from = record_key)
+  species <- members %>%
+    arrange(kept, species == "gambiae complex", member != kept) %>%
+    distinct(kept, .keep_all = TRUE) %>%
+    select(record = kept, species)
+  records %>%
+    select(-latitude, -longitude, -site, -species) %>%
+    left_join(location, by = "record") %>%
+    left_join(species, by = "record")
 }
 
 # Some sources hold a bioassay split by species (e.g. An. arabiensis and An.

@@ -297,16 +297,23 @@ bioassays <- bioassays %>%
 
 # A reviewer can record whether a pair of records are copies ("copy") or
 # separate tests ("different") in review/bioassay_duplicates.csv, which
-# overrides the rules below. The pairs flagged for review are written there
-# (below).
+# overrides the rules below, and which of the two is located more finely
+# (`finer`: "a" or "b"), which decides the coordinates of the record kept.
+# The pairs flagged for review are written there (below).
 review_file <- "review/bioassay_duplicates.csv"
-decisions <- tibble(pair_id = character(), decision = character(),
-                    notes = character())
+reviewed <- tibble(pair_id = character(), decision = character(),
+                   notes = character(), finer = character())
 if (file.exists(review_file)) {
-  decisions <- read_csv(review_file, col_types = cols(.default = "c")) %>%
-    filter(decision %in% c("copy", "different")) %>%
-    select(pair_id, decision, notes)
+  reviewed <- read_csv(review_file, col_types = cols(.default = "c")) %>%
+    bind_rows(reviewed) %>%
+    filter(decision %in% c("copy", "different") | finer %in% c("a", "b"))
 }
+decisions <- filter(reviewed, decision %in% c("copy", "different"))
+finer_records <- reviewed %>%
+  filter(finer %in% c("a", "b")) %>%
+  transmute(key = if_else(finer == "a", paste(source_a, record_id_a),
+                          paste(source_b, record_id_b))) %>%
+  pull(key)
 
 record_info <- bioassays %>%
   select(record, record_key, database, citation, month, generation,
@@ -467,6 +474,9 @@ bioassays <- bioassays %>%
   keep_records(!record %in% dropped_scale, "number dead given as mortality") %>%
   keep_records(!record %in% dropped_sums, "sum of species records")
 
+# each record kept takes the best coordinates and species of its copies
+bioassays <- merge_copies(bioassays, candidates, links, finer_records)
+
 # ---- country labels ----
 
 # the country labels must agree with the coordinates; see check_country_labels()
@@ -574,11 +584,12 @@ if (file.exists(review_file)) {
 }
 review <- review %>%
   mutate(across(everything(), as.character)) %>%
-  left_join(select(decisions, pair_id, decision, notes), by = "pair_id") %>%
+  left_join(select(reviewed, pair_id, decision, notes, finer),
+            by = "pair_id") %>%
   bind_rows(previous %>%
               filter(!pair_id %in% review$pair_id, !is.na(decision)) %>%
               mutate(reason = "no longer matched")) %>%
-  relocate(pair_id, decision, notes, reason) %>%
+  relocate(pair_id, decision, finer, notes, reason) %>%
   arrange(!is.na(decision), reason, citation_a)
 dir.create(dirname(review_file), showWarnings = FALSE)
 write_excel_csv(review, review_file, na = "")
@@ -601,5 +612,5 @@ bioassays %>%
          month, latitude, longitude, site, species, species_complex,
          insecticide_type, insecticide_class, concentration, test_type,
          country_name, region, citation, link, study, source, database,
-         record_id) %>%
+         record_id, coordinates_from) %>%
   saveRDS("data/clean/all_gambiae_complex_data.RDS")
