@@ -296,24 +296,25 @@ bioassays <- bioassays %>%
   arrange(record)
 
 # A reviewer can record whether a pair of records are copies ("copy") or
-# separate tests ("different") in review/bioassay_duplicates.csv, which
-# overrides the rules below, and which of the two is located more finely
-# (`finer`: "a" or "b"), which decides the coordinates of the record kept.
-# The pairs flagged for review are written there (below).
+# separate tests ("different") in review/bioassay_duplicates.csv, and for
+# copies which of the two is located more finely (`finer`: "a" or "b"; see
+# merge_copies()). A pair decided "different" is never taken as copies; any
+# other decision (blank, "unsure") leaves the rules below to decide. The pairs
+# flagged for review are written there (below).
 review_file <- "review/bioassay_duplicates.csv"
 reviewed <- tibble(pair_id = character(), decision = character(),
                    notes = character(), finer = character())
 if (file.exists(review_file)) {
   reviewed <- read_csv(review_file, col_types = cols(.default = "c")) %>%
-    bind_rows(reviewed) %>%
-    filter(decision %in% c("copy", "different") | finer %in% c("a", "b"))
+    bind_rows(reviewed)
 }
 decisions <- filter(reviewed, decision %in% c("copy", "different"))
-finer_records <- reviewed %>%
-  filter(finer %in% c("a", "b")) %>%
-  transmute(key = if_else(finer == "a", paste(source_a, record_id_a),
-                          paste(source_b, record_id_b))) %>%
-  pull(key)
+finer_pairs <- decisions %>%
+  filter(decision == "copy", finer %in% c("a", "b")) %>%
+  transmute(key_a = paste(source_a, record_id_a),
+            key_b = paste(source_b, record_id_b),
+            finer = if_else(finer == "a", key_a, key_b),
+            coarser = if_else(finer == key_a, key_b, key_a))
 
 record_info <- bioassays %>%
   select(record, record_key, database, citation, site, month, generation,
@@ -388,9 +389,9 @@ drop_copies <- function(pairs, grouped) {
       select(dropped, kept, rule, decision, km)
   }
 }
+# pairs under these rules, unless a reviewer decided they are different tests
 is_copy <- function(pairs, rules) {
-  coalesce(pairs$decision == "copy",
-           pairs$rule %in% rules & is.na(pairs$decision))
+  pairs$rule %in% rules & coalesce(pairs$decision == "copy", TRUE)
 }
 not_dropped <- function(pairs, dropped) {
   filter(pairs, !a %in% dropped$dropped, !b %in% dropped$dropped)
@@ -481,7 +482,7 @@ bioassays <- bioassays %>%
   keep_records(!record %in% dropped_pooled, "pooled separate tests")
 
 # each record kept takes the best coordinates and species of its copies
-bioassays <- merge_copies(bioassays, candidates, links, finer_records)
+bioassays <- merge_copies(bioassays, candidates, links, finer_pairs)
 
 # ---- country labels ----
 
@@ -549,8 +550,8 @@ bioassays <- bioassays %>%
 # what the reviewer needs: each record's citation, a link to the paper (its
 # DOI, the database's URL, or a Google Scholar search), and the fields that
 # might distinguish two tests. The reviewer fills in `decision` ("copy" or
-# "different") and `notes`, which are kept when the file is rewritten.
-# Undecided pairs are taken as copies.
+# "different"), `finer` and `notes`, which are kept when the file is
+# rewritten. Undecided pairs are taken as copies.
 review_fields <- c("source", "record_id", "citation", "link", "site",
                    "latitude", "longitude", "month", "generation", "species",
                    "mosquito_number", "n_recorded", "died",
@@ -584,15 +585,11 @@ review <- bind_rows(
   mutate(reason = coalesce(rule, "between databases"),
          km = round(km, 2)) %>%
   side_by_side()
-previous <- tibble(pair_id = character(), decision = character())
-if (file.exists(review_file)) {
-  previous <- read_csv(review_file, col_types = cols(.default = "c"))
-}
 review <- review %>%
   mutate(across(everything(), as.character)) %>%
   left_join(select(reviewed, pair_id, decision, notes, finer),
             by = "pair_id") %>%
-  bind_rows(previous %>%
+  bind_rows(reviewed %>%
               filter(!pair_id %in% review$pair_id, !is.na(decision)) %>%
               mutate(reason = "no longer matched")) %>%
   relocate(pair_id, decision, finer, notes, reason) %>%

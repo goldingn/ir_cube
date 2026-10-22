@@ -347,25 +347,54 @@ location_ranks <- function(all_records, links) {
 }
 
 # The records kept, each with its coordinates and site name from the most
-# precisely located of its copies (location_ranks(), or `finer`, the record
-# keys a reviewer judged located more finely; ties keep its own) and its
-# species from the most specific identification, since copies are one test.
-# `coordinates_from` names the copy the coordinates came from.
-merge_copies <- function(records, all_records, links, finer = character()) {
+# precisely located of its copies, and its species from the most specific
+# identification, since copies are one test. A copy of a copy is a copy (e.g. a
+# record dropped within a database, whose kept record was then dropped for a
+# copy in another database). Copies are ranked by location_ranks(), except that
+# a record a reviewer judged located more coarsely than its copy (`finer`: the
+# record keys `finer` and `coarser`) ranks just below that copy; a reviewer saw
+# only the two, so this never raises a record above a third copy. Ties keep the
+# record's own coordinates, else take a copy with the same site name, else the
+# nearest. `coordinates_from` names the copy the coordinates came from.
+merge_copies <- function(records, all_records, links,
+                         finer = tibble(finer = character(),
+                                        coarser = character())) {
   copies <- links %>%
     filter(!is.na(kept)) %>%
     distinct(dropped, kept)
-  members <- bind_rows(transmute(records, kept = record, member = record),
-                       filter(copies, kept %in% records$record) %>%
-                         transmute(kept, member = dropped)) %>%
+  members <- transmute(records, kept = record, member = record)
+  repeat {
+    found <- members %>%
+      inner_join(copies, by = c("member" = "kept")) %>%
+      transmute(kept, member = dropped) %>%
+      anti_join(members, by = c("kept", "member"))
+    if (nrow(found) == 0) break
+    members <- bind_rows(members, found)
+  }
+  ranks <- all_records %>%
+    select(record, record_key) %>%
+    left_join(location_ranks(all_records, links), by = "record")
+  reviewed_ranks <- finer %>%
+    left_join(select(ranks, finer = record_key, finer_rank = rank),
+              by = "finer") %>%
+    group_by(record_key = coarser) %>%
+    summarise(below = min(finer_rank) - 0.5)
+  own <- select(records, kept = record, own_lat = latitude,
+                own_lon = longitude, own_site = site)
+  members <- members %>%
     left_join(all_records %>%
                 select(record, record_key, latitude, longitude, site, species),
               by = c("member" = "record")) %>%
-    left_join(location_ranks(all_records, links),
-              by = c("member" = "record")) %>%
-    mutate(rank = if_else(record_key %in% finer, 3, rank))
+    left_join(select(ranks, record, rank), by = c("member" = "record")) %>%
+    left_join(reviewed_ranks, by = "record_key") %>%
+    left_join(own, by = "kept") %>%
+    mutate(rank = pmin(rank, below, na.rm = TRUE),
+           same_name = same_site_name(site, own_site),
+           km = fields::rdist.earth.vec(cbind(longitude, latitude),
+                                        cbind(own_lon, own_lat),
+                                        miles = FALSE))
   location <- members %>%
-    arrange(kept, desc(rank), member != kept) %>%
+    arrange(kept, desc(rank), member != kept, !same_name, km) %>%
     distinct(kept, .keep_all = TRUE) %>%
     select(record = kept, latitude, longitude, site,
            coordinates_from = record_key)
