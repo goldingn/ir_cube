@@ -365,7 +365,8 @@ merge_copies <- function(records, all_records, links,
   members <- transmute(records, kept = record, member = record)
   repeat {
     found <- members %>%
-      inner_join(copies, by = c("member" = "kept")) %>%
+      inner_join(copies, by = c("member" = "kept"),
+                 relationship = "many-to-many") %>%
       transmute(kept, member = dropped) %>%
       anti_join(members, by = c("kept", "member"))
     if (nrow(found) == 0) break
