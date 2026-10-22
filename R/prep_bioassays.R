@@ -897,8 +897,15 @@ ir_everything <- ir_everything %>%
   # filter out na species
   filter(!(is.na(species))) %>% 
   #filter out na concentration
-  filter(!(is.na(concentration)))
-  
+  filter(!(is.na(concentration))) %>%
+  # drop records whose mortality is positive but gives no dead mosquitoes. Some
+  # records hold the mortality as a proportion (1 for 100%) or as the number
+  # that died (1 for 1 of 41), and read as a percentage these can give fewer
+  # than half a mosquito dying, e.g. 1 for 49 mosquitoes gives round(0.49) = 0
+  # dead. A positive percentage of n mosquitoes means at least one died, so
+  # these values can't be read as given. See issue #60.
+  filter(!(died == 0 & mortality_adjusted > 0))
+
 # check concentration and insecticide mapping
 type_concentrations <- ir_everything %>%
   select(insecticide_type, concentration,source) %>%
@@ -1130,11 +1137,76 @@ aggregated_copies <- function(keyed) {
     unique()
 }
 
+# Some records hold the mortality on the wrong scale: as a proportion (1 for
+# 100%), or as the number that died (7 for 7 of 26 mosquitoes). Read as
+# percentages these give the wrong mortality, and as their numbers dead then
+# differ from those of the copies of the same bioassay in other databases, the
+# matching above keeps both. We drop a record as a misscaled copy when another
+# database holds a record within misscaled_copy_km, of the same year,
+# insecticide and number of mosquitoes, whose number dead is this record's
+# mortality read as a proportion (a mortality above 0 and at most 1) or as a
+# count (a whole number up to the number of mosquitoes). That reading must be
+# more than one mosquito from the percentage's, so that differences in rounding
+# between databases near 100 mosquitoes, where a count and a percentage nearly
+# agree, aren't taken for scale errors; and as above, at 0% or 100% the species
+# and concentration must match too. The databases' coordinates for one site can
+# differ by more than a pixel, and a match on the number of mosquitoes and an
+# exact count is unlikely by chance, so we allow more distance than above: in
+# October 2026 every match within 25 km was the same study in both databases,
+# and some beyond 50 km were not. Most were in the IR Mapper downloads: Ondeto
+# et al. 2017 (2014 records) in the 2022 download, which mixes counts and
+# percentages, and Mawejje et al. 2023 in the 2024 download. See issue #60.
+misscaled_copy_km <- 25
+misscaled_copies <- function(keyed) {
+  readings <- keyed %>%
+    mutate(
+      proportion = if_else(mortality_adjusted > 0 & mortality_adjusted <= 1,
+                           round(mosquito_number * mortality_adjusted),
+                           NA),
+      count = if_else(mortality_adjusted == round(mortality_adjusted) &
+                        mortality_adjusted <= mosquito_number,
+                      mortality_adjusted,
+                      NA)
+    ) %>%
+    pivot_longer(c(proportion, count), values_to = "died_read") %>%
+    filter(!is.na(died_read), abs(died_read - died) > 1) %>%
+    select(row, database, longitude, latitude, year_start, insecticide_type,
+           mosquito_number, species, concentration, died_read)
+  copies <- keyed %>%
+    transmute(year_start, insecticide_type, mosquito_number,
+              died_read = died,
+              database_copy = database,
+              longitude_copy = longitude,
+              latitude_copy = latitude,
+              extreme = died == 0 | died == mosquito_number,
+              species_copy = species,
+              concentration_copy = concentration)
+  matches <- readings %>%
+    inner_join(copies,
+               by = c("year_start", "insecticide_type", "mosquito_number",
+                      "died_read"),
+               relationship = "many-to-many") %>%
+    filter(database_copy != database,
+           !extreme | (species == species_copy &
+                         concentration == concentration_copy))
+  matches$km <- as.numeric(st_distance(
+    st_as_sf(matches, coords = c("longitude", "latitude"), crs = 4326),
+    st_as_sf(matches, coords = c("longitude_copy", "latitude_copy"),
+             crs = 4326),
+    by_element = TRUE)) / 1000
+  matches %>%
+    filter(km <= misscaled_copy_km) %>%
+    pull(row) %>%
+    unique()
+}
+
 duplicate_rows <- cross_database_duplicates(keyed)
 aggregated_rows <- aggregated_copies(keyed)
-cat(length(duplicate_rows), "cross-database duplicates and",
+misscaled_rows <- misscaled_copies(keyed)
+cat(length(duplicate_rows), "cross-database duplicates,",
     length(aggregated_rows),
-    "complex-level sums of species-level records dropped\n")
+    "complex-level sums of species-level records and",
+    length(misscaled_rows), "misscaled copies dropped\n")
 
 # every set of two or more records matched on pixel, year, insecticide and
 # result, for checking: the within-database matches are the sets with a
@@ -1154,7 +1226,8 @@ keyed %>%
   write.csv("outputs/review/bioassay_match_sets.csv", row.names = FALSE)
 
 ir_distinct <- ir_distinct %>%
-  filter(!row_number() %in% union(duplicate_rows, aggregated_rows))
+  filter(!row_number() %in% c(duplicate_rows, aggregated_rows,
+                               misscaled_rows))
 
 
 
