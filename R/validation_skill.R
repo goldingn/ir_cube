@@ -11,7 +11,7 @@
 #           prediction, both divided by the years between the two bioassays.
 #           0 is as good as predicting no change; negative is worse
 #
-# Each bar also carries two quantities from the data floor F (the expected
+# Each bar also carries quantities from the data floor F (the expected
 # squared error of a perfect prediction of population mortality, from the
 # assays' beta-binomial noise at rho-hat; noise_floor_record()):
 #
@@ -21,6 +21,7 @@
 #   local    the expected score of an independent second bioassay at the same
 #            pixel-year (level: 100 (1 - 2 F / Var(y)), the target's noise and
 #            its own), or an independent second pair at the same pixel (change)
+#   n*_CV    for level, the number of bioassays the bar is worth (n_star_cv())
 #
 # Intervals resample pixels (cluster_bootstrap(), in R/validation_scoring.R).
 # Replicate i also takes posterior draw i of rho by type, so the intervals on
@@ -59,13 +60,16 @@ rho_replicates <- function(n = n_bootstrap,
 
 # The statistic at the point estimate and over pixel-bootstrap replicates, the
 # replicate's rho draw passed as `rho` (a named vector by type; NULL at the
-# point estimate). Returns estimate, lower and upper per element
-bootstrap_summary <- function(data, statistic, rho_draws) {
+# point estimate). Returns estimate, lower and upper per element, and with
+# n_star = TRUE (level statistics) n*_CV and its interval (n_star_cv())
+bootstrap_summary <- function(data, statistic, rho_draws, n_star = FALSE) {
   point <- statistic(data, NULL)
   replicates <- cluster_bootstrap(data, statistic, rho_draws = rho_draws)
-  tibble(bar = names(point), estimate = unname(point),
-         lower = apply(replicates, 2, quantile, 0.025, na.rm = TRUE),
-         upper = apply(replicates, 2, quantile, 0.975, na.rm = TRUE))
+  out <- tibble(bar = names(point), estimate = unname(point),
+                lower = apply(replicates, 2, quantile, 0.025, na.rm = TRUE),
+                upper = apply(replicates, 2, quantile, 0.975, na.rm = TRUE))
+  if (n_star) out <- bind_cols(out, n_star_cv(point, replicates))
+  out
 }
 
 # the data floor per record, at rho-hat or at a draw of rho by type
@@ -92,6 +96,31 @@ level_statistic <- function(predictions) {
       local = 100 * (1 - 2 * floor / variance),
       scores)
   }
+}
+
+# n*_CV (#40): the number of bioassays at a held-out bioassay's pixel-year
+# whose mean would predict it as accurately as a bar does, F / (D_m - F), with
+# F the data floor and D_m the bar's mean squared error. From the level scores
+# that is (100 - ceiling) / (ceiling - score). The out-of-sample check on the
+# maps' n* (n_star() in R/two_stage_map_functions.R), with the same bioassay
+# noise (rho-hat), but in bioassays of the held-out ones' sizes rather than of
+# 100 mosquitoes.
+#
+# The interval inverts that of R = (ceiling - score) / (100 - ceiling), whose
+# denominator is always positive: n* in [1 / R_upper, 1 / R_lower], infinite
+# where R <= 0 (no number of bioassays matches the bar). Inverting a
+# replicate's n* fails where its R crosses 0. NA for the ceiling, the perfect
+# prediction; the local bar is 1 by construction
+n_star_cv <- function(point, replicates) {
+  excess <- function(x) (x[, "ceiling"] - x) / (100 - x[, "ceiling"])
+  invert <- function(r) ifelse(r > 0, 1 / r, Inf)
+  r <- excess(replicates)
+  out <- tibble(
+    n_star = invert(excess(t(point))[1, ]),
+    n_star_lower = invert(apply(r, 2, quantile, 0.975, na.rm = TRUE)),
+    n_star_upper = invert(apply(r, 2, quantile, 0.025, na.rm = TRUE)))
+  out[names(point) == "ceiling", ] <- NA
+  out
 }
 
 

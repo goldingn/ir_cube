@@ -284,6 +284,44 @@ write.csv(rho_hierarchical, "outputs/bioassay_rho_hierarchical.csv",
 cat("\nhierarchical rho by insecticide type:\n")
 print(rho_hierarchical %>% mutate(across(where(is.numeric), ~ round(.x, 4))))
 
+# The check of rho-hat against replicate pairs, model-free: on the same
+# bioassays, one bioassay's noise variance as half the squared difference
+# between two at a pixel-year (per bioassay, averaged over its partners),
+# over the noise rho-hat implies (noise_floor_record()). Near 1 if rho-hat is
+# right: 1.01 (95% interval 0.92-1.11) over 9,424 bioassays in October 2026.
+# Every n* (#40) and every noise floor in the validation rests on rho-hat.
+# Intervals resample pixels. Written to outputs/bioassay_rho_pair_check.csv
+source("R/validation_scoring.R")
+pair_noise <- replicated_all %>%
+  mutate(y = died / mosquito_number,
+         rho_noise = noise_floor_record(died, mosquito_number,
+                                        rho_type_mean[insecticide_type])) %>%
+  group_by(group_key) %>%
+  mutate(pair_noise = vapply(y, function(v) sum((y - v) ^ 2), numeric(1)) /
+           (2 * (n() - 1))) %>%
+  ungroup() %>%
+  filter(!is.na(rho_noise))
+pair_ratio <- function(data) {
+  c(ratio = mean(data$pair_noise) / mean(data$rho_noise))
+}
+rho_pair_check <- bind_rows(pair_noise,
+                            mutate(pair_noise, insecticide_type = "all")) %>%
+  group_by(insecticide_type) %>%
+  group_modify(function(data, key) {
+    ratios <- cluster_bootstrap(data, pair_ratio)
+    tibble(assays = nrow(data), pixels = n_distinct(data$cell),
+           pair_noise = mean(data$pair_noise),
+           rho_noise = mean(data$rho_noise),
+           ratio = pair_ratio(data)[["ratio"]],
+           lower = quantile(ratios, 0.025, names = FALSE),
+           upper = quantile(ratios, 0.975, names = FALSE))
+  }) %>%
+  ungroup()
+write.csv(rho_pair_check, "outputs/bioassay_rho_pair_check.csv",
+          row.names = FALSE)
+cat("\none bioassay's noise variance, replicate pairs over rho-hat:\n")
+print(as.data.frame(rho_pair_check), digits = 3)
+
 # the overall level, for the figure subtitle: the posterior mean of rho across
 # types, weighted by the assays each contributes
 rho_bayes <- weighted.mean(rho_hierarchical$rho, rho_hierarchical$n_assays)

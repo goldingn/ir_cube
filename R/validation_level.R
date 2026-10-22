@@ -21,16 +21,20 @@
 #   dynamical, two-stage
 #              the map's point prediction (`map`, #32)
 #
-# Also the same bars per insecticide for B and C, for the per-insecticide
-# figure, and the median over held-out assays of the distance to the nearest
-# training assay of the same insecticide (distance_same,
-# R/validation_geometry.R), for the panel titles.
+# Every bar carries n*_CV (#40), the number of bioassays at the pixel-year it
+# is worth (n_star_cv() in R/validation_skill.R). Also the same bars per
+# insecticide for B and C, for the per-insecticide figure and the
+# supplementary n*_CV table, and the median over held-out assays of the
+# distance to the nearest training assay of the same insecticide
+# (distance_same, R/validation_geometry.R), for the panel titles.
 #
 # Reads outputs/cv_scores.csv (R/validation_metrics.R),
 # outputs/full_fit_maps_at_assays.csv (R/full_fit_maps_at_assays.R) and
 # outputs/cv_geometry.csv (R/validation_geometry.R).
-# Writes outputs/cv_level_skill.csv and
-# outputs/cv_level_skill_by_insecticide.csv.
+# Writes outputs/cv_level_skill.csv,
+# outputs/cv_level_skill_by_insecticide.csv and outputs/cv_n_star.csv (the
+# supplementary table: n*_CV [95% interval] of the nearest bioassay and the
+# two models, per insecticide and over all of them, for B and C).
 
 source("R/validation_skill.R")
 
@@ -86,7 +90,7 @@ interpolation$full_two_stage <- full_fit$two_stage
 rho_draws <- rho_replicates()
 
 panel_bars <- function(data, bars) {
-  bootstrap_summary(data, level_statistic(bars), rho_draws) %>%
+  bootstrap_summary(data, level_statistic(bars), rho_draws, n_star = TRUE) %>%
     mutate(assays = nrow(data), pixels = n_distinct(data$cell),
            variance = mean((data$observed - mean(data$observed)) ^ 2))
 }
@@ -189,11 +193,40 @@ by_insecticide <- bind_rows(lapply(
 write.csv(by_insecticide, "outputs/cv_level_skill_by_insecticide.csv",
           row.names = FALSE)
 
+
+# the supplementary n*_CV table -----------------------------------------------------
+
+n_star_bars <- c(nearest = "nearest bioassay", dynamical = "dynamical model",
+                 two_stage = "two-stage model")
+n_star_table <- bind_rows(
+  by_insecticide,
+  level %>%
+    filter(panel %in% c("B", "C")) %>%
+    mutate(insecticide_type = "all", drop_reason = NA_character_)) %>%
+  filter(bar %in% names(n_star_bars)) %>%
+  transmute(experiment = c(B = "interpolation", C = "extrapolation")[panel],
+            insecticide_type, assays, pixels,
+            bar = n_star_bars[bar],
+            n_star = sprintf("%.2f [%.2f, %.2f]", n_star, n_star_lower,
+                             n_star_upper),
+            note = coalesce(drop_reason, "")) %>%
+  pivot_wider(names_from = bar, values_from = n_star) %>%
+  relocate(note, .after = last_col()) %>%
+  mutate(insecticide_type = factor(insecticide_type,
+                                   c(sort(unique(by_insecticide$insecticide_type)),
+                                     "all"))) %>%
+  arrange(experiment != "interpolation", insecticide_type)
+
+write.csv(n_star_table, "outputs/cv_n_star.csv", row.names = FALSE)
+
 cat("\n% of variance explained in single held-out bioassays:\n")
 print(as.data.frame(level %>%
   mutate(value = sprintf("%5.1f [%5.1f, %5.1f]", estimate, lower, upper)) %>%
   select(panel, assays, pixels, median_km, bar, value) %>%
   pivot_wider(names_from = bar, values_from = value)), row.names = FALSE)
+
+cat("\nn*_CV, bioassays at the pixel-year [95% interval]:\n")
+print(as.data.frame(n_star_table), row.names = FALSE)
 
 cells <- by_insecticide %>% distinct(panel, insecticide_type, assays, pixels,
                                      ceiling, ci_width, shown, drop_reason)

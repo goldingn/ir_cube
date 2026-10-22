@@ -61,15 +61,14 @@ confusing ways if they are disturbed:
 ## 3. Running the folds
 
 ```bash
-Rscript R/fig_illustrate_bioassay_variability.R  # overdispersion per type; everything downstream needs it
+Rscript R/fig_illustrate_bioassay_variability.R  # overdispersion per type, and its check against replicate pairs; everything downstream needs it
 Rscript R/run_validation_folds.R                 # nulls, then dispatch the model folds
 # the two-stage folds: doc/two_stage_plan.md, "How to run", step 2
 Rscript R/validation_metrics.R                   # score everything on disk
 Rscript R/validation_geometry.R                  # fold separation, and the leak check
 Rscript R/two_stage_metrics.R                    # the two-stage model against the dynamical
-Rscript R/bioassay_vs_map.R                      # n* tables: bioassays against the map (#30)
 Rscript R/full_fit_maps_at_assays.R              # full-data fit's maps at every assay (after R/predict.R, R/two_stage_maps.R)
-Rscript R/validation_level.R                     # main figure, level panels A-C, and per insecticide
+Rscript R/validation_level.R                     # main figure, level panels A-C, per insecticide, and the n*_CV table
 Rscript R/validation_change.R                    # main figure, change panels D-E (pairs of bioassays)
 Rscript R/fig_variance_explained.R               # the bar figures
 Rscript R/fig_predictive_validation.R            # figures and the table
