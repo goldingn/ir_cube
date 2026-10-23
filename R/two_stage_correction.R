@@ -254,13 +254,6 @@ correction_hyper_names <- c("log_sigma_omega", "log_range_omega",
                             "log_sigma_eta", "log_range_eta", "logit_phi",
                             "log_sigma_iid")
 
-# theta of a fit, on the optimiser's scale, named as obj$par
-hyper_vector <- function(fit) {
-  unlist(fit$par_list[correction_hyper_names]) |>
-    setNames(rep(correction_hyper_names,
-                 lengths(fit$par_list[correction_hyper_names])))
-}
-
 # the TMB object, with the latent effects integrated out by TMB's Laplace
 # approximation
 correction_adfun <- function(data, parameters, silent = TRUE) {
@@ -403,7 +396,7 @@ correction_setup <- function(train, t0, T, meshes, priors) {
        fit = structure(
          list(t0 = t0, T = T, n_years = T - t0,
               mesh = meshes$omega, mesh_xi = meshes$xi,
-              fem_xi = data$spde_xi, tmb_data = data, priors = priors,
+              fem_xi = data$spde_xi, tmb_data = data,
               blocks = blocks, A_latent = cbind(A_omega, A_xi, A_iid),
               m_ref = train$m, iid_levels = iid_levels, n_obs = n_obs),
          class = "correction_fit"))
@@ -505,13 +498,13 @@ theta_par_list <- function(fit, theta) {
 # (correction_node_draws(), predict_correction()). train, t0, T and meshes as
 # in the API above
 fit_correction <- function(train, t0, T = max(train$year), meshes,
-                           priors = correction_priors(),
-                           control = list(eval.max = 1000, iter.max = 500)) {
+                           priors = correction_priors()) {
   start_time <- Sys.time()
   elapsed <- function() as.numeric(Sys.time() - start_time, units = "secs")
   setup <- correction_setup(train, t0, T, meshes, priors)
   obj <- correction_adfun(setup$data, setup$parameters)
-  opt <- nlminb(obj$par, obj$fn, obj$gr, control = control)
+  opt <- nlminb(obj$par, obj$fn, obj$gr,
+                control = list(eval.max = 1000, iter.max = 500))
   max_gradient <- max(abs(obj$gr(opt$par)))
   time_laplace <- elapsed()
   ccd <- ccd_points(obj, setNames(opt$par, names(obj$par)))
@@ -520,7 +513,6 @@ fit_correction <- function(train, t0, T = max(train$year), meshes,
     as_tibble(correction_hyper(theta_par_list(fit, ccd$theta[j, ])))
   }))
   fit$opt <- opt
-  fit$control <- control
   fit$max_gradient <- max_gradient
   fit$ccd <- ccd
   fit$id <- sprintf("%s-%i", format(Sys.time(), "%Y%m%d%H%M%OS6"),
@@ -578,10 +570,10 @@ sample_latent_deviation <- function(H_chol, n_latent, n) {
                           system = "Pt"))
 }
 
-# Joint latent draws and the node fields per year at the fit's own theta.
-# Years at or before t0 have xi = 0, years in (t0, T] read the fitted x, and
-# later years run eta forward from eta_T = x_T - x_{T-1} by the AR(1) with
-# fresh Matern innovations (or their mean, 0), accumulating into xi.
+# The node fields omega and xi per year of joint latent draws at the fit's own
+# theta. Years at or before t0 have xi = 0, years in (t0, T] read the fitted
+# x, and later years run eta forward from eta_T = x_T - x_{T-1} by the AR(1)
+# with fresh Matern innovations (or their mean, 0), accumulating into xi.
 correction_node_draws_at <- function(fit, years, n_draws,
                                      m_draws_train = NULL, mean = FALSE) {
   if (mean) {
@@ -628,8 +620,7 @@ correction_node_draws_at <- function(fit, years, n_draws,
       if ((fit$T + h) %in% years) xi[[as.character(fit$T + h)]] <- xi_t
     }
   }
-  list(theta = theta, omega = theta[fit$blocks$w_omega, , drop = FALSE],
-       xi = xi)
+  list(omega = theta[fit$blocks$w_omega, , drop = FALSE], xi = xi)
 }
 
 # The point of p(theta | y) each of n_draws draws uses: the CCD points
@@ -648,7 +639,7 @@ for_ccd_points <- function(fit, points, use) {
   for (j in points) use(j, conditional_fit(fit, obj, fit$ccd$theta[j, ]))
 }
 
-# (a) Joint latent draws and the node fields per year, mixed over theta; see
+# (a) The node fields per year of joint latent draws, mixed over theta; see
 # the API above. Draw d uses CCD point j(d), allotted by the weights, and its
 # conditional fit (correction_node_draws_at()); the fields carry `point`, the
 # point of each draw. mean = TRUE gives the posterior mean: the CCD-weighted
@@ -657,7 +648,6 @@ correction_node_draws <- function(fit, years, n_draws, m_draws_train = NULL,
                                   mean = FALSE) {
   out <- NULL
   fill <- function(fields, columns, scale = 1) {
-    fields$theta <- NULL
     if (is.null(out)) {
       n <- if (mean) 1 else n_draws
       out <<- list(omega = matrix(0, nrow(fields$omega), n),

@@ -4,6 +4,7 @@ Issue idem-lab/ir_cube#21. Stacked on #12 (`posterior-predictive-validation`). C
 
 - `two-stage-full-e31b2b5`: the diagnostics, the rejected variants (`omega_u`, `m_ref=loo`, the other meshes) and the separate simulation checks.
 - `two-stage-options-6edcf0d`: the survey effect s, joint ρ and damped ξ.
+- `archive/two-stage-is` (on goldingn/ir_cube): the importance-sampling check of the CCD integration over θ, reported on #58.
 
 ## Final model
 
@@ -28,6 +29,8 @@ Per insecticide type, on the logit scale, for assay i at pixel s and year t:
 **Target.** The prediction target is m + ω + ξ: that is what the maps, the published figures and the supplement figures show. u, p and sy are observation-level noise. They are in the fitted model, so that this noise stays out of ω and ξ. They enter predictions only of new assays, and only as fresh draws, N(0, τ²) per pixel-year, N(0, σ_p²) per pixel and N(0, σ_sy²) per study-year, never as their fitted values; fresh u and p also enter the maps' n\*_local. This reverses #21, which put u in the target, and an earlier version of this run sheet, which put p in it. Cross-validation scores the predictive distribution of held-out assays, so it includes fresh noise (`predict_correction()`).
 
 ## Headline results
+
+These are the PQL fit of #21, without sy, on the bioassays before the deduplication of #63. The final model's results (Laplace + CCD, with sy) will replace them after the final run on #63's data (milestone 6).
 
 Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summary.csv`), where the final model is `two_stage`. Variance explained and its ceiling are from `R/validation_level.R` → `outputs/cv_level_skill.csv` and `_by_insecticide.csv`. The paired differences are from `R/two_stage_metrics.R` → `outputs/two_stage/cv_headline_two_stage.csv` and `cv_horizon_two_stage.csv`.
 
@@ -91,11 +94,11 @@ Scored as in #12 (`R/validation_metrics.R` → `outputs/cv_scores.csv`, `cv_summ
 - The two-stage model has the best log score in every experiment.
 - On variance explained it beats the NN oracle on interpolation (+5) and blocks (+3), and trails it on forecasting (−6), mostly at horizons of 3–5 years.
 - Its 95% coverage is 0.89–0.92. Every other model's is 0.66–0.83.
-- These are from the rerun of the five folds with the current code (meshes covering the prediction mask, `m_ref` unclamped, seeds per fold and type). Against the earlier draws, the posterior mean predictions correlate at 0.9998–0.9999 per fold (mean |difference| 0.2–0.4 points of mortality), and the headline scores move by at most 0.002 in log score, 0.2 points of variance explained and 0.002 in coverage.
+- These are from the rerun of the five folds with #21's final code (meshes covering the prediction mask, `m_ref` unclamped, seeds per fold and type). Against the earlier draws, the posterior mean predictions correlate at 0.9998–0.9999 per fold (mean |difference| 0.2–0.4 points of mortality), and the headline scores move by at most 0.002 in log score, 0.2 points of variance explained and 0.002 in coverage.
 
 ## Decisions
 
-Scores are from the cross-validation of the time. A decision's numbers can predate later choices; the tables above are the current model.
+Scores are from the cross-validation of the time. A decision's numbers can predate later choices; the tables above are #21's final model.
 
 | option | result | adopted | code |
 |---|---|---|---|
@@ -123,13 +126,13 @@ Use OpenBLAS (`LD_PRELOAD=.../libopenblas.so.0 OPENBLAS_NUM_THREADS=3`), because
 
 1. **Simulation check:** `Rscript R/check_two_stage.R`.
 2. **Folds** (`R/run_two_stage_folds.R`), for each of `spatial_interpolation all`, `spatial_blocks 1|2` and `temporal_forecasting 2014|2018`:
-   - `Rscript R/run_two_stage_folds.R <experiment> <fold> <k>` for k = 1–9: one process per type. Each reads the paired dynamical logit draws that `R/run_one_fold.R` saved with the fold (`outputs/cv_draws/assays/`), not the fold. Peak memory is up to ~15 GB (Deltamethrin).
+   - `Rscript R/run_two_stage_folds.R <experiment> <fold> <k>` for k = 1–9: one process per type. Each reads the paired dynamical logit draws that `R/run_one_fold.R` saved with the fold (`outputs/cv_draws/assays/`), not the fold. On 8-vCPU pods, two types at a time, a type took 15–45 min to fit and 5–35 min to predict, with peak memory up to 12 GB. A fit that fails or does not converge stops its type, and the fold is not assembled without it.
    - `... <experiment> <fold> assemble`: writes `outputs/cv_draws/two_stage__<experiment>__<fold>.rds` and `outputs/two_stage/fit_summary.csv`.
 3. **Metrics:** `Rscript R/validation_metrics.R`, then `Rscript R/two_stage_metrics.R`; the rest of the scoring as in `doc/cv_run_plan.md`, section 3.
 4. **Maps** (`R/two_stage_maps.R`):
    - `prepare`: loads `temporary/fitted_model.RData`, checks that its data and covariates are those the current scripts build, and saves per-type dynamical draws (2 min, 7 GB).
-   - `fit <k>`: fits type k to all data and saves `outputs/two_stage/maps/<type>/fit.rds` (the fit without its TMB object) and `hyperparameters.csv`. 7–20 min and 8–14 GB per type (Deltamethrin 13.9).
-   - `map <k>` for k = 1–9: writes the posterior mean and SD of mortality for every year 1995–2030 to `outputs/two_stage/ir_maps/<type>/ir_<year>_susceptibility(_sd).tif`, the layout of the dynamical model's `outputs/ir_maps` (`R/predict.R`), from 1000 paired draws in batches of 100 (Monte Carlo SE of a mean map: posterior SD / √1000, at most 1.3 percentage points where the SD reaches its maximum of 40). At the panel years it also writes the mean and SD with fresh u and p added to the same draws (`local_mean`, `local_sd`), which only n\*_local reads. Set `IR_CUBE_MAP_WORKERS` to map groups of cells in forked workers. On the Linux box a type took 23–28 min at 3–4 workers; each worker holds ~5 GB, so run one map at a time.
+   - `fit <k>`: fits type k to all data and saves `outputs/two_stage/maps/<type>/fit.rds` and `hyperparameters.csv`. On 8-vCPU pods, two types at a time: 11–52 min and 6–11 GB per type (Deltamethrin 37 min, 11 GB).
+   - `map <k>` for k = 1–9: writes the posterior mean and SD of mortality for every year 1995–2030 to `outputs/two_stage/ir_maps/<type>/ir_<year>_susceptibility(_sd).tif`, the layout of the dynamical model's `outputs/ir_maps` (`R/predict.R`), from 1000 paired draws in batches of 100 (Monte Carlo SE of a mean map: posterior SD / √1000, at most 1.3 percentage points where the SD reaches its maximum of 40). At the panel years it also writes the mean and SD with fresh u and p added to the same draws (`local_mean`, `local_sd`), which only n\*_local reads. Set `IR_CUBE_MAP_WORKERS` to map groups of cells in forked workers. On 8-vCPU, 64 GB pods a type took 41–110 min at 4 workers; each worker holds ~5 GB, and 4 workers ran out of memory at 32 GB.
    - `map llin_effective`, after the three pyrethroids: llin_effective's mean and SD as the sums of Alpha-cypermethrin's, Deltamethrin's and Permethrin's, weighted by `temporary/ingredient_weights.RDS`. Summing the SDs takes the pyrethroids' errors as perfectly correlated, the largest SD their marginal SDs allow (#40). A few minutes.
    - `figures`: writes `figures/two_stage/`. Per type and for llin_effective: the posterior uncertainty as n\*, the number of bioassays of 100 mosquitoes the prediction is worth (#40), with bioassay noise from ρ̂ only. u and p could be data error or real local variation the model cannot predict, and the data can't tell which, so n\* is mapped under both: n\*_pop treats them as data error (posterior of m + ω + ξ; an upper bound) and n\*_local as real (with fresh u and p; a lower bound). n\*_CV (`R/validation_level.R`) is the out-of-sample check: at held-out pixel-years it should be close to n\*_local, apart from survey error and any miscalibration. Per type also the correction ω + ξ and the difference from the dynamical model, and the all-types correction panel for 2020 and the hyperparameters.
 5. **Supplement figures:** `Rscript R/fig_two_stage_components.R`. Reads the saved Deltamethrin fit and its draws, and writes `supp_components_realisations` and `supp_components_intervals` (captions: `doc/two_stage_supplement_captions.md`).

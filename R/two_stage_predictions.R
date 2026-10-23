@@ -69,7 +69,7 @@ two_stage_setup <- function(type, years, data, n_draws = 1000,
 
 # Stop unless the bioassays of `type` in `data` are those whose paired draws
 # `dynamical` (dynamical.rds) holds, row for row: the draws, the fit and the
-# u and p keys are matched to the data by row order
+# keys of its noise terms are matched to the data by row order
 check_two_stage_data <- function(dynamical, data, type) {
   rows <- data[data$insecticide_type == type, names(dynamical$keys)]
   if (!isTRUE(all.equal(as.data.frame(rows), as.data.frame(dynamical$keys),
@@ -219,9 +219,10 @@ data_cell_country <- function(df) {
 # Posterior predictive draws of the mortality of new assays at every training
 # assay (row of df), for n_draws of the paired draws, from both models, for
 # the within-sample residual checks:
-#   two_stage  ilogit(m + omega + xi + fresh u + fresh p), draws x rows: u is
-#              shared by the assays of a pixel-year and p by those of a pixel,
-#              within a draw (predict_correction())
+#   two_stage  ilogit(m + omega + xi + fresh u + fresh p + fresh sy), draws x
+#              rows: within a draw, u is shared by the assays of a pixel-year,
+#              p by those of a pixel and sy by those of a study-year
+#              (predict_correction())
 #   dynamical  ilogit(m), draws x rows
 # and the overdispersion each model scores new assays at, draws x rows: the
 # two-stage model the external per-type rho (rho_lookup()), the dynamical
@@ -244,7 +245,8 @@ assay_draws <- function(df, types, n_draws = 1000,
     stopifnot(length(draws) == n_draws)
     m <- dynamical$logit_train[draws, , drop = FALSE]
     train <- tibble(lon = df$longitude[rows], lat = df$latitude[rows],
-                    year = df$year_start[rows], cell = df$cell[rows])
+                    year = df$year_start[rows], cell = df$cell[rows],
+                    study = df$study[rows])
     set.seed(string_seed(paste("assay draws", types[k])))
     out$two_stage[, rows] <- plogis(predict_correction(
       fit, train, m_draws_train = m, m_draws_new = m, n_draws = n_draws))

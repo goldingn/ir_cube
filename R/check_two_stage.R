@@ -212,7 +212,7 @@ m_perturbed <- train$m + 0.3 * sin(train$x_km / 400) + rnorm(nrow(train), 0, 0.1
 data <- fit$tmb_data
 data$m <- m_perturbed
 obj <- correction_adfun(data, fit$par_list)
-invisible(obj$fn(hyper_vector(fit)))
+invisible(obj$fn(fit$opt$par))
 refit <- obj$env$last.par[obj$env$random]
 shifted <- fit$mode + correction_mode_shift(fit, m_perturbed)[, 1]
 cat(sprintf("max |diff| %.3f, RMS %.4f (max |shift| %.3f)\n",
