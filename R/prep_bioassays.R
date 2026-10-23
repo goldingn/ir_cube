@@ -57,6 +57,7 @@ ir_mapper_extract_columns <- c(record_id = "Bioassay ID",
                                site = "Site name", country_name = "Country",
                                latitude = "Latitude", longitude = "Longitude",
                                year_start = "Start year",
+                               year_end = "End year",
                                month = "Start month",
                                generation = "Generation",
                                insecticide_type = "Insecticide tested",
@@ -103,6 +104,7 @@ sources <- list(
     columns = c(citation = "citation", link = "citation_doi", site = "site",
                 country_name = "country", latitude = "latitude_1",
                 longitude = "longitude_1", year_start = "year_start",
+                year_end = "year_end",
                 month = "month_start", species = "species",
                 generation = "generation",
                 insecticide_type = "insecticide_tested",
@@ -158,6 +160,7 @@ sources <- list(
                 country_name = "Country", latitude = "Latitude",
                 longitude = "Longitude",
                 year_start = "Mosquito_collection_Year_start",
+                year_end = "Mosquito_collection_year_end",
                 species = "Vector_species", insecticide_type = "Chemical_type",
                 concentration = "Insecticide_dosage",
                 test_type = "IR_Test_Method",
@@ -175,6 +178,7 @@ sources <- list(
     columns = c(citation = "reference_Name", link = "url", site = "locality",
                 country_name = "country", latitude = "latitude",
                 longitude = "longitude", year_start = "collection_Year_Start",
+                year_end = "collection_Year_End",
                 species = "vector_Species", insecticide_type = "chemical_Type",
                 concentration = "insecticide_Dosage",
                 test_type = "iR_Test_Method",
@@ -192,6 +196,10 @@ bioassays <- lapply(sources, read_bioassay_source) %>%
     insecticide_type = standardise_insecticide(insecticide_type),
     insecticide_class = insecticide_class_of(insecticide_type),
     species = standardise_species(species),
+    # the years a test ran: one year where no end year is given (as in MTM),
+    # or where the end year is before the start (3 records)
+    year_end = if_else(is.na(year_end) | year_end < year_start, year_start,
+                       year_end),
     mosquito_number = round(mosquito_number),
     n_recorded = !is.na(mosquito_number)
   )
@@ -456,12 +464,18 @@ bioassays <- bioassays %>%
   keep_records(!record %in% dropped_sums, "sum of species records") %>%
   keep_records(!record %in% dropped_pooled, "pooled separate tests")
 
-# Each record kept takes the best location of its copies
-# (locate_from_copies()). The IR Mapper extracts are the analysis-ready
-# datasets of Moyes et al. (2019), abstracted and checked to one standard, so
-# their coordinates are preferred among equally precise copies.
-bioassays <- locate_from_copies(bioassays, candidates, links,
-                                analysis_ready = "IR Mapper extracts")
+# Each record kept takes the best location and the finest years of its copies
+# (locate_from_copies(), date_from_copies()). The IR Mapper extracts are the
+# analysis-ready datasets of Moyes et al. (2019), abstracted and checked to one
+# standard, so their coordinates are preferred among equally precise copies.
+# The models use one year for each test: the middle of its years, rounded
+# down, so a test over two years takes the first.
+members <- copy_members(bioassays, links)
+bioassays <- bioassays %>%
+  locate_from_copies(candidates, members,
+                     analysis_ready = "IR Mapper extracts") %>%
+  date_from_copies(candidates, members) %>%
+  mutate(year = (year_start + year_end) %/% 2)
 
 # ---- country labels ----
 
@@ -531,10 +545,10 @@ bioassays <- bioassays %>%
 # decision already recorded. A reviewer copies a pair's row into
 # review/bioassay_duplicates.csv and fills in `decision` ("copy" or
 # "different") and `notes`. Undecided pairs are taken as copies.
-review_fields <- c("source", "record_id", "citation", "link", "site",
-                   "latitude", "longitude", "month", "generation", "species",
-                   "mosquito_number", "n_recorded", "died",
-                   "mortality_adjusted")
+review_fields <- c("source", "record_id", "citation", "link", "year_start",
+                   "year_end", "site", "latitude", "longitude", "month",
+                   "generation", "species", "mosquito_number", "n_recorded",
+                   "died", "mortality_adjusted")
 record_fields <- candidates %>%
   mutate(link = paper_link(link, citation)) %>%
   select(record, year_start, insecticide_type, concentration,
@@ -579,9 +593,9 @@ write.csv(attrition, "outputs/review/bioassay_attrition.csv", row.names = FALSE)
 print(as.data.frame(attrition))
 
 bioassays %>%
-  select(mortality_adjusted, mosquito_number, died, n_imputed, year_start,
-         month, latitude, longitude, site, species, species_complex,
-         insecticide_type, insecticide_class, concentration, test_type,
-         country_name, region, citation, link, study, source, database,
-         record_id, coordinates_from) %>%
+  select(mortality_adjusted, mosquito_number, died, n_imputed, year,
+         year_start, year_end, month, latitude, longitude, site, species,
+         species_complex, insecticide_type, insecticide_class, concentration,
+         test_type, country_name, region, citation, link, study, source,
+         database, record_id, coordinates_from) %>%
   saveRDS("data/clean/all_gambiae_complex_data.RDS")

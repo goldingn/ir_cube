@@ -6,11 +6,12 @@
 # the columns every source is mapped to; any a source lacks are NA
 bioassay_columns <- c(
   "record_id", "citation", "link", "site", "country_name", "latitude",
-  "longitude", "year_start", "month", "species", "generation",
+  "longitude", "year_start", "year_end", "month", "species", "generation",
   "insecticide_type", "concentration", "test_type", "mosquito_number",
   "mortality_adjusted"
 )
-numeric_bioassay_columns <- c("latitude", "longitude", "year_start", "month",
+numeric_bioassay_columns <- c("latitude", "longitude", "year_start",
+                              "year_end", "month",
                               "concentration", "mosquito_number",
                               "mortality_adjusted")
 
@@ -183,7 +184,8 @@ connected_groups <- function(records, a, b) {
 
 # Pairs of records whose results agree, as a tibble with the two records (`a`,
 # `b`), how they agree, and the distance between them in km. Records must be
-# in the same country and year and use the same insecticide, and be within
+# in the same country, with overlapping years (from year_start to year_end),
+# and use the same insecticide, and be within
 # `max_km` (between databases, a distance for each way of agreeing) or
 # `max_km_within` (within a database, where the concentration must match too).
 # Results agree in one of three ways:
@@ -204,8 +206,12 @@ connected_groups <- function(records, a, b) {
 # complex) and the concentration the same.
 agreeing_pairs <- function(records, max_km, max_km_within) {
 
-  key <- c("year_start", "country_name", "insecticide_type")
+  # a row for each year of each record, so that records whose years overlap
+  # share a year
+  key <- c("year", "country_name", "insecticide_type")
   r <- records %>%
+    mutate(year = map2(year_start, year_end, seq)) %>%
+    unnest(year) %>%
     select(record, database, all_of(key), concentration, species,
            mosquito_number, died, mortality_adjusted, latitude, longitude,
            n_recorded)
@@ -317,15 +323,11 @@ imprecise_location <- function(site, latitude, longitude) {
     pmin(decimal_places(latitude), decimal_places(longitude)) <= 1
 }
 
-# The records kept, each with its coordinates and site name from the best
-# located of its copies, since copies are one test. A copy of a copy is a copy
-# (e.g. a record dropped within a database, whose kept record was then dropped
-# for a copy in another database). Precisely located copies are preferred
-# (imprecise_location()), then a copy in an `analysis_ready` database, then the
-# record's own coordinates, then a copy with the same site name, then the
-# nearest. `coordinates_from` names the copy the coordinates came from.
-locate_from_copies <- function(records, all_records, links,
-                               analysis_ready = character()) {
+# The copies of each record kept (`kept`), itself included (`member`), given
+# the copies dropped (`links`). A copy of a copy is a copy (e.g. a record
+# dropped within a database, whose kept record was then dropped for a copy in
+# another database).
+copy_members <- function(records, links) {
   copies <- links %>%
     filter(!is.na(kept)) %>%
     distinct(dropped, kept)
@@ -339,6 +341,17 @@ locate_from_copies <- function(records, all_records, links,
     if (nrow(found) == 0) break
     members <- bind_rows(members, found)
   }
+  members
+}
+
+# The records kept, each with its coordinates and site name from the best
+# located of its copies (copy_members()), since copies are one test. Precisely
+# located copies are preferred (imprecise_location()), then a copy in an
+# `analysis_ready` database, then the record's own coordinates, then a copy
+# with the same site name, then the nearest. `coordinates_from` names the copy
+# the coordinates came from.
+locate_from_copies <- function(records, all_records, members,
+                               analysis_ready = character()) {
   own <- select(records, kept = record, own_lat = latitude,
                 own_lon = longitude, own_site = site)
   location <- members %>%
@@ -358,6 +371,21 @@ locate_from_copies <- function(records, all_records, links,
   records %>%
     select(-latitude, -longitude, -site) %>%
     left_join(location, by = "record")
+}
+
+# The records kept, each with the years (year_start to year_end) of the copy
+# (copy_members()) that dates the test most finely: the shortest range, then
+# the record's own years, then the preferred record's (`preference`).
+date_from_copies <- function(records, all_records, members) {
+  years <- members %>%
+    left_join(select(all_records, record, year_start, year_end, preference),
+              by = c("member" = "record")) %>%
+    arrange(kept, year_end - year_start, member != kept, preference) %>%
+    distinct(kept, .keep_all = TRUE) %>%
+    select(record = kept, year_start, year_end)
+  records %>%
+    select(-year_start, -year_end) %>%
+    left_join(years, by = "record")
 }
 
 # Some databases pool a study's separate tests at a site (in different months,
