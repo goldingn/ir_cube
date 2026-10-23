@@ -259,12 +259,12 @@ bioassays <- bioassays %>%
 # ---- copies of the same bioassay ----
 
 # The databases hold many of the same bioassays, and some hold a bioassay more
-# than once. Copies have the same country, year, insecticide and result
-# (agreeing_pairs()), but not always the same coordinates: the databases
-# georeference sites differently, and copies in different databases are often
-# tens of km apart. So copies are looked for within max_km of each other in
-# different databases, and within max_km_within in the same database, where the
-# concentration must match too.
+# than once. Copies have the same country, years, insecticide, concentration
+# and result (agreeing_pairs()), but not always the same coordinates: the
+# databases georeference sites differently, and copies in different databases
+# are often tens of km apart. So copies are looked for within max_km of each
+# other in different databases, and within max_km_within in the same
+# database.
 #
 # Each distance is where looking further would find more coincidences than
 # copies, counting coincidences by pairs whose results differ by 3-5 dead
@@ -276,16 +276,10 @@ bioassays <- bioassays %>%
 max_km <- c(count = 100, percent = 50, misscaled = 100)
 max_km_within <- 10
 
-# Which copy to keep: one with a recorded number of mosquitoes, then with the
-# most common concentration of its insecticide (so that it stays in the
-# modelled subset; the other is probably mislabelled), then with a
-# species-level identification, then from the first source in the list above
+# Which copy to keep: one with a recorded number of mosquitoes, then from the
+# first source in the list above
 bioassays <- bioassays %>%
-  group_by(insecticide_type) %>%
-  mutate(modal_concentration = concentration == sample_mode(concentration)) %>%
-  ungroup() %>%
-  arrange(!n_recorded, !modal_concentration, species == "gambiae complex",
-          source_rank, record) %>%
+  arrange(!n_recorded, source_rank, record) %>%
   mutate(preference = row_number(),
          record_key = paste(source, record_id)) %>%
   arrange(record)

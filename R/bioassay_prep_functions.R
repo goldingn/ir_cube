@@ -185,10 +185,9 @@ connected_groups <- function(records, a, b) {
 # Pairs of records whose results agree, as a tibble with the two records (`a`,
 # `b`), how they agree, and the distance between them in km. Records must be
 # in the same country, with overlapping years (from year_start to year_end),
-# and use the same insecticide, and be within
+# and use the same insecticide at the same concentration, and be within
 # `max_km` (between databases, a distance for each way of agreeing) or
-# `max_km_within` (within a database, where the concentration must match too).
-# Results agree in one of three ways:
+# `max_km_within` (within a database). Results agree in one of three ways:
 #
 # "count": both record the number of mosquitoes, and it and the number dead
 # are equal.
@@ -202,8 +201,8 @@ connected_groups <- function(records, a, b) {
 # one away. Record a is then on the wrong scale.
 #
 # Where the agreed result is 0% or 100%, which genuinely separate tests often
-# share, the species must be compatible (the same, or one recorded only to the
-# complex) and the concentration the same.
+# share, the species must also be compatible (the same, or one recorded only to
+# the complex).
 agreeing_pairs <- function(records, max_km, max_km_within) {
 
   # a row for each year of each record, so that records whose years overlap
@@ -265,10 +264,9 @@ agreeing_pairs <- function(records, max_km, max_km_within) {
     ) %>%
     filter(
       km <= if_else(within, max_km_within, max_km[agreement]),
-      !within | concentration == concentration_b,
-      !extreme | (concentration == concentration_b &
-                    (species == species_b | species %in% complexes |
-                       species_b %in% complexes))
+      concentration == concentration_b,
+      !extreme | species == species_b | species %in% complexes |
+        species_b %in% complexes
     ) %>%
     distinct(a = record, b = record_b, agreement, extreme, km, within)
 }
