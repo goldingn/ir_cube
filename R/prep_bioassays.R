@@ -196,6 +196,9 @@ bioassays <- lapply(sources, read_bioassay_source) %>%
     insecticide_type = standardise_insecticide(insecticide_type),
     insecticide_class = insecticide_class_of(insecticide_type),
     species = standardise_species(species),
+    # the paper a record cites, as its first author and year of publication
+    # (see the study labels, below)
+    paper = coalesce(citation_author_year(citation), citation),
     # the years a test ran: one year where no end year is given (as in MTM),
     # or where the end year is before the start (3 records)
     year_end = if_else(is.na(year_end) | year_end < year_start, year_start,
@@ -281,13 +284,9 @@ bioassays <- bioassays %>%
 # other in different databases, and within max_km_within in the same
 # database.
 #
-# Each distance is where looking further would find more coincidences than
-# copies, counting coincidences by pairs whose results differ by 3-5 dead
-# mosquitoes (or 3-5 percentage points), which copies don't. Matching on the
-# percentage alone, where a number of mosquitoes is missing, is less specific,
-# so its distance is shorter. Within a database, copies are mostly at the same
-# coordinates, and coincidences grow faster with distance, as one study's sites
-# tend to have similar results. The supplement gives the numbers; see #63.
+# The distances are a choice. Matching on the percentage alone, where a number
+# of mosquitoes is missing, is less specific, so its distance is shorter.
+# Within a database, copies are mostly at the same coordinates.
 max_km <- c(count = 100, percent = 50, misscaled = 100)
 max_km_within <- 10
 
@@ -435,9 +434,7 @@ has_copy <- pairs %>%
   unlist() %>%
   unique()
 cross_pairs <- pairs %>%
-  mutate(rule = "between databases") %>%
   filter(!within, !a %in% dropped_within, !b %in% dropped_within,
-         is_copy(., "between databases"),
          agreement != "misscaled" | !a %in% has_copy) %>%
   one_to_one() %>%
   mutate(dropped = case_when(agreement == "misscaled" ~ a,
@@ -529,8 +526,7 @@ bioassays <- bioassays %>%
 # through reports that compile many studies (e.g. the PMI and WHO reports) into
 # one label for most of the data.
 labels <- candidates %>%
-  transmute(record,
-            label = coalesce(citation_author_year(citation), citation))
+  select(record, label = paper)
 links %>%
   filter(!is.na(kept)) %>%
   left_join(labels, by = c("dropped" = "record")) %>%

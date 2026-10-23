@@ -400,10 +400,9 @@ date_from_copies <- function(records, all_records, members) {
 pooled_copies <- function(records) {
   tests <- records %>%
     filter(n_recorded) %>%
-    mutate(study = coalesce(citation_author_year(citation), citation),
-           site_key = paste(round(latitude, 2), round(longitude, 2)))
+    mutate(site_key = paste(round(latitude, 2), round(longitude, 2)))
   sets <- tests %>%
-    group_by(database, study, site_key, year_start, insecticide_type) %>%
+    group_by(database, paper, site_key, year_start, insecticide_type) %>%
     filter(n() >= 2) %>%
     summarise(n_sum = sum(mosquito_number),
               pooled_mortality = 100 * sum(died) / n_sum,
@@ -425,8 +424,8 @@ pooled_copies <- function(records) {
 }
 
 # Copies recorded in different years: pairs of records (`a`, `b`) of two
-# databases citing the same paper (the same study label, see
-# citation_author_year()), with the same country, insecticide, concentration,
+# databases citing the same paper (`paper`, the study label without its
+# country), with the same country, insecticide, concentration,
 # site name, number tested and number dead, from 5% to 95% mortality, within
 # `max_km` (`km`), whose years don't overlap. One database sometimes gives a
 # test another year, but a site is also visited again in later years, and below
@@ -437,7 +436,6 @@ cross_year_pairs <- function(records, max_km = 100) {
   tests <- records %>%
     filter(n_recorded, died >= 0.05 * mosquito_number,
            died <= 0.95 * mosquito_number) %>%
-    mutate(paper = coalesce(citation_author_year(citation), citation)) %>%
     filter(!is.na(paper)) %>%
     select(record, database, paper, country_name, insecticide_type,
            concentration, mosquito_number, died, year_start, year_end, site,
@@ -470,9 +468,8 @@ cross_year_dates <- function(records, database_order, max_km = 100) {
   pairs <- cross_year_pairs(records, max_km)
   records %>%
     filter(record %in% c(pairs$a, pairs$b)) %>%
-    mutate(paper = coalesce(citation_author_year(citation), citation),
-           published = as.numeric(str_extract(citation_author_year(citation),
-                                              "\\d{4}$")),
+    mutate(published = if_else(paper == citation, NA,
+                               as.numeric(str_extract(paper, "\\d{4}$"))),
            test = connected_groups(record, pairs$a, pairs$b)) %>%
     group_by(paper, country_name, database) %>%
     mutate(years = n_distinct(year_start, year_end)) %>%
