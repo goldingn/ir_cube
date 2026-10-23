@@ -24,9 +24,7 @@
 #   5. coverage, at new pixels, new years at training pixels, training
 #      pixel-years and 1-5 year forecasts: of a new assay's lambda by
 #      predict_correction() (fresh noise), mixed over the CCD points, and of
-#      the target m + omega + xi by the draws without noise;
-#   6. the posterior-mean fields (correction_node_draws(mean = TRUE)) against
-#      the mean of the draws, for the smooth terms the maps show.
+#      the target m + omega + xi by the draws without noise.
 #
 # Checks 1 and 2 are identities, met to ~1e-10 when the code is right; the
 # script stops if either misses by more than `tolerance`. The others are
@@ -190,13 +188,17 @@ dloglik <- c_rho * p_hat * (1 - p_hat) *
   (digamma(train$died + c_rho * p_hat) -
      digamma(train$mosquito_number - train$died + c_rho * (1 - p_hat)) -
      digamma(c_rho * p_hat) + digamma(c_rho * (1 - p_hat)))
-# Q theta = H theta - A' W A theta, with the W that H was built with
-q_theta <- as.vector(fit$H %*% fit$mode) -
+# Q v = H v - A' W A v at the mode v, with H at the mode and theta_hat (the
+# fit keeps only its factor) and the W that H was built with
+obj <- correction_obj(fit)
+H <- latent_hessian(obj, obj$env$par)
+q_v <- as.vector(H %*% fit$mode) -
   as.vector(Matrix::crossprod(A, fit$precision_obs *
                                 as.vector(A %*% fit$mode)))
-score <- as.vector(Matrix::crossprod(A, dloglik)) - q_theta
-cat(sprintf("%.2e (max |Q theta| %.2e)\n", max(abs(score)), max(abs(q_theta))))
-stopifnot(max(abs(score)) < 1e-6 * max(1, abs(q_theta)))
+score <- as.vector(Matrix::crossprod(A, dloglik)) - q_v
+cat(sprintf("%.2e (max |Q v| %.2e)\n", max(abs(score)), max(abs(q_v))))
+stopifnot(max(abs(score)) < 1e-6 * max(1, abs(q_v)))
+rm(H)
 
 cat("2. CCD weights on a Gaussian: max |mean|, max |cov - I| = ")
 d <- ncol(fit$ccd$theta)
@@ -284,13 +286,3 @@ smooth_draws <- new$m + project_correction(
 print(as.data.frame(coverage(t(smooth_draws), "final", new$target)),
       digits = 3, row.names = FALSE)
 
-
-# mean fields ------------------------------------------------------------------------
-
-cat("\n6. posterior-mean omega + xi vs the mean of 2000 draws: ")
-smooth_mean <- new$m + project_correction(
-  fit, correction_node_draws(fit, years, mean = TRUE), new)[, 1]
-z <- (rowMeans(smooth_draws) - smooth_mean) /
-  (apply(smooth_draws, 1, sd) / sqrt(2000))
-cat(sprintf("mean z %.2f, sd z %.2f, max |z| %.1f\n", mean(z), sd(z),
-            max(abs(z))))

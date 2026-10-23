@@ -39,19 +39,18 @@
 #   fit <- fit_correction(train, t0, T, meshes)    Laplace, then CCD.
 #     train: lon, lat (or x_km, y_km), year, cell, study, m (= m_ref), died,
 #     mosquito_number, rho. T: last year xi is represented (forecast beyond).
-#     Check fit$opt$convergence. fit$hyper: sigma_omega, range_omega,
-#     sigma_eta, range_eta, phi, persistence, tau (SD of u), sigma_p, sigma_sy
-#     (and the kappas) at theta_hat; fit$ccd: the CCD points (theta), their
-#     weights and the hyperparameters at each (hyper).
+#     Stops if the optimiser does not converge. fit$hyper: sigma_omega,
+#     range_omega, sigma_eta, range_eta, phi, persistence, tau (SD of u),
+#     sigma_p, sigma_sy (and the kappas) at theta_hat; fit$ccd: the CCD points
+#     (theta), their weights and the hyperparameters at each (hyper).
 #   fit_summary(fit)                               one-row tibble for tables
-#   fields <- correction_node_draws(fit, years, n_draws, m_draws_train = NULL,
-#                                   mean = FALSE)
+#   fields <- correction_node_draws(fit, years, n_draws, m_draws_train = NULL)
 #     (a) the node fields of joint latent draws mixed over the CCD points,
 #     with the cut-posterior shift per dynamical draw when m_draws_train
 #     (n_draws x n_obs) is given: omega (nodes x draws) and xi[[year]] (xi
 #     nodes x draws) for every requested year, AR(1)-forecast beyond T, and
-#     point, each draw's CCD point. mean = TRUE gives the posterior mean
-#     instead (one column).
+#     point, each draw's CCD point. The projection (b) is linear, so the
+#     posterior mean of the correction is the projection of the draws' mean.
 #   project_correction(fit, fields, new, noise = FALSE)
 #     (b) points x draws correction omega + xi at the rows of `new`
 #     (lon/lat or x_km/y_km, year, and cell and study if noise = TRUE).
@@ -65,7 +64,7 @@
 #     predictive distribution of new assays' logit mortality, mixed over the
 #     CCD points. noise = FALSE leaves out the noise: the map, m + omega + xi.
 #   Saving: saveRDS(fit, file). Everything above works on the reloaded fit
-#     (it keeps H, H_chol, meshes, levels, tmb_data and par_list); the TMB
+#     (it keeps H_chol, meshes, levels, tmb_data and par_list); the TMB
 #     object the mixture over theta needs is rebuilt once per session
 #     (correction_obj()).
 #
@@ -291,21 +290,26 @@ beta_binomial_weight <- function(lambda, died, n, rho) {
   -(d2 * s ^ 2 + d1 * s * (1 - 2 * p))
 }
 
+# H, the Hessian of the negative log joint density in the latent effects, from
+# the TMB object obj at the full parameter vector par (latent effects and
+# theta)
+latent_hessian <- function(obj, par) {
+  H <- obj$env$spHess(par, random = TRUE)
+  Matrix::forceSymmetric(as(H, "CsparseMatrix"), uplo = "L")
+}
+
 # The conditional fit at theta (optimiser scale): the latent mode solved at
-# theta, its Hessian, and the factor of that (updated from fit's symbolic
+# theta, the factor of its Hessian H (updated from fit's symbolic
 # factorisation when it has one: the sparsity pattern does not depend on
 # theta), the hyperparameters, and W at the mode as precision_obs, for the
 # linearised cut-posterior shift
 conditional_fit <- function(fit, obj, theta) {
   obj$fn(theta)
   par_full <- obj$env$last.par
-  random <- obj$env$random
-  H <- obj$env$spHess(par_full, random = TRUE)
-  H <- Matrix::forceSymmetric(as(H, "CsparseMatrix"), uplo = "L")
+  H <- latent_hessian(obj, par_full)
   fit$par_list <- obj$env$parList(par = par_full)
   fit$hyper <- correction_hyper(fit$par_list)
-  fit$mode <- par_full[random]
-  fit$H <- H
+  fit$mode <- par_full[obj$env$random]
   fit$H_chol <- if (is.null(fit$H_chol)) {
     Matrix::Cholesky(H, perm = TRUE, LDL = FALSE, super = TRUE)
   } else {
@@ -394,8 +398,7 @@ correction_setup <- function(train, t0, T, meshes, priors) {
                                 dims = c(n_obs, sum(lengths(iid_levels))))
   list(data = data, parameters = parameters,
        fit = structure(
-         list(t0 = t0, T = T, n_years = T - t0,
-              mesh = meshes$omega, mesh_xi = meshes$xi,
+         list(t0 = t0, T = T, mesh = meshes$omega, mesh_xi = meshes$xi,
               fem_xi = data$spde_xi, tmb_data = data,
               blocks = blocks, A_latent = cbind(A_omega, A_xi, A_iid),
               m_ref = train$m, iid_levels = iid_levels, n_obs = n_obs),
@@ -442,8 +445,8 @@ ccd_weights <- function(log_density, d, f0 = 1.1) {
 # V S^1/2 z for the eigen-decomposition V S V' of the inverse Hessian there,
 # each axis stretched separately on its two sides so that the log density
 # falls by 1 at z = +-sqrt(2), as it would for a Gaussian (INLA's skewness
-# correction), with ccd_weights(). Returns the points (theta), their weights
-# (summing to 1), the covariance, and the log densities relative to the mode
+# correction), with ccd_weights(). Returns the points (theta) and their
+# weights (summing to 1)
 ccd_points <- function(obj, theta_hat, f0 = 1.1) {
   log_post <- function(theta) -obj$fn(theta)
   log_post_hat <- log_post(theta_hat)
@@ -471,8 +474,7 @@ ccd_points <- function(obj, theta_hat, f0 = 1.1) {
   log_density <- apply(theta, 1, log_post) - log_post_hat
   # a failed inner solve would otherwise give NaN weights
   stopifnot(all(is.finite(log_density)))
-  list(theta = theta, weight = ccd_weights(log_density, d, f0),
-       covariance = covariance, stretch = stretch, log_density = log_density)
+  list(theta = theta, weight = ccd_weights(log_density, d, f0))
 }
 
 # The template's parameter list of fit with theta (optimiser scale) in place
@@ -492,6 +494,7 @@ theta_par_list <- function(fit, theta) {
 # approximation to the marginal likelihood of the beta-binomial counts,
 # started from correction_setup(); then the posterior of theta by CCD
 # (ccd_points()), with the hyperparameters at each point in fit$ccd$hyper.
+# Stops if the optimiser does not converge, before the CCD's inner solves.
 # The fit itself is the conditional fit at theta_hat: latent posterior
 # N(mode, H^-1), with precision_obs W there for the linearised cut-posterior
 # shift (conditional_fit()). Predictions mix over the CCD points
@@ -505,6 +508,9 @@ fit_correction <- function(train, t0, T = max(train$year), meshes,
   obj <- correction_adfun(setup$data, setup$parameters)
   opt <- nlminb(obj$par, obj$fn, obj$gr,
                 control = list(eval.max = 1000, iter.max = 500))
+  if (opt$convergence != 0) {
+    stop("the Laplace fit did not converge: ", opt$message)
+  }
   max_gradient <- max(abs(obj$gr(opt$par)))
   time_laplace <- elapsed()
   ccd <- ccd_points(obj, setNames(opt$par, names(obj$par)))
@@ -553,9 +559,11 @@ fit_summary <- function(fit) {
 # prediction ------------------------------------------------------------------------
 
 # Cut-posterior shift of the latent mode when the offset at the training
-# observations changes from m_ref to m_new: the mode solves
-# H theta = A' D (z - m), so it moves by H^-1 A' D (m_ref - m_new). m_new may
-# have one column per dynamical draw; the factor of H is reused for all
+# observations changes from m_ref to m_new, by one Newton step from the mode:
+# to first order the score there changes by A' W (m_ref - m_new), with W the
+# beta-binomial weight at the mode (precision_obs), so the mode moves by
+# H^-1 A' W (m_ref - m_new). m_new may have one column per dynamical draw; the
+# factor of H is reused for all
 correction_mode_shift <- function(fit, m_new) {
   rhs <- Matrix::crossprod(fit$A_latent,
                            fit$precision_obs * (fit$m_ref - as.matrix(m_new)))
@@ -570,28 +578,23 @@ sample_latent_deviation <- function(H_chol, n_latent, n) {
                           system = "Pt"))
 }
 
-# The node fields omega and xi per year of joint latent draws at the fit's own
-# theta. Years at or before t0 have xi = 0, years in (t0, T] read the fitted
-# x, and later years run eta forward from eta_T = x_T - x_{T-1} by the AR(1)
-# with fresh Matern innovations (or their mean, 0), accumulating into xi.
+# The node fields omega and xi per year of n_draws joint latent draws at the
+# fit's own theta. Years at or before t0 have xi = 0, years in (t0, T] read
+# the fitted x, and later years run eta forward from eta_T = x_T - x_{T-1} by
+# the AR(1) with fresh Matern innovations, accumulating into xi.
 correction_node_draws_at <- function(fit, years, n_draws,
-                                     m_draws_train = NULL, mean = FALSE) {
-  if (mean) {
-    theta <- matrix(fit$mode, ncol = 1)
-  } else {
-    theta <- sample_latent_deviation(fit$H_chol, length(fit$mode), n_draws) +
-      fit$mode
-    if (!is.null(m_draws_train)) {
-      stopifnot(nrow(m_draws_train) == n_draws,
-                ncol(m_draws_train) == fit$n_obs)
-      theta <- theta + correction_mode_shift(fit, t(m_draws_train))
-    }
+                                     m_draws_train = NULL) {
+  latent <- sample_latent_deviation(fit$H_chol, length(fit$mode), n_draws) +
+    fit$mode
+  if (!is.null(m_draws_train)) {
+    stopifnot(nrow(m_draws_train) == n_draws,
+              ncol(m_draws_train) == fit$n_obs)
+    latent <- latent + correction_mode_shift(fit, t(m_draws_train))
   }
-  n <- ncol(theta)
   n_xi <- fit$mesh_xi$n
-  x <- theta[fit$blocks$x, , drop = FALSE]
+  x <- latent[fit$blocks$x, , drop = FALSE]
   x_year <- function(year) {
-    if (year <= fit$t0) return(matrix(0, n_xi, n))
+    if (year <= fit$t0) return(matrix(0, n_xi, n_draws))
     x[(year - fit$t0 - 1) * n_xi + seq_len(n_xi), , drop = FALSE]
   }
 
@@ -602,25 +605,20 @@ correction_node_draws_at <- function(fit, years, n_draws,
   max_horizon <- max(c(0, years - fit$T))
   if (max_horizon > 0) {
     phi <- fit$hyper$phi
-    if (!mean) {
-      Q_eta <- matern_precision_r(fit$fem_xi, fit$hyper$kappa_eta,
-                                  fit$hyper$sigma_eta)
-      Q_eta_chol <- Matrix::Cholesky(Matrix::forceSymmetric(Q_eta),
-                                     perm = TRUE, LDL = FALSE, super = TRUE)
-    }
+    Q_eta <- matern_precision_r(fit$fem_xi, fit$hyper$kappa_eta,
+                                fit$hyper$sigma_eta)
+    Q_eta_chol <- Matrix::Cholesky(Matrix::forceSymmetric(Q_eta),
+                                   perm = TRUE, LDL = FALSE, super = TRUE)
     xi_t <- x_year(fit$T)
     eta <- xi_t - x_year(fit$T - 1)
     for (h in seq_len(max_horizon)) {
-      eta <- phi * eta
-      if (!mean) {
-        eta <- eta + sqrt(1 - phi ^ 2) *
-          sample_latent_deviation(Q_eta_chol, n_xi, n)
-      }
+      eta <- phi * eta + sqrt(1 - phi ^ 2) *
+        sample_latent_deviation(Q_eta_chol, n_xi, n_draws)
       xi_t <- xi_t + eta
       if ((fit$T + h) %in% years) xi[[as.character(fit$T + h)]] <- xi_t
     }
   }
-  list(omega = theta[fit$blocks$w_omega, , drop = FALSE], xi = xi)
+  list(omega = latent[fit$blocks$w_omega, , drop = FALSE], xi = xi)
 }
 
 # The point of p(theta | y) each of n_draws draws uses: the CCD points
@@ -642,37 +640,26 @@ for_ccd_points <- function(fit, points, use) {
 # (a) The node fields per year of joint latent draws, mixed over theta; see
 # the API above. Draw d uses CCD point j(d), allotted by the weights, and its
 # conditional fit (correction_node_draws_at()); the fields carry `point`, the
-# point of each draw. mean = TRUE gives the posterior mean: the CCD-weighted
-# mean of the conditional means
-correction_node_draws <- function(fit, years, n_draws, m_draws_train = NULL,
-                                  mean = FALSE) {
+# point of each draw
+correction_node_draws <- function(fit, years, n_draws, m_draws_train = NULL) {
   out <- NULL
-  fill <- function(fields, columns, scale = 1) {
-    if (is.null(out)) {
-      n <- if (mean) 1 else n_draws
-      out <<- list(omega = matrix(0, nrow(fields$omega), n),
-                   xi = lapply(fields$xi, function(x) matrix(0, nrow(x), n)))
-    }
-    out$omega[, columns] <<- out$omega[, columns] + scale * fields$omega
-    for (year in names(fields$xi)) {
-      out$xi[[year]][, columns] <<- out$xi[[year]][, columns] +
-        scale * fields$xi[[year]]
-    }
-  }
-  if (mean) {
-    for_ccd_points(fit, seq_len(nrow(fit$ccd$theta)), function(j, fit_j) {
-      fill(correction_node_draws_at(fit_j, years, mean = TRUE), 1,
-           fit$ccd$weight[j])
-    })
-    return(out)
-  }
   point <- ccd_allocation(fit$ccd$weight, n_draws)
   for_ccd_points(fit, unique(point), function(j, fit_j) {
     draws <- which(point == j)
-    fill(correction_node_draws_at(
+    fields <- correction_node_draws_at(
       fit_j, years, length(draws),
       if (is.null(m_draws_train)) NULL else
-        m_draws_train[draws, , drop = FALSE]), draws)
+        m_draws_train[draws, , drop = FALSE])
+    if (is.null(out)) {
+      out <<- list(omega = matrix(0, nrow(fields$omega), n_draws),
+                   xi = lapply(fields$xi, function(x) {
+                     matrix(0, nrow(x), n_draws)
+                   }))
+    }
+    out$omega[, draws] <<- fields$omega
+    for (year in names(fields$xi)) {
+      out$xi[[year]][, draws] <<- fields$xi[[year]]
+    }
   })
   out$point <- point
   out

@@ -220,7 +220,6 @@ if (step == "fit") {
                                     prediction_mask_coords())
   time_fit <- system.time(fit <- fit_correction(train_k, t0 = baseline_year,
                                                 meshes = meshes))
-  stopifnot(fit$opt$convergence == 0)
 
   # every mapped cell must be inside both meshes, or its correction would be 0
   grid <- grid_cells()
@@ -285,8 +284,16 @@ if (step == "map") {
                              n_draws = n_map_draws,
                              batch_size = map_batch_size,
                              baseline_year = baseline_year)
-    # the posterior mean of omega + xi at the panel years
-    fields_mean <- correction_node_draws(setup$fit, map_years, mean = TRUE)
+    # the posterior mean of omega + xi at the panel years: the projection is
+    # linear, so it is the projection of the node fields' mean over the draws
+    mean_over_draws <- function(field) {
+      as.matrix(rowMeans(do.call(cbind, lapply(setup$fields, field))))
+    }
+    fields_mean <- list(
+      omega = mean_over_draws(function(f) f$omega),
+      xi = sapply(as.character(map_years), function(year) {
+        mean_over_draws(function(f) f$xi[[year]])
+      }, simplify = FALSE))
 
     grid <- grid_cells()
     mapped <- which(!is.na(grid$country))

@@ -168,7 +168,6 @@ time_fit <- system.time({
                                     prediction_mask_coords())
   fit <- fit_correction(train_k, t0 = t0, meshes = meshes)
 })[["elapsed"]]
-stopifnot(fit$opt$convergence == 0)
 
 # One set of joint draws of the correction fields, mixed over the CCD points
 # and each on its own dynamical draw (the cut posterior), projected to: the
