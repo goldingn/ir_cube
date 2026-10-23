@@ -382,37 +382,19 @@ within_pairs <- pairs %>%
   )
 
 # The records to drop from pairs of copies, each with the preferred record
-# kept in its place. Records a reviewer found to be one test are grouped (a
-# copy of a copy is a copy). Other copies are paired one-to-one (one_to_one())
-# between the two citations, or downloads (`between`), as one paper can hold
-# separate tests with one result, such as 100%.
-drop_copies <- function(pairs, grouped = FALSE,
-                        between = c("citation_a", "citation_b")) {
+# kept in its place. Copies are paired one-to-one (one_to_one()) between the
+# two citations, or downloads (`between`), as one paper can hold separate tests
+# with one result, such as 100%.
+drop_copies <- function(pairs, between = c("citation_a", "citation_b")) {
   if (nrow(pairs) == 0) {
     return(tibble(dropped = integer(), kept = integer(), rule = character(),
                   decision = character(), km = numeric()))
   }
-  if (grouped) {
-    records <- unique(c(pairs$a, pairs$b))
-    rules <- bind_rows(select(pairs, record = a, rule, decision, km),
-                       select(pairs, record = b, rule, decision, km)) %>%
-      distinct(record, .keep_all = TRUE)
-    tibble(record = records,
-           group = connected_groups(records, pairs$a, pairs$b)) %>%
-      left_join(select(record_info, record, preference), by = "record") %>%
-      group_by(group) %>%
-      mutate(kept = record[which.min(preference)]) %>%
-      ungroup() %>%
-      filter(record != kept) %>%
-      left_join(rules, by = "record") %>%
-      select(dropped = record, kept, rule, decision, km)
-  } else {
-    pairs %>%
-      one_to_one(between = between) %>%
-      mutate(dropped = if_else(preference_a > preference_b, a, b),
-             kept = if_else(dropped == a, b, a)) %>%
-      select(dropped, kept, rule, decision, km)
-  }
+  pairs %>%
+    one_to_one(between = between) %>%
+    mutate(dropped = if_else(preference_a > preference_b, a, b),
+           kept = if_else(dropped == a, b, a)) %>%
+    select(dropped, kept, rule, decision, km)
 }
 # pairs under these rules, unless a reviewer decided they are different tests
 is_copy <- function(pairs, rules) {
@@ -426,22 +408,20 @@ dropped_entered <- drop_copies(
   between = c("source_a", "source_b"))
 within_left <- not_dropped(within_pairs, dropped_entered)
 dropped_published <- drop_copies(
-  filter(within_left, is_copy(within_left, "published twice")),
-  grouped = FALSE)
+  filter(within_left, is_copy(within_left, "published twice")))
 within_left <- not_dropped(within_left, dropped_published)
 
-# Then, among the records left: records of one citation that a reviewer found
-# to be one test (e.g. one result entered for each of three months), and
-# records with different citations flagged for review, which are copies until
-# reviewed.
-dropped_reviewed <- bind_rows(
-  drop_copies(filter(within_left, rule == "separate tests",
-                     coalesce(decision == "copy", FALSE)),
-              grouped = TRUE),
-  drop_copies(filter(within_left,
-                     is_copy(within_left, "review: different citations")),
-              grouped = FALSE)
-)
+# Then, among the records left: records with different citations flagged for
+# review, which are copies unless a reviewer found them separate tests. Every
+# flagged pair needs a decision, so the prep warns of any without one.
+dropped_reviewed <- drop_copies(
+  filter(within_left, is_copy(within_left, "review: different citations")))
+undecided <- sum(startsWith(within_left$rule, "review") &
+                   is.na(within_left$decision))
+if (undecided > 0) {
+  warning(undecided, " pairs flagged for review have no decision; see ",
+          "outputs/review/bioassay_review_pairs.csv")
+}
 dropped_within <- c(dropped_entered$dropped, dropped_published$dropped,
                     dropped_reviewed$dropped)
 
