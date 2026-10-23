@@ -18,15 +18,18 @@ numeric_bioassay_columns <- c("latitude", "longitude", "year_start",
 # Read one source, given its specification: `read()` returns the raw table with
 # every column as text, `keep()` applies the source's own filters to it, and
 # `columns` maps our column names to the source's. Numbers are parsed after
-# dropping "%" and spaces. Sources without their own record IDs get one from a
-# hash of the raw row, numbered within identical rows, so that a record keeps
-# its ID when the data are re-read.
+# dropping "%" and spaces. Each record gets `row_hash`, a hash of its raw row
+# without the source's record ID, which is the same for rows identical in
+# every column. Sources without their own record IDs get one from this hash,
+# numbered within identical rows, so that a record keeps its ID when the data
+# are re-read.
 read_bioassay_source <- function(spec) {
   raw <- spec$keep(spec$read())
+  row_hash <- apply(raw[setdiff(names(raw), spec$columns["record_id"])], 1,
+                    function(row) {
+                      substr(rlang::hash(paste(row, collapse = "|")), 1, 12)
+                    })
   if (!"record_id" %in% names(spec$columns)) {
-    row_hash <- apply(raw, 1, function(row) {
-      substr(rlang::hash(paste(row, collapse = "|")), 1, 12)
-    })
     raw$record_id <- paste0(row_hash, "-", ave(seq_along(row_hash), row_hash,
                                                 FUN = seq_along))
     spec$columns <- c(spec$columns, record_id = "record_id")
@@ -40,7 +43,8 @@ read_bioassay_source <- function(spec) {
              ~ suppressWarnings(as.numeric(str_remove_all(.x, "[%\\s]")))),
       citation = str_squish(citation),
       source = spec$source,
-      database = spec$database
+      database = spec$database,
+      row_hash = row_hash
     )
 }
 

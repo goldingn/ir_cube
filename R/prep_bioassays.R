@@ -258,6 +258,21 @@ bioassays <- bioassays %>%
 
 # ---- copies of the same bioassay ----
 
+# A download sometimes holds a paper more than once (imported twice), or
+# repeats its rows (one row copied down for many tests): at least half of the
+# paper's records in the download are repeated, identical in every column but
+# their ID (row_hash). One of each is kept. Records of one paper in one
+# download that are repeated otherwise are taken as the paper's separate tests:
+# a paper reporting many tests at one site can give two the same result. The
+# supplement gives the shares of repeated records and the checks by hand.
+bioassays <- bioassays %>%
+  group_by(source, citation) %>%
+  add_count(row_hash, name = "row_copies") %>%
+  mutate(repeated = mean(row_copies > 1) >= 0.5 & duplicated(row_hash)) %>%
+  ungroup() %>%
+  select(-row_copies) %>%
+  keep_records(!repeated, "paper repeated in a download")
+
 # The databases hold many of the same bioassays, and some hold a bioassay more
 # than once. Copies have the same country, years, insecticide, concentration
 # and result (agreeing_pairs()), but not always the same coordinates: the
@@ -323,7 +338,8 @@ decisions <- read_csv("review/bioassay_duplicates.csv",
   select(pair_id, decision)
 
 record_info <- bioassays %>%
-  select(record, record_key, database, citation, site, month, generation,
+  select(record, record_key, database, source, citation, site, month,
+         generation,
          preference)
 pairs <- agreeing_pairs(bioassays, max_km, max_km_within) %>%
   left_join(record_info, by = c("a" = "record")) %>%
@@ -335,12 +351,15 @@ pairs <- agreeing_pairs(bioassays, max_km, max_km_within) %>%
          second = pmax(coalesce(citation_a, ""), coalesce(citation_b, ""))) %>%
   left_join(select(decisions, pair_id, decision), by = "pair_id")
 
-# Within a database. Two records with the same citation are one entered twice
-# if they are at the same coordinates in the same month and generation, and
-# else separate tests. Records with different citations are copies if the two
-# citations share at least two results between 0% and 100% (the same data
-# published twice, e.g. in a paper and a report), and else are flagged for
-# review.
+# Within a database. Two records with the same citation are one test in two
+# downloads of the database (e.g. the IR Mapper extracts' species and complex
+# files) if they are at the same coordinates in the same month and generation,
+# and else separate tests. Within one download, a paper's records are separate
+# tests (bar a paper repeated in a download, above): we trust the authors and
+# the databases' extractors. Records with different citations are copies if
+# the two citations share at least two results between 0% and 100% (the same
+# data published twice, e.g. in a paper and a report), and else are flagged
+# for review.
 same_text <- function(x, y) {
   coalesce(as.character(x), "") == coalesce(as.character(y), "")
 }
@@ -353,8 +372,9 @@ within_pairs <- pairs %>%
   mutate(
     shared = coalesce(shared, 0L),
     rule = case_when(
-      first == second & km < 0.01 & same_text(month_a, month_b) &
-        same_text(generation_a, generation_b) ~ "entered twice",
+      first == second & source_a != source_b & km < 0.01 &
+        same_text(month_a, month_b) &
+        same_text(generation_a, generation_b) ~ "in two downloads",
       first == second ~ "separate tests",
       shared >= 2 ~ "published twice",
       .default = "review: different citations"
@@ -362,11 +382,12 @@ within_pairs <- pairs %>%
   )
 
 # The records to drop from pairs of copies, each with the preferred record
-# kept in its place. A record entered several times is grouped (a copy of a
-# copy is a copy). Copies under different citations are paired one-to-one
-# (one_to_one()), as two citations can hold the same tests at several sites
-# with one result, such as 100%.
-drop_copies <- function(pairs, grouped) {
+# kept in its place. Records a reviewer found to be one test are grouped (a
+# copy of a copy is a copy). Other copies are paired one-to-one (one_to_one())
+# between the two citations, or downloads (`between`), as one paper can hold
+# separate tests with one result, such as 100%.
+drop_copies <- function(pairs, grouped = FALSE,
+                        between = c("citation_a", "citation_b")) {
   if (nrow(pairs) == 0) {
     return(tibble(dropped = integer(), kept = integer(), rule = character(),
                   decision = character(), km = numeric()))
@@ -387,7 +408,7 @@ drop_copies <- function(pairs, grouped) {
       select(dropped = record, kept, rule, decision, km)
   } else {
     pairs %>%
-      one_to_one(between = c("citation_a", "citation_b")) %>%
+      one_to_one(between = between) %>%
       mutate(dropped = if_else(preference_a > preference_b, a, b),
              kept = if_else(dropped == a, b, a)) %>%
       select(dropped, kept, rule, decision, km)
@@ -401,33 +422,21 @@ not_dropped <- function(pairs, dropped) {
   filter(pairs, !a %in% dropped$dropped, !b %in% dropped$dropped)
 }
 dropped_entered <- drop_copies(
-  filter(within_pairs, is_copy(within_pairs, "entered twice")),
-  grouped = TRUE)
+  filter(within_pairs, is_copy(within_pairs, "in two downloads")),
+  between = c("source_a", "source_b"))
 within_left <- not_dropped(within_pairs, dropped_entered)
 dropped_published <- drop_copies(
   filter(within_left, is_copy(within_left, "published twice")),
   grouped = FALSE)
 within_left <- not_dropped(within_left, dropped_published)
 
-# Then, among the records left: a result between 0% and 100% that one citation
-# gives more than twice, at different sites or in different months or
-# generations, is implausible as separate tests (e.g. one result entered 22
-# times in 3 months), so these are flagged for review too. Pairs flagged for
-# review are taken as copies until reviewed.
-repeated <- within_left %>%
-  filter(rule == "separate tests", !extreme) %>%
-  select(a, b) %>%
-  pivot_longer(everything(), values_to = "record") %>%
-  count(record) %>%
-  filter(n >= 2) %>%
-  pull(record)
-within_left <- within_left %>%
-  mutate(rule = if_else(rule == "separate tests" &
-                          (a %in% repeated | b %in% repeated),
-                        "review: one result repeated", rule))
+# Then, among the records left: records of one citation that a reviewer found
+# to be one test (e.g. one result entered for each of three months), and
+# records with different citations flagged for review, which are copies until
+# reviewed.
 dropped_reviewed <- bind_rows(
-  drop_copies(filter(within_left,
-                     is_copy(within_left, "review: one result repeated")),
+  drop_copies(filter(within_left, rule == "separate tests",
+                     coalesce(decision == "copy", FALSE)),
               grouped = TRUE),
   drop_copies(filter(within_left,
                      is_copy(within_left, "review: different citations")),
