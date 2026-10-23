@@ -3,7 +3,8 @@
 # complex records to data/clean/all_gambiae_complex_data.RDS. The supplement
 # (doc/supp.qmd, "Bioassay data processing") describes the method;
 # outputs/review/bioassay_attrition.csv counts the records each step removes,
-# and outputs/review/bioassay_links.csv lists every copy removed.
+# outputs/review/bioassay_links.csv lists every copy removed, and
+# outputs/review/bioassay_review_pairs.csv the pairs flagged for review.
 
 source("R/packages.R")
 source("R/functions.R")
@@ -33,13 +34,23 @@ mtm_columns <- c(record_id = "ID", citation = "CITATION",
                  mosquito_number = "MOSQUITO_NUMBER",
                  mortality_adjusted = "MORTALITY_ADJUSTED")
 
-# The IR Mapper analysis-ready extracts are in Windows-1252, with "NR" and "NF"
-# for missing values. Records pooled over several sites ("multipoint") are
+# An IR Mapper analysis-ready extract, as a source (below), given the column
+# naming its species. The extracts are in Windows-1252, with "NR" and "NF" for
+# missing values. Records pooled over several sites ("multipoint") are
 # dropped.
-read_ir_mapper_extract <- function(file) {
-  read_csv(file, col_types = cols(.default = "c"),
-           na = c("", "NA", "NR", "NF"),
-           locale = locale(encoding = "windows-1252"))
+ir_mapper_extract <- function(source, file, species_column) {
+  force(file)
+  list(
+    source = source,
+    database = "IR Mapper extracts",
+    read = function() {
+      read_csv(file, col_types = cols(.default = "c"),
+               na = c("", "NA", "NR", "NF"),
+               locale = locale(encoding = "windows-1252"))
+    },
+    keep = function(d) filter(d, `Site type` == "point"),
+    columns = c(ir_mapper_extract_columns, species = species_column)
+  )
 }
 ir_mapper_extract_columns <- c(record_id = "Bioassay ID",
                                citation = "Source 1 citation",
@@ -127,35 +138,15 @@ sources <- list(
     keep = function(d) filter(d, as.numeric(LONGITUDE) > -50),
     columns = c(mtm_columns, species = "VECTOR_SPECIES")
   ),
-  list(
-    source = "mapper_dis_species",
-    database = "IR Mapper extracts",
-    read = function() {
-      read_ir_mapper_extract("data/raw/2_standard-WHO-susc-test_species.csv")
-    },
-    keep = function(d) filter(d, `Site type` == "point"),
-    columns = c(ir_mapper_extract_columns, species = "Species")
-  ),
-  list(
-    source = "mapper_int_complex",
-    database = "IR Mapper extracts",
-    read = function() {
-      read_ir_mapper_extract(
-        "data/raw/5_intensity-bioassays_complex-subgroup.csv")
-    },
-    keep = function(d) filter(d, `Site type` == "point"),
-    columns = c(ir_mapper_extract_columns, species = "Complex/Subgroup")
-  ),
-  list(
-    source = "mapper_dis_complex",
-    database = "IR Mapper extracts",
-    read = function() {
-      read_ir_mapper_extract(
-        "data/raw/1_standard-WHO-susc-test_complex-subgroup.csv")
-    },
-    keep = function(d) filter(d, `Site type` == "point"),
-    columns = c(ir_mapper_extract_columns, species = "Complex/Subgroup")
-  ),
+  ir_mapper_extract("mapper_dis_species",
+                    "data/raw/2_standard-WHO-susc-test_species.csv",
+                    "Species"),
+  ir_mapper_extract("mapper_int_complex",
+                    "data/raw/5_intensity-bioassays_complex-subgroup.csv",
+                    "Complex/Subgroup"),
+  ir_mapper_extract("mapper_dis_complex",
+                    "data/raw/1_standard-WHO-susc-test_complex-subgroup.csv",
+                    "Complex/Subgroup"),
   list(
     source = "mapper_source_2022",
     database = "IR Mapper 2022",
@@ -222,7 +213,9 @@ keep_records <- function(records, condition, step) {
 
 bioassays <- bioassays %>%
   keep_records(!is.na(country_name), "not in Africa") %>%
-  keep_records(grepl("who", tolower(test_type)), "not a WHO tube test") %>%
+  keep_records(grepl("who", tolower(test_type)) &
+                 !grepl("bottle|larval|synergist", tolower(test_type)),
+               "not a WHO tube test") %>%
   keep_records(!is.na(latitude) & !is.na(longitude) & !is.na(year_start) &
                  !is.na(concentration) & !is.na(mortality_adjusted) &
                  !is.na(insecticide_type),
@@ -249,10 +242,11 @@ bioassays <- bioassays %>%
       infer_sample_size(mortality_adjusted[!n_recorded])),
     died = round(mosquito_number * mortality_adjusted / 100)
   ) %>%
-  # a positive mortality that gives no dead mosquito is a proportion read as a
-  # percentage, e.g. 1.0 for 100% (#60)
+  # a positive mortality that gives no dead mosquito is an error: a proportion
+  # read as a percentage, e.g. 1.0 for 100% (#60), or a number dead, e.g. 3
+  # of 3 or 4
   keep_records(!(died == 0 & mortality_adjusted > 0),
-               "mortality a proportion")
+               "positive mortality below one mosquito")
 
 # ---- copies of the same bioassay ----
 
@@ -265,19 +259,12 @@ bioassays <- bioassays %>%
 # concentration must match too.
 #
 # Each distance is where looking further would find more coincidences than
-# copies. Coincidences are counted by pairs whose results differ by 3-5 dead
-# mosquitoes (or 3-5 percentage points), which copies don't, so this is for
-# results between 0% and 100%. Between databases, records with the same number
-# of mosquitoes and number dead are copies up to 100 km apart: 98% of copies
-# are within 100 km, against 62% within a pixel, and about 3% of the matches
-# are coincidences. Matching on the percentage alone, where a number of
-# mosquitoes is missing, is less specific: 10% of matches within 50 km are
-# coincidences, and beyond 50 km coincidences outnumber copies. Within a
-# database, copies are mostly at the same coordinates, and coincidences grow
-# faster with distance, as one study's sites tend to have similar results. At
-# 0% or 100% (where coincidences are counted from deltamethrin records matched
-# to permethrin ones) up to about a fifth of matches are coincidences at any
-# distance. See #63.
+# copies, counting coincidences by pairs whose results differ by 3-5 dead
+# mosquitoes (or 3-5 percentage points), which copies don't. Matching on the
+# percentage alone, where a number of mosquitoes is missing, is less specific,
+# so its distance is shorter. Within a database, copies are mostly at the same
+# coordinates, and coincidences grow faster with distance, as one study's sites
+# tend to have similar results. The supplement gives the numbers; see #63.
 max_km <- c(count = 100, percent = 50, misscaled = 100)
 max_km_within <- 10
 
@@ -295,26 +282,15 @@ bioassays <- bioassays %>%
          record_key = paste(source, record_id)) %>%
   arrange(record)
 
-# A reviewer can record whether a pair of records are copies ("copy") or
-# separate tests ("different") in review/bioassay_duplicates.csv, and for
-# copies which of the two is located more finely (`finer`: "a" or "b"; see
-# merge_copies()). A pair decided "different" is never taken as copies; any
-# other decision (blank, "unsure") leaves the rules below to decide. The pairs
-# flagged for review are written there (below).
-review_file <- "review/bioassay_duplicates.csv"
-reviewed <- tibble(pair_id = character(), decision = character(),
-                   notes = character(), finer = character())
-if (file.exists(review_file)) {
-  reviewed <- read_csv(review_file, col_types = cols(.default = "c")) %>%
-    bind_rows(reviewed)
-}
-decisions <- filter(reviewed, decision %in% c("copy", "different"))
-finer_pairs <- decisions %>%
-  filter(decision == "copy", finer %in% c("a", "b")) %>%
-  transmute(key_a = paste(source_a, record_id_a),
-            key_b = paste(source_b, record_id_b),
-            finer = if_else(finer == "a", key_a, key_b),
-            coarser = if_else(finer == key_a, key_b, key_a))
+# A reviewer records whether a pair of records are copies ("copy") or
+# separate tests ("different") in review/bioassay_duplicates.csv, by pair_id.
+# A pair decided "different" is never taken as copies; any other decision
+# (blank, "unsure") leaves the rules below to decide. The pairs flagged for
+# review are written to outputs/review/bioassay_review_pairs.csv (below).
+decisions <- read_csv("review/bioassay_duplicates.csv",
+                      col_types = cols(.default = "c")) %>%
+  filter(decision %in% c("copy", "different")) %>%
+  select(pair_id, decision)
 
 record_info <- bioassays %>%
   select(record, record_key, database, citation, site, month, generation,
@@ -323,7 +299,10 @@ pairs <- agreeing_pairs(bioassays, max_km, max_km_within) %>%
   left_join(record_info, by = c("a" = "record")) %>%
   left_join(record_info, by = c("b" = "record"), suffix = c("_a", "_b")) %>%
   mutate(pair_id = pair_id(record_key_a, record_key_b),
-         name_match = same_site_name(site_a, site_b)) %>%
+         name_match = same_site_name(site_a, site_b),
+         # the two citations in a fixed order, a missing one as ""
+         first = pmin(coalesce(citation_a, ""), coalesce(citation_b, "")),
+         second = pmax(coalesce(citation_a, ""), coalesce(citation_b, ""))) %>%
   left_join(select(decisions, pair_id, decision), by = "pair_id")
 
 # Within a database. Two records with the same citation are one entered twice
@@ -336,22 +315,17 @@ same_text <- function(x, y) {
   coalesce(as.character(x), "") == coalesce(as.character(y), "")
 }
 shared_results <- pairs %>%
-  filter(within, agreement != "misscaled", !extreme,
-         !same_text(citation_a, citation_b)) %>%
-  count(database_a, first = pmin(citation_a, citation_b),
-        second = pmax(citation_a, citation_b), name = "shared")
+  filter(within, !extreme, first != second) %>%
+  count(database_a, first, second, name = "shared")
 within_pairs <- pairs %>%
-  filter(within, agreement != "misscaled") %>%
-  mutate(first = pmin(citation_a, citation_b),
-         second = pmax(citation_a, citation_b)) %>%
+  filter(within) %>%
   left_join(shared_results, by = c("database_a", "first", "second")) %>%
   mutate(
     shared = coalesce(shared, 0L),
     rule = case_when(
-      same_text(citation_a, citation_b) & km < 0.01 &
-        same_text(month_a, month_b) &
+      first == second & km < 0.01 & same_text(month_a, month_b) &
         same_text(generation_a, generation_b) ~ "entered twice",
-      same_text(citation_a, citation_b) ~ "separate tests",
+      first == second ~ "separate tests",
       shared >= 2 ~ "published twice",
       .default = "review: different citations"
     )
@@ -442,8 +416,9 @@ has_copy <- pairs %>%
   unlist() %>%
   unique()
 cross_pairs <- pairs %>%
+  mutate(rule = "between databases") %>%
   filter(!within, !a %in% dropped_within, !b %in% dropped_within,
-         is.na(decision) | decision == "copy",
+         is_copy(., "between databases"),
          agreement != "misscaled" | !a %in% has_copy) %>%
   one_to_one() %>%
   mutate(dropped = case_when(agreement == "misscaled" ~ a,
@@ -481,13 +456,12 @@ bioassays <- bioassays %>%
   keep_records(!record %in% dropped_sums, "sum of species records") %>%
   keep_records(!record %in% dropped_pooled, "pooled separate tests")
 
-# Each record kept takes the best location and species of its copies (see
-# merge_copies()). The IR Mapper extracts are the analysis-ready datasets of
-# Moyes et al. (2019). In October 2026, of the tests where their copy was more
-# than 5 km from IR Mapper 2022's, MTM's copy agreed with the extracts in 392
-# and with IR Mapper 2022 in 192; against the Vector Atlas, 94 and 11.
-bioassays <- merge_copies(bioassays, candidates, links, finer_pairs,
-                          analysis_ready = "IR Mapper extracts")
+# Each record kept takes the best location of its copies
+# (locate_from_copies()). The IR Mapper extracts are the analysis-ready
+# datasets of Moyes et al. (2019), abstracted and checked to one standard, so
+# their coordinates are preferred among equally precise copies.
+bioassays <- locate_from_copies(bioassays, candidates, links,
+                                analysis_ready = "IR Mapper extracts")
 
 # ---- country labels ----
 
@@ -551,12 +525,12 @@ bioassays <- bioassays %>%
 
 # ---- records for review, and reports ----
 
-# The pairs flagged for review, and any other pair a reviewer has decided, with
-# what the reviewer needs: each record's citation, a link to the paper (its
-# DOI, the database's URL, or a Google Scholar search), and the fields that
-# might distinguish two tests. The reviewer fills in `decision` ("copy" or
-# "different"), `finer` and `notes`, which are kept when the file is
-# rewritten. Undecided pairs are taken as copies.
+# The pairs flagged for review, with what the reviewer needs: each record's
+# citation, a link to the paper (its DOI, the database's URL, or a Google
+# Scholar search), the fields that might distinguish two tests, and any
+# decision already recorded. A reviewer copies a pair's row into
+# review/bioassay_duplicates.csv and fills in `decision` ("copy" or
+# "different") and `notes`. Undecided pairs are taken as copies.
 review_fields <- c("source", "record_id", "citation", "link", "site",
                    "latitude", "longitude", "month", "generation", "species",
                    "mosquito_number", "n_recorded", "died",
@@ -582,25 +556,14 @@ side_by_side <- function(pairs) {
            all_of(as.vector(rbind(paste0(review_fields, "_a"),
                                   paste0(review_fields, "_b")))))
 }
-review <- bind_rows(
-  filter(within_left, startsWith(rule, "review")),
-  filter(pairs, !is.na(decision))
-) %>%
-  distinct(pair_id, .keep_all = TRUE) %>%
-  mutate(reason = coalesce(rule, "between databases"),
-         km = round(km, 2)) %>%
-  side_by_side()
-review <- review %>%
-  mutate(across(everything(), as.character)) %>%
-  left_join(select(reviewed, pair_id, decision, notes, finer),
-            by = "pair_id") %>%
-  bind_rows(reviewed %>%
-              filter(!pair_id %in% review$pair_id, !is.na(decision)) %>%
-              mutate(reason = "no longer matched")) %>%
-  relocate(pair_id, decision, finer, notes, reason) %>%
-  arrange(!is.na(decision), reason, citation_a)
-dir.create(dirname(review_file), showWarnings = FALSE)
-write_excel_csv(review, review_file, na = "")
+within_left %>%
+  filter(startsWith(rule, "review")) %>%
+  mutate(reason = rule, km = round(km, 2)) %>%
+  side_by_side() %>%
+  left_join(decisions, by = "pair_id") %>%
+  relocate(pair_id, decision) %>%
+  arrange(!is.na(decision), reason, citation_a) %>%
+  write_excel_csv("outputs/review/bioassay_review_pairs.csv", na = "")
 
 links %>%
   rename(a = dropped, b = kept) %>%

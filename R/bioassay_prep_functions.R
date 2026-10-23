@@ -45,16 +45,19 @@ read_bioassay_source <- function(spec) {
 
 # ---- standardising ----
 
+# A name in lower-case ASCII letters and digits only, for matching names that
+# differ in case, accents or punctuation
+name_key <- function(x) {
+  gsub("[^a-z0-9]", "", tolower(stringi::stri_trans_general(x, "Latin-ASCII")))
+}
+
 # Our name for each country: the UNSD name as printed in this project (see
 # country_region_lookup()), matched ignoring case, accents and punctuation, or
 # one of the databases' other spellings
 standardise_country <- function(country) {
-  key <- function(x) {
-    gsub("[^a-z]", "", tolower(stringi::stri_trans_general(x, "Latin-ASCII")))
-  }
   names <- country_region_lookup()$country_name
   lookup <- c(
-    setNames(names, key(names)),
+    setNames(names, name_key(names)),
     unitedrepublicoftanzania = "Tanzania",
     tanzaniaunitedrepublicof = "Tanzania",
     thegambia = "Gambia",
@@ -65,7 +68,7 @@ standardise_country <- function(country) {
     cotedivoire = "Côte d’Ivoire",
     swaziland = "Eswatini"
   )
-  unname(lookup[key(country)])
+  unname(lookup[name_key(country)])
 }
 
 # Our name for each insecticide, ignoring case, punctuation and the multiplier
@@ -128,8 +131,14 @@ gambiae_complex_species <- c(
 )
 
 # A link to each record's paper: its DOI, else the database's URL, else a
-# Google Scholar search for the citation
+# Google Scholar search for the citation. DOIs have no spaces, but some are
+# given with spaces for hyphens ("10.1186/s12936 017 1960 3") or after a
+# slash or dot ("10.1371/journal. pone.0249440"); in a link that is a DOI, a
+# space after a slash or dot is dropped and any other is read as a hyphen.
 paper_link <- function(link, citation) {
+  is_doi <- grepl("^\\s*10\\.\\d{4,}/", link)
+  link[is_doi] <- gsub("\\s+", "-",
+                       gsub("([./])\\s+", "\\1", str_squish(link[is_doi])))
   doi <- str_extract(link, "10\\.\\d{4,}/\\S+")
   url <- if_else(grepl("^https?://", link), link, NA_character_)
   search <- if_else(is.na(citation), NA_character_,
@@ -140,14 +149,18 @@ paper_link <- function(link, citation) {
            url, search)
 }
 
-# the fewest decimal places given in either coordinate
-coordinate_places <- function(latitude, longitude) {
-  places <- function(x) {
-    p <- rep(6L, length(x))
-    for (d in 5:0) p[abs(x * 10 ^ d - round(x * 10 ^ d)) < 1e-7] <- d
-    p
-  }
-  pmin(places(latitude), places(longitude))
+# the number of decimal places a coordinate is given to, up to 6
+decimal_places <- function(x) {
+  places <- rep(6L, length(x))
+  for (d in 5:0) places[abs(x * 10 ^ d - round(x * 10 ^ d)) < 1e-7] <- d
+  places
+}
+
+# the great-circle distance in km between points (longitude, latitude) and
+# (longitude_b, latitude_b)
+km_between <- function(longitude, latitude, longitude_b, latitude_b) {
+  fields::rdist.earth.vec(cbind(longitude, latitude),
+                          cbind(longitude_b, latitude_b), miles = FALSE)
 }
 
 # ---- finding copies ----
@@ -182,9 +195,9 @@ connected_groups <- function(records, a, b) {
 # percentage mortalities are within half a percentage point.
 #
 # "misscaled": record a's mortality, read as a number dead or as a proportion,
-# gives record b's number dead, with the same number of mosquitoes, where read
-# as a percentage it gives a number dead more than one away. Record a is then
-# on the wrong scale.
+# gives the number dead of record b, in another database, with the same number
+# of mosquitoes, where read as a percentage it gives a number dead more than
+# one away. Record a is then on the wrong scale.
 #
 # Where the agreed result is 0% or 100%, which genuinely separate tests often
 # share, the species must be compatible (the same, or one recorded only to the
@@ -219,7 +232,8 @@ agreeing_pairs <- function(records, max_km, max_km_within) {
            abs(mortality_adjusted - mortality_adjusted_b) <= 0.5,
            n_recorded_b | record < record_b) %>%
     mutate(agreement = "percent",
-           extreme = mortality_adjusted %in% c(0, 100))
+           extreme = mortality_adjusted %in% c(0, 100) |
+             mortality_adjusted_b %in% c(0, 100))
 
   misscaled <- bind_rows(
     counted %>%
@@ -232,7 +246,7 @@ agreeing_pairs <- function(records, max_km, max_km_within) {
            abs(reading - died) > 1) %>%
     inner_join(counted, by = c(key, "mosquito_number", "reading" = "died"),
                suffix = c("", "_b"), relationship = "many-to-many") %>%
-    filter(record != record_b) %>%
+    filter(database != database_b) %>%
     mutate(agreement = "misscaled",
            extreme = reading == 0 | reading == mosquito_number) %>%
     select(-reading)
@@ -240,9 +254,7 @@ agreeing_pairs <- function(records, max_km, max_km_within) {
   complexes <- c("gambiae complex", "funestus complex")
   bind_rows(count, percent, misscaled) %>%
     mutate(
-      km = fields::rdist.earth.vec(cbind(longitude, latitude),
-                                   cbind(longitude_b, latitude_b),
-                                   miles = FALSE),
+      km = km_between(longitude, latitude, longitude_b, latitude_b),
       within = database == database_b
     ) %>%
     filter(
@@ -261,12 +273,8 @@ agreeing_pairs <- function(records, max_km, max_km_within) {
 # provided any numbers in them are the same ("Houeyiho (1)" and "Houeyiho (2)"
 # are two sites)
 same_site_name <- function(x, y) {
-  key <- function(s) {
-    ascii <- stringi::stri_trans_general(s, "Latin-ASCII")
-    gsub("[^a-z0-9]", "", tolower(ascii))
-  }
-  kx <- coalesce(key(x), "")
-  ky <- coalesce(key(y), "")
+  kx <- coalesce(name_key(x), "")
+  ky <- coalesce(name_key(y), "")
   ok <- nchar(kx) >= 4 & nchar(ky) >= 4 &
     gsub("[^0-9]", "", kx) == gsub("[^0-9]", "", ky)
   same <- rep(FALSE, length(kx))
@@ -301,66 +309,23 @@ one_to_one <- function(pairs, between = c("database_a", "database_b")) {
   pairs[accept, ]
 }
 
-# How precisely each record is located, from 0 (coarse) to 2, given the copies
-# found (`links`: dropped and kept records). A record is coarsely located (0)
-# if its point, under one site name, matches copies in another citation at two
-# or more differently named sites more than 1 km apart: a database that gives
-# a district's separate tests at one point (a many-to-one structure). It is
-# less precisely located (1) if its site is named as a centre point or
-# centroid, or a coordinate has at most one decimal place (about 5-11 km).
-location_ranks <- function(all_records, links) {
-  copies <- links %>%
-    filter(!is.na(kept)) %>%
-    distinct(dropped, kept)
-  info <- all_records %>%
-    transmute(record, site, latitude, longitude,
-              group = paste(database, citation),
-              point = paste(round(latitude, 4), round(longitude, 4)))
-  both_ways <- bind_rows(transmute(copies, record = dropped, partner = kept),
-                         transmute(copies, record = kept, partner = dropped))
-  many_to_one <- both_ways %>%
-    left_join(select(info, record, group, point, site), by = "record") %>%
-    left_join(select(info, partner = record, partner_group = group,
-                     partner_point = point, partner_site = site,
-                     plat = latitude, plon = longitude),
-              by = "partner") %>%
-    group_by(group, point, partner_group) %>%
-    filter(n_distinct(site) == 1, n_distinct(partner_site) >= 2,
-           n_distinct(partner_point) >= 2) %>%
-    summarise(km = max(fields::rdist.earth(cbind(plon, plat), miles = FALSE)),
-              .groups = "drop") %>%
-    filter(km > 1) %>%
-    distinct(group, point) %>%
-    mutate(many_to_one = TRUE)
-  info %>%
-    left_join(many_to_one, by = c("group", "point")) %>%
-    transmute(
-      record,
-      many_to_one = coalesce(many_to_one, FALSE),
-      rank = case_when(
-        many_to_one ~ 0,
-        grepl("cent(re|er) ?point|centroid", site, ignore.case = TRUE) |
-          coordinate_places(latitude, longitude) <= 1 ~ 1,
-        .default = 2
-      )
-    )
+# Whether each record is imprecisely located: its site is named as a centre
+# point or centroid, or a coordinate has at most one decimal place (about 5-11
+# km)
+imprecise_location <- function(site, latitude, longitude) {
+  grepl("cent(re|er) ?point|centroid", site, ignore.case = TRUE) |
+    pmin(decimal_places(latitude), decimal_places(longitude)) <= 1
 }
 
-# The records kept, each with its coordinates and site name from the most
-# precisely located of its copies, and its species from the most specific
-# identification, since copies are one test. A copy of a copy is a copy (e.g. a
-# record dropped within a database, whose kept record was then dropped for a
-# copy in another database). Copies are ranked by location_ranks(), except that
-# a record a reviewer judged located more coarsely than its copy (`finer`: the
-# record keys `finer` and `coarser`) ranks just below that copy; a reviewer saw
-# only the two, so this never raises a record above a third copy. Among
-# equally ranked copies, a copy in an `analysis_ready` database is preferred,
-# then the record's own coordinates, then a copy with the same site name, then
-# the nearest. `coordinates_from` names the copy the coordinates came from.
-merge_copies <- function(records, all_records, links,
-                         finer = tibble(finer = character(),
-                                        coarser = character()),
-                         analysis_ready = character()) {
+# The records kept, each with its coordinates and site name from the best
+# located of its copies, since copies are one test. A copy of a copy is a copy
+# (e.g. a record dropped within a database, whose kept record was then dropped
+# for a copy in another database). Precisely located copies are preferred
+# (imprecise_location()), then a copy in an `analysis_ready` database, then the
+# record's own coordinates, then a copy with the same site name, then the
+# nearest. `coordinates_from` names the copy the coordinates came from.
+locate_from_copies <- function(records, all_records, links,
+                               analysis_ready = character()) {
   copies <- links %>%
     filter(!is.na(kept)) %>%
     distinct(dropped, kept)
@@ -374,43 +339,25 @@ merge_copies <- function(records, all_records, links,
     if (nrow(found) == 0) break
     members <- bind_rows(members, found)
   }
-  ranks <- all_records %>%
-    select(record, record_key) %>%
-    left_join(location_ranks(all_records, links), by = "record")
-  reviewed_ranks <- finer %>%
-    left_join(select(ranks, finer = record_key, finer_rank = rank),
-              by = "finer") %>%
-    group_by(record_key = coarser) %>%
-    summarise(below = min(finer_rank) - 0.5)
   own <- select(records, kept = record, own_lat = latitude,
                 own_lon = longitude, own_site = site)
-  members <- members %>%
+  location <- members %>%
     left_join(all_records %>%
                 select(record, record_key, database, latitude, longitude,
-                       site, species),
+                       site),
               by = c("member" = "record")) %>%
-    left_join(select(ranks, record, rank), by = c("member" = "record")) %>%
-    left_join(reviewed_ranks, by = "record_key") %>%
     left_join(own, by = "kept") %>%
-    mutate(rank = pmin(rank, below, na.rm = TRUE),
+    mutate(imprecise = imprecise_location(site, latitude, longitude),
            same_name = same_site_name(site, own_site),
-           km = fields::rdist.earth.vec(cbind(longitude, latitude),
-                                        cbind(own_lon, own_lat),
-                                        miles = FALSE))
-  location <- members %>%
-    arrange(kept, desc(rank), !database %in% analysis_ready, member != kept,
+           km = km_between(longitude, latitude, own_lon, own_lat)) %>%
+    arrange(kept, imprecise, !database %in% analysis_ready, member != kept,
             !same_name, km) %>%
     distinct(kept, .keep_all = TRUE) %>%
     select(record = kept, latitude, longitude, site,
            coordinates_from = record_key)
-  species <- members %>%
-    arrange(kept, species == "gambiae complex", member != kept) %>%
-    distinct(kept, .keep_all = TRUE) %>%
-    select(record = kept, species)
   records %>%
-    select(-latitude, -longitude, -site, -species) %>%
-    left_join(location, by = "record") %>%
-    left_join(species, by = "record")
+    select(-latitude, -longitude, -site) %>%
+    left_join(location, by = "record")
 }
 
 # Some databases pool a study's separate tests at a site (in different months,
@@ -418,9 +365,8 @@ merge_copies <- function(records, all_records, links,
 # holds the tests. The pooled records: those whose number tested equals the sum
 # over two or more records of one study at one site (to 0.01 degrees), year
 # and insecticide in another database, within 25 km, and whose mortality is
-# within 5 percentage points of theirs pooled. In October 2026, 55 records
-# matched within 5 points, 39 of them within half a point; the 17 more than 10
-# points apart are coincidences.
+# within 5 percentage points of theirs pooled (see the supplement for how
+# these were chosen).
 pooled_copies <- function(records) {
   tests <- records %>%
     filter(n_recorded) %>%
@@ -443,9 +389,7 @@ pooled_copies <- function(records) {
                relationship = "many-to-many") %>%
     filter(database_pooled != database,
            abs(mortality_adjusted - pooled_mortality) <= 5,
-           fields::rdist.earth.vec(cbind(longitude, latitude),
-                                   cbind(lon_p, lat_p),
-                                   miles = FALSE) <= 25) %>%
+           km_between(longitude, latitude, lon_p, lat_p) <= 25) %>%
     pull(record) %>%
     unique()
 }
@@ -494,10 +438,11 @@ pair_id <- function(key_a, key_b) {
 # The first author's surname and the publication year of each citation, e.g.
 # "dabire 2009", or NA where either can't be found, the citation is a DOI, or
 # its first word is generic ("Unpublished", "Personal communication", "pers.
-# comm."). The surname is the citation's first word, ASCII-transliterated and
-# in lower case. The year is the first of: "et al. YYYY", "(YYYY)", the
-# journal year in Vancouver style (a year, optionally with month and day,
-# followed by ";volume"), or else any 19xx or 20xx.
+# comm."). The surname is the citation's first word, ASCII-transliterated, in
+# lower case and without apostrophes or hyphens (the databases write
+# "Wat'senga" and "Watsenga"). The year is the first of: "et al. YYYY",
+# "(YYYY)", the journal year in Vancouver style (a year, optionally with month
+# and day, followed by ";volume"), or else any 19xx or 20xx.
 citation_author_year <- function(citation) {
   x <- str_squish(stringi::stri_trans_general(citation, "Latin-ASCII"))
   is_doi <- grepl("^(doi:\\s*|https?://(dx\\.)?doi\\.org/)?10\\.\\d{4,}/", x,
@@ -515,7 +460,7 @@ citation_author_year <- function(citation) {
   )
   if_else(is_doi | is_generic | is.na(surname) | is.na(year),
           NA_character_,
-          paste(tolower(surname), year))
+          paste(gsub("['-]", "", tolower(surname)), year))
 }
 
 # ---- country labels ----
@@ -573,17 +518,12 @@ check_country_labels <- function(records, country_tolerance_km = 5) {
     ifelse(is.na(polygon_index), nearest_index, polygon_index)]
 
   # half-width of the rounding box in degrees, from the number of decimal places
-  # of the less precise coordinate; NA if more than one decimal place
-  decimal_places <- function(x) {
-    places <- rep(NA_integer_, length(x))
-    for (d in 1:0) {
-      places[abs(x * 10 ^ d - round(x * 10 ^ d)) < 1e-6] <- d
-    }
-    places
-  }
-  rounding_places <- pmin(decimal_places(records$longitude),
-                          decimal_places(records$latitude))
-  box_half_width <- 0.5 * 10 ^ -rounding_places
+  # of the less precise coordinate; NA if either has more than one
+  latitude_places <- decimal_places(records$latitude)
+  longitude_places <- decimal_places(records$longitude)
+  box_half_width <- if_else(
+    pmax(latitude_places, longitude_places) <= 1,
+    0.5 * 10 ^ -pmin(latitude_places, longitude_places), NA_real_)
 
   box_overlaps_label <- rep(FALSE, nrow(records))
   candidates <- which(!is.na(box_half_width) & !is.na(label_index) &
