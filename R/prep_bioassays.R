@@ -276,6 +276,34 @@ bioassays <- bioassays %>%
 max_km <- c(count = 100, percent = 50, misscaled = 100)
 max_km_within <- 10
 
+# Databases sometimes give one test different years. Where two databases'
+# records of one paper match exactly in years that don't overlap
+# (cross_year_pairs()), they take the years of the better record
+# (cross_year_dates()), and so are found as copies below. The rules come from
+# checks by hand in October 2026: the year of publication was given where a
+# paper gives none, a database lumped a paper's tests into one year, and
+# otherwise the IR Mapper extracts (Moyes et al. 2019) were most often right.
+year_changes <- cross_year_dates(
+  bioassays,
+  database_order = c("IR Mapper extracts", "Vector Atlas", "MTM",
+                     "IR Mapper 2022", "IR Mapper 2024"),
+  max_km = max_km[["count"]])
+year_corrections <- bioassays %>%
+  inner_join(year_changes, by = "record") %>%
+  left_join(select(bioassays, from = record, from_source = source,
+                   from_record_id = record_id),
+            by = "from") %>%
+  select(source, record_id, citation, site, insecticide_type,
+         mosquito_number, died, recorded_start = year_start,
+         recorded_end = year_end, from_start, from_end, from_source,
+         from_record_id, rule)
+bioassays <- bioassays %>%
+  left_join(select(year_changes, record, from_start, from_end),
+            by = "record") %>%
+  mutate(year_start = coalesce(from_start, year_start),
+         year_end = coalesce(from_end, year_end)) %>%
+  select(-from_start, -from_end)
+
 # Which copy to keep: one with a recorded number of mosquitoes, then from the
 # first source in the list above
 bioassays <- bioassays %>%
@@ -545,7 +573,7 @@ review_fields <- c("source", "record_id", "citation", "link", "year_start",
                    "died", "mortality_adjusted")
 record_fields <- candidates %>%
   mutate(link = paper_link(link, citation)) %>%
-  select(record, year_start, insecticide_type, concentration,
+  select(record, insecticide_type, concentration,
          all_of(review_fields))
 side_by_side <- function(pairs) {
   a <- record_fields %>%
@@ -559,19 +587,21 @@ side_by_side <- function(pairs) {
     left_join(a, by = c("a" = "record")) %>%
     left_join(b, by = c("b" = "record")) %>%
     select(any_of(c("pair_id", "reason", "database_a", "database_b", "km",
-                    "shared", "year_start", "insecticide_type",
+                    "shared", "insecticide_type",
                     "concentration")),
            all_of(as.vector(rbind(paste0(review_fields, "_a"),
                                   paste0(review_fields, "_b")))))
 }
-within_left %>%
-  filter(startsWith(rule, "review")) %>%
+filter(within_left, startsWith(rule, "review")) %>%
   mutate(reason = rule, km = round(km, 2)) %>%
   side_by_side() %>%
   left_join(decisions, by = "pair_id") %>%
   relocate(pair_id, decision) %>%
   arrange(!is.na(decision), reason, citation_a) %>%
   write_excel_csv("outputs/review/bioassay_review_pairs.csv", na = "")
+
+write_excel_csv(year_corrections,
+                "outputs/review/bioassay_year_corrections.csv", na = "")
 
 links %>%
   rename(a = dropped, b = kept) %>%

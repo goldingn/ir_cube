@@ -420,6 +420,78 @@ pooled_copies <- function(records) {
     unique()
 }
 
+# Copies recorded in different years: pairs of records (`a`, `b`) of two
+# databases citing the same paper (the same study label, see
+# citation_author_year()), with the same country, insecticide, concentration,
+# site name, number tested and number dead, from 5% to 95% mortality, within
+# `max_km` (`km`), whose years don't overlap. One database sometimes gives a
+# test another year, but a site is also visited again in later years, and below
+# 5% or above 95% repeat visits often give the same result (e.g. 1 or 99 of
+# 100). Matches between different papers are taken as separate tests, though
+# some are one test published twice.
+cross_year_pairs <- function(records, max_km = 100) {
+  tests <- records %>%
+    filter(n_recorded, died >= 0.05 * mosquito_number,
+           died <= 0.95 * mosquito_number) %>%
+    mutate(paper = coalesce(citation_author_year(citation), citation)) %>%
+    filter(!is.na(paper)) %>%
+    select(record, database, paper, country_name, insecticide_type,
+           concentration, mosquito_number, died, year_start, year_end, site,
+           latitude, longitude)
+  tests %>%
+    inner_join(tests,
+               by = c("paper", "country_name", "insecticide_type",
+                      "concentration", "mosquito_number", "died"),
+               suffix = c("", "_b"), relationship = "many-to-many") %>%
+    filter(record < record_b, database != database_b,
+           year_end < year_start_b | year_end_b < year_start) %>%
+    mutate(km = km_between(longitude, latitude, longitude_b, latitude_b)) %>%
+    filter(km <= max_km, same_site_name(site, site_b)) %>%
+    select(a = record, b = record_b, km)
+}
+
+# The years to give copies recorded in different years (cross_year_pairs()).
+# Records joined by these pairs are one test, and take the years of its best
+# record, chosen by, in turn:
+# 1. not being in the paper's publication year where another record is earlier
+#    (a test is rarely run in the year it is published, and databases give the
+#    publication year where a paper gives none);
+# 2. its database giving the paper's records in these pairs more different
+#    years (another lumps them into one);
+# 3. its database coming first in `database_order`.
+# A test whose best records differ in their years keeps its years. Returns the
+# records whose years change, with the best record (`from`), its years
+# (`from_start`, `from_end`) and the step that chose it (`rule`).
+cross_year_dates <- function(records, database_order, max_km = 100) {
+  pairs <- cross_year_pairs(records, max_km)
+  records %>%
+    filter(record %in% c(pairs$a, pairs$b)) %>%
+    mutate(paper = coalesce(citation_author_year(citation), citation),
+           published = as.numeric(str_extract(citation_author_year(citation),
+                                              "\\d{4}$")),
+           test = connected_groups(record, pairs$a, pairs$b)) %>%
+    group_by(paper, country_name, database) %>%
+    mutate(years = n_distinct(year_start, year_end)) %>%
+    group_by(test) %>%
+    mutate(publication_year = coalesce(year_start == published, FALSE) &
+             year_start > min(year_start),
+           rank = match(database, database_order)) %>%
+    arrange(publication_year, desc(years), rank, .by_group = TRUE) %>%
+    mutate(best = publication_year == first(publication_year) &
+             years == first(years) & rank == first(rank)) %>%
+    filter(n_distinct(year_start[best], year_end[best]) == 1) %>%
+    mutate(from = first(record),
+           from_start = first(year_start),
+           from_end = first(year_end),
+           rule = case_when(
+             publication_year != first(publication_year) ~ "publication year",
+             years != first(years) ~ "more years",
+             .default = "database order")) %>%
+    ungroup() %>%
+    filter(year_start != from_start | year_end != from_end) %>%
+    select(record, from, from_start, from_end, rule)
+}
+
 # Some sources hold a bioassay split by species (e.g. An. arabiensis and An.
 # gambiae s.s.) and another, or the same, source holds it summed to complex
 # level. The complex-level records whose died and mosquito_number equal exactly
