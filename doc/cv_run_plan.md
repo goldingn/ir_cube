@@ -205,7 +205,15 @@ full fit and the two block folds had 5, 0 and 7 elements above 1.01 (worst
 1.020, 1.009, 1.015), the net-use effects on the organophosphates and
 `sigma_class` for net use. On the first n draws of each chain, their excess
 Rhat - 1 fell as about n^-0.6 to n^-0.8, which puts every element below 1.01
-at 3,100 (blocks 2) to 3,700 (full fit) samples; hence 4,000.
+at 3,100 (blocks 2) to 3,700 (full fit) samples; hence 4,000. The rest of
+the final run's excess Rhat came from chains that stopped moving: two of the
+interpolation fold's (dropped), and one of the 2014 forecasting fold's for its
+last 324 iterations only, which kept 72% of its draws distinct and so was not
+dropped (640 elements above 1.01, worst 1.081; without it 9, worst 1.015,
+falling as 1/n). `stuck_chains()` now also drops a chain that repeats one
+draw for 200 iterations in a row. The interpolation fold mixes slowest: on
+its two kept chains the worst element (`sigma_class` for net use) had a bulk
+ESS of 93 from 3,000 draws, so at 4,000 samples it needs all four chains.
 The warmup stays at 2,000: at 1,000 (+ 1,500, the same pod type), one of the
 four chains ended warmup in that funnel's neck (`sigma_class` for net use at
 0.13, against a posterior median of 0.27) and rejected every proposal while

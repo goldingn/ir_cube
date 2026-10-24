@@ -5,15 +5,21 @@
 # with the fit, for R/fit_checks.R, which tabulates every fit.
 
 # The chains of `draws` that stopped moving: those whose share of distinct
-# draws is below `min_distinct`. With one step size for all chains (as in
-# greta's hmc(), and the windowed sampler before #41), a chain can sit where
-# every trajectory at that step size fails, and then repeats one draw: in the
+# draws is below `min_distinct`, or that repeated one draw for `max_frozen`
+# iterations in a row. With one step size for all chains (as in greta's
+# hmc(), and the windowed sampler before #41), a chain can sit where every
+# trajectory at that step size fails, and then repeats one draw: in the
 # October 2026 run, with the windowed sampler, one chain of spatial blocks fold
-# 1 kept a single draw for all 3,000 samples.
-stuck_chains <- function(draws, min_distinct = 0.5) {
+# 1 kept a single draw for all 3,000 samples. In the final run (#35), at 1,500
+# samples, the longest run of one draw was 5-80 iterations in the chains that
+# kept moving, and 324-885 in the three that stopped, one of them for only its
+# last 324 iterations (72% of its draws distinct).
+stuck_chains <- function(draws, min_distinct = 0.5, max_frozen = 200) {
   which(vapply(draws, function(chain) {
     chain <- as.matrix(chain)
-    nrow(unique(chain)) / nrow(chain) < min_distinct
+    repeated <- rle(c(FALSE, rowSums(abs(diff(chain))) == 0))
+    longest <- max(c(0, repeated$lengths[repeated$values]))
+    nrow(unique(chain)) / nrow(chain) < min_distinct || longest >= max_frozen
   }, logical(1)))
 }
 
