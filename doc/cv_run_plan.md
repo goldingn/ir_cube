@@ -127,7 +127,7 @@ and its `assays/` file afterwards, or the real fold will be skipped.
 `dynamical_mcmc_settings()` in `R/dynamical_model.R` holds them, and
 `fit_fold()`, `run_one_fold.R`, `run_validation_folds.R` and `fit_model.R` all
 take them from there: greta's `hmc()` with 30 to 60 leapfrog steps (`Lmin`,
-`Lmax`), redrawn every 10 iterations, 4 chains, 2,000 warmup and 1,500
+`Lmax`), redrawn every 10 iterations, 4 chains, 2,000 warmup and 4,000
 samples. The model samples the
 countries' initial states centred and starts every chain from
 `R/dynamical_inits.RDS` (`dynamical_inits_file`): posterior means of a named
@@ -199,7 +199,13 @@ draws have `sigma_class` below 0.04, against 0.22% of the non-centred fit's
 
 At 30-60 steps the worst quantity had 0.40 effective samples per iteration
 of the four chains (0.10 per draw), so 1,500 samples (3,000 before #48)
-should give a minimum bulk ESS of about 600.
+should give a minimum bulk ESS of about 600. That was too few for rank Rhat
+below 1.01 on every element: in the final run (#35), at 1,500 samples, the
+full fit and the two block folds had 5, 0 and 7 elements above 1.01 (worst
+1.020, 1.009, 1.015), the net-use effects on the organophosphates and
+`sigma_class` for net use. On the first n draws of each chain, their excess
+Rhat - 1 fell as about n^-0.6 to n^-0.8, which puts every element below 1.01
+at 3,100 (blocks 2) to 3,700 (full fit) samples; hence 4,000.
 The warmup stays at 2,000: at 1,000 (+ 1,500, the same pod type), one of the
 four chains ended warmup in that funnel's neck (`sigma_class` for net use at
 0.13, against a posterior median of 0.27) and rejected every proposal while

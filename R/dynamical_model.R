@@ -536,7 +536,7 @@ match_labels <- function(x, labels, start, name) {
 # settings, e.g. for a smoke test. The defaults, and the evidence for them, are
 # in doc/cv_run_plan.md (section 3, sampling settings): greta's hmc() with
 # 30 to 60 leapfrog steps, redrawn every 10 iterations, 4 chains, 2,000 warmup
-# and 1,500 samples.
+# and 4,000 samples.
 #   Lmin, Lmax     range of the number of leapfrog steps, drawn afresh for each
 #                  burst of iterations
 #   pb_update      iterations per burst while sampling, so how often the
@@ -545,7 +545,7 @@ match_labels <- function(x, labels, start, name) {
 #                  hardly moves for the whole burst
 dynamical_mcmc_settings <- function(n_chains = 4,
                                     warmup = 2000,
-                                    n_samples = 1500,
+                                    n_samples = 4000,
                                     Lmin = 30,
                                     Lmax = 60,
                                     pb_update = 10) {
