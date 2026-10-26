@@ -1,6 +1,7 @@
-# The change panels of the main cross-validation figure (#36, D and E;
-# fig_variance_explained.R): skill against no change, for the change in
-# mortality between a pair of single bioassays at one pixel.
+# The in-sample change figure (#36, fig_variance_explained.R): skill against
+# no change, for the change in mortality between a pair of single bioassays at
+# one pixel. The forecast folds' change scores are written too, not drawn: the
+# main figure scores the forecasts as level (R/validation_level.R).
 #
 # The target. At each forecasting origin (cuts 2014 and 2018), every pair of
 # one assay in the five-year window before the cut (in the fold's training
@@ -16,17 +17,19 @@
 # noise; the local bar the expected score of an independent second pair at the
 # same pixel.
 #
-#   D  in sample  the full-data fit's maps at both assays' pixel-years
-#                 (outputs/full_fit_maps_at_assays.csv), which saw both
-#   E  forecast   each fold's maps: at the before assay, fitted to it; at the
-#                 holdout assay, forecast
+#   in_sample      the full-data fit's maps at both assays' pixel-years
+#                  (outputs/full_fit_maps_at_assays.csv), which saw both
+#   forecast_2014  the 2014 origin's fold's maps: at the before assay, fitted
+#                  to it; at the holdout assay, forecast
+#   forecast_2018  the same, from the 2018 origin
 #
 # A pair of a 2013 and a 2018 assay enters at both origins: 2013 is in both
-# before windows and 2018 in both holdouts. In E its two copies are different
-# forecasts; in D they are one prediction, so D scores each such pair once.
-# Otherwise D and E share their pairs, so the step from D to E changes only
-# whether the model saw the local data. E has no bioassay-based bar: no
-# bioassay exists yet in a forecast year.
+# before windows and 2018 in both holdouts. In the forecasts its two copies
+# are different forecasts; in sample they are one prediction, scored once.
+# Otherwise in_sample scores the pairs of both origins together. Each
+# pixel-insecticide counts once in sample, and once at each origin. The
+# forecasts have no bioassay-based bar: no bioassay exists yet in a forecast
+# year.
 #
 # Inputs: the dynamical forecasting folds (outputs/cv_draws, for the
 # before-window predictions p_draws_before), outputs/cv_scores.csv (the holdout
@@ -117,7 +120,9 @@ pairs <- pairs %>%
   ungroup() %>%
   select(-copy)
 
-n_all_gaps <- c(D = sum(pairs$in_sample), E = nrow(pairs))
+n_all_gaps <- c(in_sample = sum(pairs$in_sample),
+                vapply(cuts, function(cut) sum(pairs$cut == as.integer(cut)),
+                       numeric(1)))
 pairs <- pairs %>% filter(gap >= min_gap)
 
 # the data floor at rho-hat; an assay of one mosquito carries none
@@ -125,8 +130,8 @@ rho_hat <- setNames(rho_source$table$rho, rho_source$table$key)
 pairs$floor <- pair_floor(pairs, rho_hat)
 pairs <- pairs %>% filter(!is.na(floor))
 
-# predicted rates: the fold's maps (E), and the full-data fit's (D). D and E
-# have to share their pairs: in one run the full fit and the folds are made
+# predicted rates: the folds' maps, and the full-data fit's. In sample has
+# to score the folds' pairs: in one run the full fit and the folds are made
 # from the same data, so every pair has a full-fit map
 full_fit_file <- "outputs/full_fit_maps_at_assays.csv"
 full_fit <- read.csv(full_fit_file)
@@ -148,13 +153,15 @@ pairs <- pairs %>%
          full_dynamical = (full_a$dynamical - full_b$dynamical) / gap,
          full_two_stage = (full_a$two_stage - full_b$two_stage) / gap)
 
-# each pixel-insecticide counts once, in E (w) and in D (w_in_sample, 0 for
-# the second copy of a pair)
+# each pixel-insecticide counts once, in sample (w_in_sample, 0 for the
+# second copy of a pair) and at each origin (w)
 pairs <- pairs %>%
   group_by(cell, insecticide_type) %>%
-  mutate(w = 1 / n(),
-         w_in_sample = in_sample / sum(in_sample)) %>%
+  mutate(w_in_sample = in_sample / sum(in_sample)) %>%
+  group_by(cut, cell, insecticide_type) %>%
+  mutate(w = 1 / n()) %>%
   ungroup()
+forecast_panels <- c(forecast_2014 = "2014", forecast_2018 = "2018")
 
 pair_counts <- function(p, n_all) {
   tibble(n_pairs = nrow(p),
@@ -164,9 +171,13 @@ pair_counts <- function(p, n_all) {
          share_of_all_pairs = nrow(p) / n_all)
 }
 counts <- bind_rows(
-  D = pair_counts(filter(pairs, in_sample), n_all_gaps[["D"]]),
-  E = pair_counts(pairs, n_all_gaps[["E"]]), .id = "panel")
-for (panel in c("D", "E")) {
+  c(list(in_sample = pair_counts(filter(pairs, in_sample),
+                                 n_all_gaps[["in_sample"]])),
+    lapply(forecast_panels, function(cut) {
+      pair_counts(filter(pairs, .data$cut == as.integer(!!cut)),
+                  n_all_gaps[[cut]])
+    })), .id = "panel")
+for (panel in counts$panel) {
   with(counts[counts$panel == panel, ], cat(sprintf(paste(
     "%s: %i pairs of single assays %i+ years apart (%.0f%% of all pairs) at",
     "%i pixel-insecticides in %i pixels; median gap %g years\n"),
@@ -184,20 +195,29 @@ write.csv(pairs %>% select(cut, cell, insecticide_type, year_b,
 
 # the bars --------------------------------------------------------------------------
 
-# D and E on the same resamples of pixels, each with its own weights
+# all panels on the same resamples of pixels, each with its own weights; the
+# forecasts each score their origin's pairs
+# in sample also the mean of 2 or 3 local pairs (the pooled figure)
 in_sample <- change_statistic(c("full_dynamical", "full_two_stage"),
-                              weight = "w_in_sample")
+                              weight = "w_in_sample", pools = 1:3)
 forecast <- change_statistic(c("fold_dynamical", "fold_two_stage"))
-both_panels <- function(pairs, rho) {
+all_panels <- function(pairs, rho) {
   d <- in_sample(pairs, rho)
-  e <- forecast(pairs, rho)[c("ceiling", "fold_dynamical", "fold_two_stage")]
-  c(setNames(d, paste0("D|", sub("^full_", "", names(d)))),
-    setNames(e, paste0("E|", sub("^fold_", "", names(e)))))
+  ef <- lapply(names(forecast_panels), function(panel) {
+    origin <- pairs[pairs$cut == as.integer(forecast_panels[[panel]]), ]
+    e <- forecast(origin, rho)[c("ceiling", "fold_dynamical",
+                                 "fold_two_stage")]
+    setNames(e, paste0(panel, "|", sub("^fold_", "", names(e))))
+  })
+  c(setNames(d, paste0("in_sample|", sub("^full_", "", names(d)))),
+    unlist(ef))
 }
-change <- bootstrap_summary(pairs, both_panels, rho_replicates()) %>%
+change <- bootstrap_summary(pairs, all_panels, rho_replicates()) %>%
   separate(bar, c("panel", "bar"), sep = "\\|") %>%
-  mutate(source = ifelse(panel == "D", "full-data fit (outputs/two_stage/maps)",
-                         "temporal_forecasting 2014, 2018"),
+  mutate(source = ifelse(panel == "in_sample",
+                         "full-data fit (outputs/two_stage/maps)",
+                         paste("temporal_forecasting",
+                               forecast_panels[panel])),
          .after = panel) %>%
   left_join(counts, by = "panel")
 

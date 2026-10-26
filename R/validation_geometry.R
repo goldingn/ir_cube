@@ -12,7 +12,10 @@
 #
 # Three axes, for every held-out record:
 #
-#   distance to the nearest training record of the same insecticide, in km
+#   distance to the nearest training record of the same insecticide, in km;
+#   also only among the records the nearest neighbour null draws on (its year
+#   window, nn_anchor_year()), with the years from that record, for the titles
+#   of the main CV figure
 #   number of training records of the same insecticide within `radius_km`
 #   years since the most recent training observation at that same pixel
 #
@@ -23,6 +26,7 @@
 source("R/validation_functions.R")
 source("R/validation_folds.R")
 source("R/validation_blocks.R")
+source("R/null_models.R")
 
 suppressMessages({
   library(dplyr)
@@ -30,6 +34,9 @@ suppressMessages({
 })
 
 radius_km <- 100
+
+# the nearest neighbour null's window, as run_validation_folds.R runs it
+n_years_prior <- 1
 
 # breaks chosen so that no bin is so thin that its excess MSE is noise: the
 # distance breaks straddle the ~13 km minimum separation the interpolation fold
@@ -58,6 +65,12 @@ fold_geometry <- function(training, test, experiment, fold) {
   distance_same <- distance
   distance_same[!same_insecticide] <- Inf
 
+  anchor <- nn_anchor_year(keys$year, training$year)
+  in_window <- outer(anchor, training$year,
+                     function(a, y) y <= a & y >= a - n_years_prior)
+  distance_window <- distance_same
+  distance_window[!in_window] <- Inf
+
   # the most recent training year at the same pixel. Negative where the nearest
   # training observation at that pixel is from a later year than the held-out
   # record, which should not happen in a forecasting experiment and is how the
@@ -69,6 +82,9 @@ fold_geometry <- function(training, test, experiment, fold) {
   # distance matrix into the vector of minima
   nearest_any <- apply(distance, 1, min)
   nearest_same <- apply(distance_same, 1, min)
+  nearest_window <- apply(distance_window, 1, min)
+  years_window <- keys$year -
+    training$year[apply(distance_window, 1, which.min)]
   within_radius <- rowSums(distance_same <= radius_km)
 
   keys %>%
@@ -76,6 +92,8 @@ fold_geometry <- function(training, test, experiment, fold) {
            fold = fold,
            distance_any = nearest_any,
            distance_same = nearest_same,
+           distance_nearest_null = nearest_window,
+           years_nearest_null = years_window,
            n_within_radius = within_radius,
            years_since_cell = year -
              as.numeric(last_year[as.character(cell)]),

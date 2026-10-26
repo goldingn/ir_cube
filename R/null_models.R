@@ -25,6 +25,23 @@ emplog_prop <- function(died, mosquito_number) {
 
 # the nearest neighbour null, and predictive distributions for the nulls -----
 
+# The year the nearest neighbour null's window ends at, for a record of `year`.
+# The window is anchored at prediction time, not at the record's own year: the
+# most recent `n_years_prior` + 1 years of data that exist when the prediction
+# is made. For the spatial experiments training spans every year, so the anchor
+# is the record's own year and the window is the familiar {year, year - 1}.
+# For a forecast the training data stop at the cut, so the anchor is the last
+# training year and every held-out record draws on the same window — which is
+# the situation a person forecasting from that cut is actually in.
+#
+# Anchoring on the record's own year instead made the null weaker the further
+# ahead it had to predict, for an indexing reason rather than an information
+# one: a record one year past the cut saw the whole window, one five years past
+# saw a single year of it, or none at all.
+nn_anchor_year <- function(year, training_years) {
+  pmin(year, max(training_years))
+}
+
 # For each held-out record, average over the k nearest training records of the
 # same insecticide from the most recent two years available.
 
@@ -72,20 +89,8 @@ nn_counts_grid <- function(latitude,
   dists <- fields::rdist.earth(test_coords, training_coords,
                                miles = FALSE)
 
-  # The year window is anchored at prediction time, not at the record's own
-  # year: the most recent `n_years_prior` + 1 years of data that exist when the
-  # prediction is made. For the spatial experiments training spans every year,
-  # so the anchor is the record's own year and this is the familiar
-  # {year, year - 1}. For a forecast the training data stop at the cut, so the
-  # anchor is the last training year and every held-out record draws on the same
-  # window — which is the situation a person forecasting from that cut is
-  # actually in.
-  #
-  # Anchoring on the record's own year instead made the null weaker the further
-  # ahead it had to predict, for an indexing reason rather than an information
-  # one: a record one year past the cut saw the whole window, one five years past
-  # saw a single year of it, or none at all.
-  anchor <- pmin(year, max(training_data$year))
+  # the year window, nn_anchor_year()
+  anchor <- nn_anchor_year(year, training_data$year)
   year_diff <- -1 * seq(0, n_years_prior)
 
   n_test <- nrow(test_coords)

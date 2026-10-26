@@ -1,4 +1,4 @@
-# The level panels of the main cross-validation figure (#36, A-C;
+# The panels of the main cross-validation figure (#36, A-E;
 # fig_variance_explained.R): % of variance explained in single held-out
 # bioassays, bioassay-based estimates against the models.
 #
@@ -6,18 +6,20 @@
 #                     fit (outputs/full_fit_maps_at_assays.csv), which saw them
 #   B  interpolation  the same assays, held out (spatial_interpolation)
 #   C  extrapolation  the held-out block assays (spatial_blocks, folds pooled)
+#   D  forecast       the held-out assays of 2014-2018, fitted to the data
+#                     before 2014 (temporal_forecasting_2014)
+#   E  forecast       the same, 2018-2022 from the data before 2018
 #
 # A and B share their assays, so the step from A to B changes only whether the
 # model saw the local data.
 #
 # Bars, all scored as in R/validation_skill.R:
-#   local      expected score of an independent second bioassay at the same
-#              pixel-year, from rho-hat: 100 - 2 x noise share
-#   best K     the nearest_neighbour_oracle null: the pooled K nearest
-#              training assays of the same insecticide from the two most
-#              recent years, at the K minimising its own MSE on the held-out
-#              assays (R/null_models.R)
-#   nearest    the nearest_neighbour null: the single nearest such assay
+#   local      A only: expected score of an independent second bioassay at
+#              the same pixel-year, from rho-hat: 100 - 2 x noise share; and
+#              local_2, local_3, of the mean of 2 or 3 (the pooled figure)
+#   nearest    the nearest_neighbour null: the single nearest training assay
+#              of the same insecticide from the two most recent years
+#              (R/null_models.R)
 #   dynamical, two-stage
 #              the map's point prediction (`map`, #32)
 #
@@ -25,8 +27,9 @@
 # is worth (n_star_cv() in R/validation_skill.R). Also the same bars per
 # insecticide for B and C, for the per-insecticide figure and the
 # supplementary n*_CV table, and the median over held-out assays of the
-# distance to the nearest training assay of the same insecticide
-# (distance_same, R/validation_geometry.R), for the panel titles.
+# distance to the nearest training assay the nearest bar could use, and the
+# years from it: same insecticide, in its year window (distance_nearest_null
+# and years_nearest_null, R/validation_geometry.R), for the panel titles.
 #
 # Reads outputs/cv_scores.csv (R/validation_metrics.R),
 # outputs/full_fit_maps_at_assays.csv (R/full_fit_maps_at_assays.R) and
@@ -44,9 +47,11 @@ scores <- require_map_columns(read.csv("outputs/cv_scores.csv",
                                    colClasses = c(fold = "character")))
 
 experiments <- c(interpolation = "spatial_interpolation",
-                 extrapolation = "spatial_blocks")
-models <- c(best_k = "nearest_neighbour_oracle", nearest = "nearest_neighbour",
-            dynamical = "dynamical", two_stage = "two_stage")
+                 extrapolation = "spatial_blocks",
+                 forecast_2014 = "temporal_forecasting_2014",
+                 forecast_2018 = "temporal_forecasting_2018")
+models <- c(nearest = "nearest_neighbour", dynamical = "dynamical",
+            two_stage = "two_stage")
 
 # One row per held-out assay, one prediction column per bar. The models'
 # records are matched on position, checked on record_key(), since identical
@@ -69,6 +74,8 @@ held_out <- function(experiment) {
 
 interpolation <- held_out(experiments[["interpolation"]])
 extrapolation <- held_out(experiments[["extrapolation"]])
+forecast_2014 <- held_out(experiments[["forecast_2014"]])
+forecast_2018 <- held_out(experiments[["forecast_2018"]])
 
 # panel A: the full-data fit's maps at the same assays, as two more columns,
 # so that A and B are scored on the same bootstrap resamples and share their
@@ -89,18 +96,23 @@ interpolation$full_two_stage <- full_fit$two_stage
 
 rho_draws <- rho_replicates()
 
-panel_bars <- function(data, bars) {
-  bootstrap_summary(data, level_statistic(bars), rho_draws, n_star = TRUE) %>%
+# the numbers of pooled bioassays scored in sample
+pools <- 1:3
+
+panel_bars <- function(data, bars, pools = 1) {
+  bootstrap_summary(data, level_statistic(bars, pools), rho_draws,
+                    n_star = TRUE) %>%
     mutate(assays = nrow(data), pixels = n_distinct(data$cell),
            variance = mean((data$observed - mean(data$observed)) ^ 2))
 }
 
 interpolation_bars <- panel_bars(interpolation,
                                  c(names(models), "full_dynamical",
-                                   "full_two_stage"))
+                                   "full_two_stage"),
+                                 pools)
 level <- bind_rows(
   interpolation_bars %>%
-    filter(bar %in% c("ceiling", "local", "full_dynamical",
+    filter(bar %in% c("ceiling", local_names(pools), "full_dynamical",
                       "full_two_stage")) %>%
     mutate(panel = "A", source = "full-data fit (outputs/two_stage/maps)",
            bar = sub("^full_", "", bar)),
@@ -108,32 +120,42 @@ level <- bind_rows(
     filter(!grepl("^full_", bar)) %>%
     mutate(panel = "B", source = "spatial_interpolation"),
   panel_bars(extrapolation, names(models)) %>%
-    mutate(panel = "C", source = "spatial_blocks 1, 2")
+    mutate(panel = "C", source = "spatial_blocks 1, 2"),
+  panel_bars(forecast_2014, names(models)) %>%
+    mutate(panel = "D", source = experiments[["forecast_2014"]]),
+  panel_bars(forecast_2018, names(models)) %>%
+    mutate(panel = "E", source = experiments[["forecast_2018"]])
 ) %>%
+  # the local bioassays only in sample, where they exist
+  filter(!grepl("^local", bar) | panel == "A") %>%
   relocate(panel, source, .before = 1)
 
 
 # distances to the training data ----------------------------------------------------
 
-# per held-out assay, distance_same at its pixel-year-insecticide in its fold
+# per held-out assay, the distance and years to the nearest bioassay at its
+# pixel-year-insecticide in its fold; their medians
 geometry <- read.csv("outputs/cv_geometry.csv",
                      colClasses = c(fold = "character"))
-median_km <- function(data, experiment) {
-  km <- data %>%
+nearest_medians <- function(data, experiment) {
+  nearest <- data %>%
     select(fold, cell, year, insecticide_type) %>%
     left_join(geometry %>%
                 filter(.data$experiment == !!experiment) %>%
                 select(fold, cell, year, insecticide_type,
-                       distance_same),
+                       distance_nearest_null, years_nearest_null),
               by = c("fold", "cell", "year", "insecticide_type"),
               relationship = "many-to-one")
-  stopifnot(!anyNA(km$distance_same))
-  median(km$distance_same)
+  stopifnot(!anyNA(nearest$distance_nearest_null))
+  tibble(median_km = median(nearest$distance_nearest_null),
+         median_years = median(nearest$years_nearest_null))
 }
-distances <- tibble(
-  panel = c("B", "C"),
-  median_km = c(median_km(interpolation, experiments[["interpolation"]]),
-                median_km(extrapolation, experiments[["extrapolation"]])))
+distances <- bind_rows(
+  B = nearest_medians(interpolation, experiments[["interpolation"]]),
+  C = nearest_medians(extrapolation, experiments[["extrapolation"]]),
+  D = nearest_medians(forecast_2014, experiments[["forecast_2014"]]),
+  E = nearest_medians(forecast_2018, experiments[["forecast_2018"]]),
+  .id = "panel")
 
 level <- level %>% left_join(distances, by = "panel")
 
