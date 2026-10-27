@@ -8,7 +8,7 @@ bioassay_columns <- c(
   "record_id", "citation", "link", "site", "country_name", "latitude",
   "longitude", "year_start", "year_end", "month", "species", "generation",
   "insecticide_type", "concentration", "test_type", "mosquito_number",
-  "mortality_adjusted"
+  "mortality_adjusted", "synergist", "intensity"
 )
 numeric_bioassay_columns <- c("latitude", "longitude", "year_start",
                               "year_end", "month",
@@ -170,22 +170,6 @@ km_between <- function(longitude, latitude, longitude_b, latitude_b) {
 
 # ---- finding copies ----
 
-# The groups of records joined by a set of pairs (`a`, `b` record numbers), as
-# a group number for each of `records`
-connected_groups <- function(records, a, b) {
-  parent <- setNames(records, records)
-  find <- function(x) {
-    while (parent[[as.character(x)]] != x) x <- parent[[as.character(x)]]
-    x
-  }
-  for (i in seq_along(a)) {
-    ra <- find(a[i])
-    rb <- find(b[i])
-    if (ra != rb) parent[[as.character(max(ra, rb))]] <- min(ra, rb)
-  }
-  vapply(records, function(x) as.numeric(find(x)), numeric(1))
-}
-
 # Pairs of records whose results agree, as a tibble with the two records (`a`,
 # `b`), how they agree, and the distance between them in km. Records must be
 # in the same country, with overlapping years (from year_start to year_end),
@@ -275,23 +259,14 @@ agreeing_pairs <- function(records, max_km, max_km_within) {
     distinct(a = record, b = record_b, agreement, extreme, km, within)
 }
 
-# Whether two site names name the same place, ignoring case, accents and
-# punctuation: the same, one within the other (for names of four or more
-# characters), or differing in at most a fifth of their characters (spelling),
-# provided any numbers in them are the same ("Houeyiho (1)" and "Houeyiho (2)"
-# are two sites)
+# Whether two site names are the same, ignoring case, accents and punctuation.
+# Similar names are not taken as the same: in October 2026, names differing in
+# spelling, or one within the other, matched few records that nothing else
+# matched, and some were different places (e.g. Kawama and Kasama in Zambia).
 same_site_name <- function(x, y) {
   kx <- coalesce(name_key(x), "")
   ky <- coalesce(name_key(y), "")
-  ok <- nchar(kx) >= 4 & nchar(ky) >= 4 &
-    gsub("[^0-9]", "", kx) == gsub("[^0-9]", "", ky)
-  same <- rep(FALSE, length(kx))
-  i <- which(ok)
-  edits <- mapply(function(a, b) utils::adist(a, b)[1, 1], kx[i], ky[i])
-  same[i] <- kx[i] == ky[i] | str_detect(kx[i], fixed(ky[i])) |
-    str_detect(ky[i], fixed(kx[i])) |
-    edits <= 0.2 * pmax(nchar(kx[i]), nchar(ky[i]))
-  same
+  kx != "" & kx == ky
 }
 
 # Choose pairs of copies one-to-one: pairs of records with the same site name
@@ -315,79 +290,6 @@ one_to_one <- function(pairs, between = c("database_a", "database_b")) {
     }
   }
   pairs[accept, ]
-}
-
-# Whether each record is imprecisely located: its site is named as a centre
-# point or centroid, or a coordinate has at most one decimal place (about 5-11
-# km)
-imprecise_location <- function(site, latitude, longitude) {
-  grepl("cent(re|er) ?point|centroid", site, ignore.case = TRUE) |
-    pmin(decimal_places(latitude), decimal_places(longitude)) <= 1
-}
-
-# The copies of each record kept (`kept`), itself included (`member`), given
-# the copies dropped (`links`). A copy of a copy is a copy (e.g. a record
-# dropped within a database, whose kept record was then dropped for a copy in
-# another database).
-copy_members <- function(records, links) {
-  copies <- links %>%
-    filter(!is.na(kept)) %>%
-    distinct(dropped, kept)
-  members <- transmute(records, kept = record, member = record)
-  repeat {
-    found <- members %>%
-      inner_join(copies, by = c("member" = "kept"),
-                 relationship = "many-to-many") %>%
-      distinct(kept, member = dropped) %>%
-      anti_join(members, by = c("kept", "member"))
-    if (nrow(found) == 0) break
-    members <- bind_rows(members, found)
-  }
-  members
-}
-
-# The records kept, each with its coordinates and site name from the best
-# located of its copies (copy_members()), since copies are one test. Precisely
-# located copies are preferred (imprecise_location()), then a copy in an
-# `analysis_ready` database, then the record's own coordinates, then a copy
-# with the same site name, then the nearest. `coordinates_from` names the copy
-# the coordinates came from.
-locate_from_copies <- function(records, all_records, members,
-                               analysis_ready = character()) {
-  own <- select(records, kept = record, own_lat = latitude,
-                own_lon = longitude, own_site = site)
-  location <- members %>%
-    left_join(all_records %>%
-                select(record, record_key, database, latitude, longitude,
-                       site),
-              by = c("member" = "record")) %>%
-    left_join(own, by = "kept") %>%
-    mutate(imprecise = imprecise_location(site, latitude, longitude),
-           same_name = same_site_name(site, own_site),
-           km = km_between(longitude, latitude, own_lon, own_lat)) %>%
-    arrange(kept, imprecise, !database %in% analysis_ready, member != kept,
-            !same_name, km) %>%
-    distinct(kept, .keep_all = TRUE) %>%
-    select(record = kept, latitude, longitude, site,
-           coordinates_from = record_key)
-  records %>%
-    select(-latitude, -longitude, -site) %>%
-    left_join(location, by = "record")
-}
-
-# The records kept, each with the years (year_start to year_end) of the copy
-# (copy_members()) that dates the test most finely: the shortest range, then
-# the record's own years, then the preferred record's (`preference`).
-date_from_copies <- function(records, all_records, members) {
-  years <- members %>%
-    left_join(select(all_records, record, year_start, year_end, preference),
-              by = c("member" = "record")) %>%
-    arrange(kept, year_end - year_start, member != kept, preference) %>%
-    distinct(kept, .keep_all = TRUE) %>%
-    select(record = kept, year_start, year_end)
-  records %>%
-    select(-year_start, -year_end) %>%
-    left_join(years, by = "record")
 }
 
 # Some databases pool a study's separate tests at a site (in different months,
@@ -423,88 +325,20 @@ pooled_copies <- function(records) {
     unique()
 }
 
-# Copies recorded in different years: pairs of records (`a`, `b`) of two
-# databases citing the same paper (`paper`, the study label without its
-# country), with the same country, insecticide, concentration,
-# site name, number tested and number dead, from 5% to 95% mortality, within
-# `max_km` (`km`), whose years don't overlap. One database sometimes gives a
-# test another year, but a site is also visited again in later years, and below
-# 5% or above 95% repeat visits often give the same result (e.g. 1 or 99 of
-# 100). Matches between different papers are taken as separate tests, though
-# some are one test published twice.
-cross_year_pairs <- function(records, max_km = 100) {
-  tests <- records %>%
-    filter(n_recorded, died >= 0.05 * mosquito_number,
-           died <= 0.95 * mosquito_number) %>%
-    filter(!is.na(paper)) %>%
-    select(record, database, paper, country_name, insecticide_type,
-           concentration, mosquito_number, died, year_start, year_end, site,
-           latitude, longitude)
-  tests %>%
-    inner_join(tests,
-               by = c("paper", "country_name", "insecticide_type",
-                      "concentration", "mosquito_number", "died"),
-               suffix = c("", "_b"), relationship = "many-to-many") %>%
-    filter(record < record_b, database != database_b,
-           year_end < year_start_b | year_end_b < year_start) %>%
-    mutate(km = km_between(longitude, latitude, longitude_b, latitude_b)) %>%
-    filter(km <= max_km, same_site_name(site, site_b)) %>%
-    select(a = record, b = record_b, km)
-}
-
-# The years to give copies recorded in different years (cross_year_pairs()).
-# Records joined by these pairs are one test, and take the years of its best
-# record, chosen by, in turn:
-# 1. not being in the paper's publication year where another record is earlier
-#    (a test is rarely run in the year it is published, and databases give the
-#    publication year where a paper gives none);
-# 2. its database giving the paper's records in these pairs more different
-#    years (another lumps them into one);
-# 3. its database coming first in `database_order`.
-# A test whose best records differ in their years keeps its years. Returns the
-# records whose years change, with the best record (`from`), its years
-# (`from_start`, `from_end`) and the step that chose it (`rule`).
-cross_year_dates <- function(records, database_order, max_km = 100) {
-  pairs <- cross_year_pairs(records, max_km)
-  records %>%
-    filter(record %in% c(pairs$a, pairs$b)) %>%
-    mutate(published = if_else(paper == citation, NA,
-                               as.numeric(str_extract(paper, "\\d{4}$"))),
-           test = connected_groups(record, pairs$a, pairs$b)) %>%
-    group_by(paper, country_name, database) %>%
-    mutate(years = n_distinct(year_start, year_end)) %>%
-    group_by(test) %>%
-    mutate(publication_year = coalesce(year_start == published, FALSE) &
-             year_start > min(year_start),
-           rank = match(database, database_order)) %>%
-    arrange(publication_year, desc(years), rank, .by_group = TRUE) %>%
-    mutate(best = publication_year == first(publication_year) &
-             years == first(years) & rank == first(rank)) %>%
-    filter(n_distinct(year_start[best], year_end[best]) == 1) %>%
-    mutate(from = first(record),
-           from_start = first(year_start),
-           from_end = first(year_end),
-           rule = case_when(
-             publication_year != first(publication_year) ~ "publication year",
-             years != first(years) ~ "more years",
-             .default = "database order")) %>%
-    ungroup() %>%
-    filter(year_start != from_start | year_end != from_end) %>%
-    select(record, from, from_start, from_end, rule)
-}
-
-# Some sources hold a bioassay split by species (e.g. An. arabiensis and An.
-# gambiae s.s.) and another, or the same, source holds it summed to complex
-# level. The complex-level records whose died and mosquito_number equal exactly
-# the sums over the species-level records of one source and citation at the
-# same pixel, year, insecticide and concentration. In October 2026, comparing
-# against species-level records a year earlier or later found no such matches,
-# so these are not coincidences. See issue #53.
+# Some versions (one database's records of one paper or citation,
+# `version_key`) hold a bioassay both split by species (e.g. An. arabiensis and
+# An. gambiae s.s.) and summed to complex level, e.g. in the IR Mapper
+# extracts' species and complex files. The
+# complex-level records whose died and mosquito_number equal exactly the sums
+# over the version's species-level records of one source at the same pixel,
+# year, insecticide and concentration. In October 2026, comparing against
+# species-level records a year earlier or later found no such matches, so
+# these are not coincidences. See issue #53.
 aggregated_copies <- function(records) {
   species_sums <- records %>%
     filter(species != "gambiae complex") %>%
-    group_by(cell, year_start, insecticide_type, concentration, source,
-             citation) %>%
+    group_by(cell, year_start, insecticide_type, concentration, version_key,
+             source) %>%
     filter(n() > 1) %>%
     summarise(
       died_sum = sum(died),
@@ -515,7 +349,7 @@ aggregated_copies <- function(records) {
     filter(species == "gambiae complex") %>%
     inner_join(species_sums,
                by = c("cell", "year_start", "insecticide_type",
-                      "concentration"),
+                      "concentration", "version_key"),
                relationship = "many-to-many") %>%
     filter(died == died_sum,
            mosquito_number == mosquito_number_sum) %>%
@@ -541,9 +375,12 @@ pair_id <- function(key_a, key_b) {
 # lower case and without apostrophes or hyphens (the databases write
 # "Wat'senga" and "Watsenga"). The year is the first of: "et al. YYYY",
 # "(YYYY)", the journal year in Vancouver style (a year, optionally with month
-# and day, followed by ";volume"), or else any 19xx or 20xx.
+# and day, followed by ";volume"), or else any 19xx or 20xx. A stray "Â" (UTF-8
+# text decoded twice, as in some Vector Atlas citations, e.g. "Â Riveron
+# (2017)") is dropped first.
 citation_author_year <- function(citation) {
-  x <- str_squish(stringi::stri_trans_general(citation, "Latin-ASCII"))
+  x <- str_squish(stringi::stri_trans_general(gsub("\u00c2", "", citation),
+                                              "Latin-ASCII"))
   is_doi <- grepl("^(doi:\\s*|https?://(dx\\.)?doi\\.org/)?10\\.\\d{4,}/", x,
                   ignore.case = TRUE)
   is_generic <- grepl("^(unpublished|personal communication|pers\\.? comm)",
@@ -560,6 +397,121 @@ citation_author_year <- function(citation) {
   if_else(is_doi | is_generic | is.na(surname) | is.na(year),
           NA_character_,
           paste(gsub("['-]", "", tolower(surname)), year))
+}
+
+# ---- one version of each paper ----
+
+# Whether each citation is a paper: it gives a first author and a year
+# (citation_author_year()), and isn't a personal communication or a report of
+# the PMI or WHO, which compile many studies' data.
+is_paper_citation <- function(citation) {
+  !is.na(citation_author_year(citation)) &
+    !grepl("personal communication|pers\\.? comm", citation,
+           ignore.case = TRUE) &
+    !grepl("^(PMI|WHO)([^a-z]|$)|^President\\S* Malaria Initiative",
+           citation, ignore.case = TRUE)
+}
+
+# Whether each of a paper's versions is dominated: another version is at least
+# as good on every measure (the columns of `measures`, larger being better)
+# and better on at least one.
+dominated <- function(measures) {
+  m <- as.matrix(measures)
+  apply(m, 1, function(x) {
+    any(apply(m, 1, function(y) all(y >= x) && any(y > x)))
+  })
+}
+
+# The versions of the papers held by two or more databases, ranked. A version
+# is the records of one paper (`paper`, in one country) in one database. Each
+# version is measured on the records the model uses (`modelled`, record
+# numbers), so that tests it doesn't use (e.g. intensity tests, or a
+# mis-entered concentration) can't decide the choice:
+# - whether its recorded numbers tested vary (a database giving every test one
+#   number, e.g. 100, often gives a placeholder);
+# - its places: the number of model pixels (`cell`) its records are in;
+# - its years: the number of years its records give, as the model reads them
+#   (the middle of a record's years, rounded down), so a version putting every
+#   test in one year, or giving every test one range of years, has one.
+# The best version is at least as good as each other on all three and better
+# on one. Where several versions tie on all three, the one with more records
+# the model uses is kept, then the one first in `database_order`. Where no
+# version is best on all three (e.g. one gives varying numbers tested and
+# another more years), the versions conflict: the paper needs a decision by
+# hand, and the version ranked first meanwhile is the first of the versions
+# not bettered, by records the model uses and then `database_order`.
+# Returns one row per version, with its rank, whether the paper's versions
+# conflict, and, for the first, the step that chose it (`reason`).
+paper_versions <- function(records, modelled, database_order) {
+  records %>%
+    filter(is_paper) %>%
+    mutate(modelled = record %in% modelled,
+           year = (year_start + year_end) %/% 2) %>%
+    group_by(paper, country_name, database) %>%
+    summarise(records = n(),
+              modelled_records = sum(modelled),
+              numbers_vary = n_distinct(
+                mosquito_number[modelled & n_recorded]) > 1,
+              places = n_distinct(cell[modelled]),
+              years = n_distinct(year[modelled]),
+              .groups = "drop") %>%
+    group_by(paper, country_name) %>%
+    filter(n() > 1) %>%
+    mutate(best = !dominated(tibble(numbers_vary, places, years))) %>%
+    arrange(!best, desc(modelled_records), match(database, database_order),
+            .by_group = TRUE) %>%
+    mutate(rank = row_number(),
+           conflict = n_distinct(numbers_vary[best], places[best],
+                                 years[best]) > 1,
+           reason = case_when(
+             rank > 1 ~ NA_character_,
+             conflict ~ "conflict: decide by hand",
+             sum(best) == 1 ~ "best on numbers tested, places and years",
+             modelled_records > lead(modelled_records) ~
+               "most modelled records",
+             .default = "database order")) %>%
+    ungroup()
+}
+
+# The records of the versions not kept that the kept version doesn't match.
+# A record is matched if the kept version has a record of the same test: the
+# same insecticide and concentration, a site within `max_km` or of the same
+# name within `name_km` (similar names far apart are different places, e.g.
+# Kawama and Kasama in Zambia, 450 km apart), overlapping years, and a
+# mortality within `tolerance` percentage points; or a record that agrees with
+# it exactly (the same number tested and number dead, or mortality within half
+# a point where a number tested is missing), within the distances used to find
+# copies between databases, which allow for the databases placing one site
+# differently. `copies` gives these
+# exact agreements, as pairs of record numbers (`a`, `b`; agreeing_pairs()).
+# `kept` gives each paper's kept database (`kept_database`).
+unmatched_in_kept <- function(records, kept, copies, tolerance = 10,
+                              max_km = 10, name_km = 100) {
+  records <- inner_join(records, kept, by = c("paper", "country_name"))
+  kept_records <- filter(records, database == kept_database)
+  kept_tests <- kept_records %>%
+    select(paper, country_name, insecticide_type, concentration,
+           site_k = site, latitude_k = latitude, longitude_k = longitude,
+           year_start_k = year_start, year_end_k = year_end,
+           mortality_k = mortality_adjusted)
+  others <- filter(records, database != kept_database)
+  same_test <- others %>%
+    inner_join(kept_tests,
+               by = c("paper", "country_name", "insecticide_type",
+                      "concentration"),
+               relationship = "many-to-many") %>%
+    filter(pmax(year_start, year_start_k) <= pmin(year_end, year_end_k),
+           abs(mortality_adjusted - mortality_k) <= tolerance) %>%
+    mutate(km = km_between(longitude, latitude, longitude_k, latitude_k)) %>%
+    filter(km <= max_km | (km <= name_km & same_site_name(site, site_k))) %>%
+    pull(record)
+  exact <- bind_rows(select(copies, record = a, other = b),
+                     select(copies, record = b, other = a)) %>%
+    filter(record %in% others$record, other %in% kept_records$record) %>%
+    pull(record)
+  others %>%
+    filter(!record %in% c(same_test, exact)) %>%
+    select(record, paper, country_name, database)
 }
 
 # ---- country labels ----
