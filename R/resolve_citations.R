@@ -102,13 +102,15 @@ find_pmc <- function(text) str_match(text, "PMC\\d{5,8}")[, 1]
 
 # the title a citation gives, where it gives one: after "(year)" near the start
 # in the Vector Atlas and MTM, and after the authors in the IR Mapper extracts'
-# Vancouver style; NA for "Author et al. year" citations
+# Vancouver style; NA for "Author et al. year" citations. A title ends at a
+# full stop, but not one of an abbreviation in it ("s. s.", "s.l.", "An.").
 citation_title <- function(citation) {
   x <- str_squish(gsub("\u00c2", " ", plain_text(citation)))
+  end <- "(?:\\.\\.|(?<!\\b(?:[A-Za-z]|An|Ae|Cx|sp|spp))\\.\\s|$)"
   tries <- cbind(
-    str_match(x, "^[^()]{0,80}\\((?:19|20)\\d{2}[a-z]?\\)\\.?\\s+(.+?)(?:\\.\\.|\\.\\s|$)")[, 2],
-    str_match(x, "et al\\.?,?\\s+(.+?)(?:\\.\\s|$)")[, 2],
-    str_match(x, "^.*?[A-Z]{1,3}\\.\\s+(.+?)(?:\\.\\s|$)")[, 2])
+    str_match(x, paste0("^[^()]{0,80}\\((?:19|20)\\d{2}[a-z]?\\)\\.?\\s+(.+?)", end))[, 2],
+    str_match(x, paste0("et al\\.?,?\\s+(.+?)", end))[, 2],
+    str_match(x, paste0("^.*?[A-Z]{1,3}\\.\\s+(.+?)", end))[, 2])
   apply(tries, 1, function(t) {
     t <- t[!is.na(t) & str_count(t, "\\S+") >= 5]
     if (length(t)) t[1] else NA_character_
