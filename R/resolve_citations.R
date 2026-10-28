@@ -392,9 +392,12 @@ by_identifier_any <- function(citation, link) {
 }
 
 # 2. by the citation's own title, searched in Crossref and Europe PMC: a paper
-# by its first author with its title; the year only ranks candidates, as a
-# citation's year can be wrong (e.g. the IR Mapper extracts' Messenger 2017,
-# whose title holds "(2012-2016)")
+# by its first author with its title (four fifths of the shorter title's
+# words, as some citations shorten titles). Candidates are ranked by the share
+# of the longer title's words, so a paper whose title merely contains the
+# citation's words ranks below one with the same title, then by year: the year
+# only ranks, as a citation's year can be wrong (e.g. the IR Mapper extracts'
+# Messenger 2017, whose title holds "(2012-2016)").
 by_title <- function(citation) {
   title <- citation_title(citation)
   surname <- citation_surname(citation)
@@ -407,9 +410,10 @@ by_title <- function(citation) {
   if (!nrow(candidates)) return(NULL)
   candidates <- candidates %>%
     filter(!is_notice(title, doi), agrees(., .env$surname, NA)) %>%
-    mutate(overlap = vapply(title, function(t) title_overlap(t, .env$title), numeric(1))) %>%
+    mutate(overlap = vapply(title, function(t) title_overlap(t, .env$title), numeric(1)),
+           same = vapply(title, function(t) title_overlap(t, .env$title, of = max), numeric(1))) %>%
     filter(overlap >= 0.8) %>%
-    arrange(desc(overlap), abs(year - coalesce(.env$year, year)), is.na(doi))
+    arrange(desc(same), abs(year - coalesce(.env$year, year)), is.na(doi))
   if (!nrow(candidates)) return(NULL)
   as_result(candidates, citation, "title search")
 }
