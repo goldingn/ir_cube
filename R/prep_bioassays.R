@@ -165,7 +165,8 @@ sources <- list(
     read = function() {
       read_xlsx("data/raw/IR Mapper data August 2022.xlsx", col_types = "text")
     },
-    keep = identity,
+    # its records cited to Moyes et al. 2019 are the IR Mapper extracts' own
+    keep = function(d) filter(d, !Reference_Name %in% "Moyes et al. 2019"),
     columns = c(citation = "Reference_Name", link = "URL", site = "Locality",
                 country_name = "Country", latitude = "Latitude",
                 longitude = "Longitude",
@@ -223,6 +224,10 @@ bioassays <- lapply(sources, read_bioassay_source) %>%
       paper_labels$paper[match(citation, paper_labels$citation)],
       citation_author_year(citation), citation),
     is_paper = is_paper_citation(citation),
+    # a personal communication counts as its author's paper of that year in that
+    # country, where there is one (supplement step 7)
+    is_paper = is_paper | (is_personal_communication(citation) &
+      paste(paper, country_name) %in% paste(paper, country_name)[is_paper]),
     # the years a test ran: one year where no end year is given (as in MTM),
     # or where the end year is before the start (3 records)
     year_end = if_else(is.na(year_end) | year_end < year_start, year_start,
@@ -293,19 +298,28 @@ bioassays <- bioassays %>%
 
 # ---- copies of the same bioassay ----
 
-# A download sometimes holds a paper more than once (imported twice), or
-# repeats its rows (one row copied down for many tests): at least half of the
-# paper's records in the download are repeated, identical in every column but
-# their ID (row_hash). One of each is kept. Records of one paper in one
-# download that are repeated otherwise are taken as the paper's separate tests:
-# a paper reporting many tests at one site can give two the same result. The
-# supplement gives the shares of repeated records and the checks by hand.
+# One database's records of one citation (`citation_key`), however its
+# downloads write a paper's citation (its label), and a version: one database's
+# records of one paper in one country, or of one other citation
 bioassays <- bioassays %>%
-  group_by(source, citation) %>%
-  add_count(row_hash, name = "row_copies") %>%
-  mutate(repeated = mean(row_copies > 1) >= 0.5 & duplicated(row_hash)) %>%
+  mutate(citation_key = paste(database,
+                              if_else(is_paper, paper, coalesce(citation, ""))),
+         version_key = if_else(is_paper, paste(citation_key, country_name),
+                               citation_key))
+
+# A paper repeated in a download (supplement step 6): two records of a citation
+# in one download are repeats if they agree in every field the prep reads;
+# where at least half of its records in the download are repeats, one of each
+# is kept
+bioassays <- bioassays %>%
+  mutate(test = paste(name_key(coalesce(site, "")), cell, year_start, year_end,
+                      month, generation, species, insecticide_type,
+                      concentration, test_type, mosquito_number, died)) %>%
+  group_by(source, citation_key) %>%
+  add_count(test, name = "copies") %>%
+  mutate(repeated = mean(copies > 1) >= 0.5 & duplicated(test)) %>%
   ungroup() %>%
-  select(-row_copies) %>%
+  select(-test, -copies) %>%
   keep_records(!repeated, "paper repeated in a download")
 
 # The databases hold many of the same bioassays, in three ways, removed in
@@ -333,45 +347,34 @@ bioassays <- bioassays %>%
 max_km <- c(count = 100, percent = 50, misscaled = 100)
 max_km_within <- 10
 
-# Which copy to keep: one with a recorded number of mosquitoes, then from the
-# first source in the list above. A version (`version_key`) is one database's
-# records of one paper (its study label, in one country), however the
-# database's downloads write the citation (e.g. MTM's "Sovi et al.. (2020)"
-# and "Sovi et al. (2020)"), or of one other citation. Copies under different
-# citations are matched by the citation as written (`source_key`), so a paper
-# entered twice in one download under two spellings (e.g. "Djègbè" and
-# "Djegbe") is still found.
+# Which copy to keep (supplement step 8): one with a recorded number of
+# mosquitoes, then the first database in the order of the sources above
 bioassays <- bioassays %>%
   arrange(!n_recorded, source_rank, record) %>%
   mutate(preference = row_number(),
-         record_key = paste(source, record_id),
-         source_key = paste(database, coalesce(citation, "")),
-         version_key = if_else(is_paper,
-                               paste(database, paper, country_name),
-                               source_key)) %>%
+         record_key = paste(source, record_id)) %>%
   arrange(record)
 
-# A reviewer records whether a pair of records are copies ("copy") or
-# separate tests ("different") in review/bioassay_duplicates.csv, by pair_id.
-# A pair decided "different" is never taken as copies; any other decision
-# (blank, "unsure") leaves the rules below to decide. The pairs flagged for
-# review are written to outputs/review/bioassay_review_pairs.csv (below).
+# A reviewer decides each pair of potential copies that step 8 flags, as copies
+# ("copy") or separate tests ("different"), in review/bioassay_duplicates.csv,
+# by pair_id
 decisions <- read_csv("review/bioassay_duplicates.csv",
                       col_types = cols(.default = "c")) %>%
-  filter(decision %in% c("copy", "different")) %>%
   select(pair_id, decision)
+if (!all(decisions$decision %in% c("copy", "different"))) {
+  stop("decisions in review/bioassay_duplicates.csv must be copy or different")
+}
 
 record_info <- bioassays %>%
-  select(record, record_key, database, source, source_key, version_key,
-         citation, site,
-         month, generation, preference)
+  select(record, record_key, database, source, citation_key, version_key,
+         citation, site, month, generation, preference)
 pairs <- agreeing_pairs(bioassays, max_km, max_km_within) %>%
   left_join(record_info, by = c("a" = "record")) %>%
   left_join(record_info, by = c("b" = "record"), suffix = c("_a", "_b")) %>%
   mutate(pair_id = pair_id(record_key_a, record_key_b),
          name_match = same_site_name(site_a, site_b),
-         same_version = version_key_a == version_key_b,
-         same_source = source_key_a == source_key_b) %>%
+         same_citation = citation_key_a == citation_key_b,
+         same_version = version_key_a == version_key_b) %>%
   left_join(select(decisions, pair_id, decision), by = "pair_id")
 
 # Keep the preferred record of each pair of copies
@@ -396,8 +399,7 @@ same_text <- function(x, y) {
 }
 dropped_downloads <- pairs %>%
   filter(same_version, source_a != source_b, km < 0.01,
-         same_text(month_a, month_b), same_text(generation_a, generation_b),
-         coalesce(decision != "different", TRUE)) %>%
+         same_text(month_a, month_b), same_text(generation_a, generation_b)) %>%
   one_to_one(between = c("source_a", "source_b")) %>%
   drop_less_preferred()
 dropped_sums <- aggregated_copies(
@@ -442,6 +444,11 @@ versions <- paper_versions(version_records, modelled, database_order)
 # paper whose versions conflict (paper_versions()). Fewer than 5 unmatched
 # records make little difference to the models.
 #
+# A record of more than 500 mosquitoes (five times a WHO tube test) has the
+# most weight in the models, and is often a total entered as one test. A paper
+# is flagged for review where the version kept has such records and another
+# version has none, or where it has only one version (supplement step 7).
+#
 # A reviewer records the version to keep in review/bioassay_paper_decisions.csv:
 # a database, or "none" to drop the paper, where no version is usable (e.g.
 # every version's coordinates are wrong). Every flagged paper needs a
@@ -453,6 +460,11 @@ unmatched <- unmatched_in_kept(
     filter(rank == 1) %>%
     select(paper, country_name, kept_database = database),
   copies = filter(pairs, !within, agreement != "misscaled"))
+over_500 <- version_records %>%
+  filter(is_paper, record %in% modelled) %>%
+  group_by(paper, country_name, database) %>%
+  summarise(over_500 = sum(n_recorded & mosquito_number > 500),
+            .groups = "drop")
 paper_decisions <- read_csv("review/bioassay_paper_decisions.csv",
                             col_types = cols(.default = "c")) %>%
   select(paper, country_name, decision)
@@ -461,24 +473,40 @@ versions <- versions %>%
                   name = "unmatched"),
             by = c("paper", "country_name", "database")) %>%
   mutate(unmatched = if_else(rank == 1, NA, coalesce(unmatched, 0L))) %>%
+  left_join(over_500, by = c("paper", "country_name", "database")) %>%
+  # papers in one database, which paper_versions() leaves out, with such records
+  bind_rows(over_500 %>%
+              filter(over_500 > 0) %>%
+              anti_join(versions, by = c("paper", "country_name")) %>%
+              left_join(version_records %>%
+                          filter(is_paper) %>%
+                          group_by(paper, country_name, database) %>%
+                          summarise(records = n(),
+                                    modelled_records = sum(record %in% modelled),
+                                    .groups = "drop"),
+                        by = c("paper", "country_name", "database")) %>%
+              mutate(rank = 1L, conflict = FALSE,
+                     reason = "the only version")) %>%
   left_join(paper_decisions, by = c("paper", "country_name")) %>%
   group_by(paper, country_name) %>%
-  mutate(flagged = conflict | any(unmatched >= 5, na.rm = TRUE),
+  mutate(flagged = conflict | any(unmatched >= 5, na.rm = TRUE) |
+           (any(rank == 1 & over_500 > 0, na.rm = TRUE) &
+              (n() == 1 | any(over_500 == 0, na.rm = TRUE))),
          kept = case_when(decision == "none" ~ FALSE,
                           decision %in% database ~ database == decision,
                           .default = rank == 1)) %>%
   ungroup()
-# a decision must name a version of a paper in two or more databases, or none
+# a decision must be for a flagged paper, and name one of its versions or none
 bad_decisions <- paper_decisions %>%
-  left_join(distinct(versions, paper, country_name, database),
+  left_join(distinct(versions, paper, country_name, database, flagged),
             by = c("paper", "country_name")) %>%
   group_by(paper, country_name, decision) %>%
-  summarise(ok = !anyNA(database) &
+  summarise(ok = !anyNA(database) & all(flagged) &
               (first(decision) == "none" | first(decision) %in% database),
             .groups = "drop") %>%
   filter(!ok)
 if (nrow(bad_decisions) > 0) {
-  stop("paper decisions that name no version: ",
+  stop("paper decisions for papers not flagged, or naming no version: ",
        paste(bad_decisions$paper, bad_decisions$country_name,
              bad_decisions$decision, sep = ", ", collapse = "; "))
 }
@@ -515,22 +543,30 @@ dropped_versions <- setdiff(dropped_versions, dropped_papers)
 # hand in October 2026 were.
 left <- setdiff(version_records$record, c(dropped_versions, dropped_papers))
 copies <- pairs %>%
-  filter(!same_source, agreement != "misscaled", a %in% left, b %in% left) %>%
-  one_to_one(between = c("source_key_a", "source_key_b")) %>%
-  mutate(source_1 = pmin(source_key_a, source_key_b),
-         source_2 = pmax(source_key_a, source_key_b)) %>%
-  group_by(source_1, source_2) %>%
+  filter(!same_citation, agreement != "misscaled", a %in% left,
+         b %in% left) %>%
+  one_to_one(between = c("citation_key_a", "citation_key_b")) %>%
+  mutate(citation_1 = pmin(citation_key_a, citation_key_b),
+         citation_2 = pmax(citation_key_a, citation_key_b)) %>%
+  group_by(citation_1, citation_2) %>%
   mutate(shared = sum(!extreme), copies = n()) %>%
   ungroup() %>%
   mutate(rule = case_when(shared >= 2 ~ "shared results",
                           copies >= 5 ~ "review",
                           .default = "few copies"),
+         decision = if_else(rule == "review", decision, NA),
          copy = coalesce(decision == "copy", TRUE)) %>%
   drop_less_preferred()
 undecided <- sum(copies$rule == "review" & is.na(copies$decision))
 if (undecided > 0) {
   warning(undecided, " pairs flagged for review have no decision; see ",
           "outputs/review/bioassay_review_pairs.csv")
+}
+unused <- setdiff(decisions$pair_id,
+                  filter(copies, rule == "review")$pair_id)
+if (length(unused) > 0) {
+  stop(length(unused), " decisions in review/bioassay_duplicates.csv are for ",
+       "pairs step 8 doesn't flag: ", paste(head(unused), collapse = ", "))
 }
 dropped_cross <- filter(copies, copy)$dropped
 
@@ -679,7 +715,7 @@ versions %>%
   arrange(desc(flagged), paper, country_name, rank) %>%
   select(flagged, decision, paper, country_name, database, kept, rank, reason,
          conflict, numbers_vary, places, years, records, modelled_records,
-         unmatched) %>%
+         unmatched, over_500) %>%
   write_excel_csv("outputs/review/bioassay_paper_versions.csv", na = "")
 
 links %>%

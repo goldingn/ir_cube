@@ -401,13 +401,16 @@ citation_author_year <- function(citation) {
 
 # ---- one version of each paper ----
 
+is_personal_communication <- function(citation) {
+  grepl("personal communication|pers\\.? comm", citation, ignore.case = TRUE)
+}
+
 # Whether each citation is a paper: it gives a first author and a year
 # (citation_author_year()), and isn't a personal communication or a report of
 # the PMI or WHO, which compile many studies' data.
 is_paper_citation <- function(citation) {
   !is.na(citation_author_year(citation)) &
-    !grepl("personal communication|pers\\.? comm", citation,
-           ignore.case = TRUE) &
+    !is_personal_communication(citation) &
     !grepl("^(PMI|WHO)([^a-z]|$)|^President\\S* Malaria Initiative",
            citation, ignore.case = TRUE)
 }
