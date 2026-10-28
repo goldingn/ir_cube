@@ -15,10 +15,12 @@
 # citation's first author and year (within one year, for online and print
 # dates). A preprint is resolved to the paper it became, where there is one.
 
+# Needs the httr2 package (R/packages.R) and the pdftotext program (poppler)
+# to read linked PDFs.
+
 source("R/packages.R")
 source("R/functions.R")
 source("R/bioassay_prep_functions.R")
-library(httr2)
 
 user_agent <- "ir_cube bioassay prep (https://github.com/idem-lab/ir_cube)"
 
@@ -102,7 +104,8 @@ find_pmc <- function(text) str_match(text, "PMC\\d{5,8}")[, 1]
 
 # the title a citation gives, where it gives one: after "(year)" near the start
 # in the Vector Atlas and MTM, and after the authors in the IR Mapper extracts'
-# Vancouver style; NA for "Author et al. year" citations. A title ends at a
+# Vancouver style (authors' initials, then a full stop or "(year)"); NA for
+# "Author et al. year" citations. A title ends at a
 # full stop, but not one of an abbreviation in it ("s. s.", "s.l.", "An.").
 citation_title <- function(citation) {
   x <- str_squish(gsub("\u00c2", " ", plain_text(citation)))
@@ -110,7 +113,7 @@ citation_title <- function(citation) {
   tries <- cbind(
     str_match(x, paste0("^[^()]{0,80}\\((?:19|20)\\d{2}[a-z]?\\)\\.?\\s+(.+?)", end))[, 2],
     str_match(x, paste0("et al\\.?,?\\s+(.+?)", end))[, 2],
-    str_match(x, paste0("^.*?[A-Z]{1,3}\\.\\s+(.+?)", end))[, 2])
+    str_match(x, paste0("^.*?[A-Z]{1,3}(?:\\.|\\s*\\((?:19|20)\\d{2}\\))\\s+(.+?)", end))[, 2])
   apply(tries, 1, function(t) {
     t <- t[!is.na(t) & str_count(t, "\\S+") >= 5]
     if (length(t)) t[1] else NA_character_
@@ -123,11 +126,13 @@ words_of <- function(x) {
                 " +")
   lapply(w, function(v) v[nchar(v) > 2])
 }
-title_overlap <- function(a, b) {
+# the share of one title's words in the other's: of the shorter title, or of
+# the longer one (stricter: a short generic title doesn't match a longer one)
+title_overlap <- function(a, b, of = min) {
   wa <- words_of(a)[[1]]
   wb <- words_of(b)[[1]]
   if (!length(wa) || !length(wb)) return(0)
-  length(intersect(wa, wb)) / min(length(unique(wa)), length(unique(wb)))
+  length(intersect(wa, wb)) / of(length(unique(wa)), length(unique(wb)))
 }
 
 # the first element of a list or vector, or NA
@@ -243,7 +248,15 @@ plain_text <- function(x) {
   x <- gsub("&amp;", "&", x, fixed = TRUE)
   x <- gsub("&quot;", "\"", x, fixed = TRUE)
   x <- gsub("&#0?39;|&apos;", "'", x)
-  str_squish(gsub("</?[a-zA-Z][^>]*>", "", x))
+  str_squish(gsub("</?[a-zA-Z][^>]*>", " ", x))
+}
+
+# a notice about a paper (a correction, erratum or retraction), which shares
+# its title
+is_notice <- function(title, doi) {
+  grepl("^(correction|erratum|corrigendum|retraction|expression of concern)",
+        coalesce(title, ""), ignore.case = TRUE) |
+    grepl("/annotation/", coalesce(doi, ""), fixed = TRUE)
 }
 
 # words of the field, at least one of which a candidate found by author and
@@ -310,7 +323,7 @@ as_result <- function(p, citation, method, note = NA_character_) {
   year <- citation_year(citation)
   own_title <- citation_title(citation)
   same_title <- !is.na(own_title) && !is.na(p$title[1]) &&
-    title_overlap(p$title[1], own_title) >= 0.8
+    title_overlap(p$title[1], own_title, of = max) >= 0.8
   same_year <- !is.na(year) && !is.na(p$year[1]) && abs(as.integer(p$year[1]) - year) <= 1
   ok <- agrees(p[1, ], surname, year) ||
     (same_title && (same_year || agrees(p[1, ], surname, NA)))
@@ -376,22 +389,25 @@ by_identifier_any <- function(citation, link) {
   NULL
 }
 
-# 2. by the citation's own title, searched in Crossref and Europe PMC
+# 2. by the citation's own title, searched in Crossref and Europe PMC: a paper
+# by its first author with its title; the year only ranks candidates, as a
+# citation's year can be wrong (e.g. the IR Mapper extracts' Messenger 2017,
+# whose title holds "(2012-2016)")
 by_title <- function(citation) {
   title <- citation_title(citation)
   surname <- citation_surname(citation)
   year <- citation_year(citation)
   if (is.na(title) || is.na(surname)) return(NULL)
   candidates <- bind_rows(
-    from_crossref_search(plain_text(citation), year),
+    from_crossref_search(plain_text(citation), NA),
     from_europepmc(paste0("TITLE:(", paste(head(words_of(title)[[1]], 8), collapse = " "),
                           ') AND AUTH:"', surname, '"')))
   if (!nrow(candidates)) return(NULL)
   candidates <- candidates %>%
-    filter(agrees(., .env$surname, .env$year)) %>%
+    filter(!is_notice(title, doi), agrees(., .env$surname, NA)) %>%
     mutate(overlap = vapply(title, function(t) title_overlap(t, .env$title), numeric(1))) %>%
     filter(overlap >= 0.8) %>%
-    arrange(desc(overlap), is.na(doi))
+    arrange(desc(overlap), abs(year - coalesce(.env$year, year)), is.na(doi))
   if (!nrow(candidates)) return(NULL)
   as_result(candidates, citation, "title search")
 }
@@ -407,8 +423,11 @@ by_own_text <- function(citation) {
 }
 
 # 4. by first author and year, with words of the field, in Crossref and Europe
-# PMC; several candidates are told apart by the countries and sites of the
-# citation's records
+# PMC, preferring the citation's own year: the candidate whose title the
+# citation's linked PDF or page holds, or else, of several, the one naming the
+# countries and sites of the citation's records. A single candidate with
+# neither is left for manual review (e.g. "Hunt 2013" finds only "Cerebral
+# malaria: gamma-interferon redux").
 by_author_year <- function(citation, countries, sites, text = NA_character_) {
   surname <- citation_surname(citation)
   year <- citation_year(citation)
@@ -420,13 +439,11 @@ by_author_year <- function(citation, countries, sites, text = NA_character_) {
                                gsub("\\+", " ", countries)), year))
   if (!nrow(candidates)) return(NULL)
   candidates <- candidates %>%
-    filter(agrees(., .env$surname, .env$year),
+    filter(!is_notice(title, doi), agrees(., .env$surname, .env$year),
            grepl(field_words, tolower(paste(title, coalesce(abstract, ""))))) %>%
     arrange(is.na(doi)) %>%
     one_per_paper()
-  if (nrow(candidates) == 1) {
-    return(as_result(candidates, citation, "author and year search", "one candidate"))
-  }
+  if (any(candidates$year %in% year)) candidates <- filter(candidates, year %in% .env$year)
   if (nrow(candidates) == 0) return(NULL)
   # the one whose title the citation's linked PDF or page holds
   if (!is.na(text)) {
@@ -443,7 +460,7 @@ by_author_year <- function(citation, countries, sites, text = NA_character_) {
     sum(vapply(places, function(w) grepl(w, text_i, fixed = TRUE), logical(1)))
   }, numeric(1))
   best <- which(score == max(score))
-  if (length(best) == 1 && max(score) >= 1) {
+  if (nrow(candidates) > 1 && length(best) == 1 && max(score) >= 1) {
     return(as_result(candidates[best, ], citation, "author and year search",
                      paste(nrow(candidates), "candidates; chosen by places named")))
   }
@@ -680,9 +697,15 @@ if (sys.nframe() == 0) {
         filter(same_surname(first_author, rep(surname, n()))) %>%
         distinct(id, .keep_all = TRUE)
       searched <- from_crossref_search(if (is.null(first_page)) substr(text, 1, 400) else first_page$title, year)
+      # matched on the PDF's own title where its first page gives one, else on
+      # the words of its first page
       pool <- bind_rows(by_author, searched) %>%
-        filter(!is.na(title), agrees(., .env$surname, .env$year)) %>%
-        mutate(found = vapply(title, words_found, numeric(1), text = text)) %>%
+        filter(!is.na(title), !is_notice(title, doi), agrees(., .env$surname, .env$year)) %>%
+        mutate(found = if (is.null(first_page)) {
+          vapply(title, words_found, numeric(1), text = text)
+        } else {
+          vapply(title, title_overlap, numeric(1), b = first_page$title, of = max)
+        }) %>%
         filter(found >= 0.8) %>%
         arrange(desc(found), is.na(doi)) %>%
         one_per_paper()
@@ -695,12 +718,17 @@ if (sys.nframe() == 0) {
     if (is_pdf && !is.na(text) && nrow(local)) {
       local <- filter(local, vapply(title, words_found, numeric(1), text = text) >= 0.8)
     }
-    if (nrow(local) == 1) {
-      result <- as_result(local, r$citation, "same paper as another database's citation")
-    } else if (nrow(local) > 1 && nrow(by_shared_results(local, r$results)) == 1) {
-      result <- as_result(by_shared_results(local, r$results), r$citation,
-                          "same paper as another database's citation",
-                          paste(nrow(local), "papers by this author and year; chosen by shared results"))
+    # the papers of the citation's own year, where there are any; the one whose
+    # citations share results with this citation's records, or else, of
+    # several, the one sharing its sites. A single paper sharing no results is
+    # left for manual review: a first author and year alone don't identify a
+    # paper.
+    if (any(local$year %in% year)) local <- filter(local, year %in% .env$year)
+    chosen <- by_shared_results(local, r$results)
+    if (nrow(chosen) == 1) {
+      result <- as_result(chosen, r$citation, "same paper as another database's citation",
+                          paste(nrow(local), if (nrow(local) == 1) "paper" else "papers",
+                                "by this author and year; chosen by shared results"))
     } else if (nrow(local) > 1) {
       own <- unique(name_key(c(strsplit(r$countries, "\\+")[[1]], strsplit(r$sites, "\\|")[[1]])))
       shared <- vapply(local$places, function(p) {
