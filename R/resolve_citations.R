@@ -278,11 +278,13 @@ same_surname <- function(a, b) {
   a <- name_key(redecode(a))
   b <- name_key(redecode(b))
   ok <- !is.na(a) & !is.na(b) & a != "" & b != ""
-  close <- mapply(function(x, y) {
+  close <- vapply(seq_along(a), function(i) {
+    x <- a[i]
+    y <- b[i]
     if (is.na(x) || is.na(y) || x == "" || y == "") return(FALSE)
     x == y || grepl(x, y, fixed = TRUE) || grepl(y, x, fixed = TRUE) ||
       utils::adist(x, y)[1, 1] <= if (max(nchar(x), nchar(y)) >= 6) 2 else 1
-  }, a, b, USE.NAMES = FALSE)
+  }, logical(1))
   ok & close
 }
 
