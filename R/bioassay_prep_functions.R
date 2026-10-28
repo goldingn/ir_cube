@@ -18,18 +18,15 @@ numeric_bioassay_columns <- c("latitude", "longitude", "year_start",
 # Read one source, given its specification: `read()` returns the raw table with
 # every column as text, `keep()` applies the source's own filters to it, and
 # `columns` maps our column names to the source's. Numbers are parsed after
-# dropping "%" and spaces. Each record gets `row_hash`, a hash of its raw row
-# without the source's record ID, which is the same for rows identical in
-# every column. Sources without their own record IDs get one from this hash,
-# numbered within identical rows, so that a record keeps its ID when the data
-# are re-read.
+# dropping "%" and spaces. Sources without their own record IDs get one from a
+# hash of the raw row, numbered within identical rows, so that a record keeps
+# its ID when the data are re-read.
 read_bioassay_source <- function(spec) {
   raw <- spec$keep(spec$read())
-  row_hash <- apply(raw[setdiff(names(raw), spec$columns["record_id"])], 1,
-                    function(row) {
-                      substr(rlang::hash(paste(row, collapse = "|")), 1, 12)
-                    })
   if (!"record_id" %in% names(spec$columns)) {
+    row_hash <- apply(raw, 1, function(row) {
+      substr(rlang::hash(paste(row, collapse = "|")), 1, 12)
+    })
     raw$record_id <- paste0(row_hash, "-", ave(seq_along(row_hash), row_hash,
                                                 FUN = seq_along))
     spec$columns <- c(spec$columns, record_id = "record_id")
@@ -43,8 +40,7 @@ read_bioassay_source <- function(spec) {
              ~ suppressWarnings(as.numeric(str_remove_all(.x, "[%\\s]")))),
       citation = str_squish(citation),
       source = spec$source,
-      database = spec$database,
-      row_hash = row_hash
+      database = spec$database
     )
 }
 
@@ -374,7 +370,7 @@ pair_id <- function(key_a, key_b) {
 # comm."). The surname is the citation's first word, ASCII-transliterated, in
 # lower case and without apostrophes or hyphens (the databases write
 # "Wat'senga" and "Watsenga"). The year is the first of: "et al. YYYY",
-# "(YYYY)", the journal year in Vancouver style (a year, optionally with month
+# "(YYYY)" near the start, the journal year in Vancouver style (a year, optionally with month
 # and day, followed by ";volume"), or else any 19xx or 20xx. A stray "Â" (UTF-8
 # text decoded twice, as in some Vector Atlas citations, e.g. "Â Riveron
 # (2017)") is dropped first.
@@ -389,7 +385,7 @@ citation_author_year <- function(citation) {
   months <- "(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*"
   year <- coalesce(
     str_match(x, "et al\\.*,?\\s*\\(?((19|20)\\d{2})")[, 2],
-    str_match(x, "\\(((19|20)\\d{2})[a-z]?\\)")[, 2],
+    str_match(x, "^[^()]{0,80}\\(((19|20)\\d{2})[a-z]?\\)")[, 2],
     str_match(x, paste0("\\b((19|20)\\d{2})[a-z]?(\\s+", months,
                         "(\\s+\\d{1,2})?)?\\s*;"))[, 2],
     str_match(x, "\\b((19|20)\\d{2})\\b")[, 2]
@@ -406,13 +402,19 @@ is_personal_communication <- function(citation) {
 }
 
 # Whether each citation is a paper: it gives a first author and a year
-# (citation_author_year()), and isn't a personal communication or a report of
-# the PMI or WHO, which compile many studies' data.
+# (citation_author_year()), and isn't a personal communication or a report: of
+# the PMI, WHO (OMS in French) or a national malaria control programme (NMCP),
+# which compile many studies' data, or one that opens with its title rather
+# than its authors (eight or more words, with no comma, before its year in
+# brackets, e.g. "Rapport Interimaire de la Troisieme Annee ... (2010)").
 is_paper_citation <- function(citation) {
+  before_year <- str_match(citation, "^([^,(]*?)\\(\\s*(?:\\S+\\s+)?(?:19|20)\\d{2}\\)")[, 2]
+  title_first <- str_count(coalesce(before_year, ""), "\\S+") >= 8
   !is.na(citation_author_year(citation)) &
     !is_personal_communication(citation) &
-    !grepl("^(PMI|WHO)([^a-z]|$)|^President\\S* Malaria Initiative",
-           citation, ignore.case = TRUE)
+    !grepl("^(PMI|WHO|OMS)([^a-z]|$)|^President\\S* Malaria Initiative|\\bNMCP\\b",
+           citation, ignore.case = TRUE) &
+    !title_first
 }
 
 # Whether each of a paper's versions is dominated: another version is at least
@@ -450,7 +452,7 @@ paper_versions <- function(records, modelled, database_order) {
     filter(is_paper) %>%
     mutate(modelled = record %in% modelled,
            year = (year_start + year_end) %/% 2) %>%
-    group_by(paper, country_name, database) %>%
+    group_by(paper, database) %>%
     summarise(records = n(),
               modelled_records = sum(modelled),
               numbers_vary = n_distinct(
@@ -458,8 +460,7 @@ paper_versions <- function(records, modelled, database_order) {
               places = n_distinct(cell[modelled]),
               years = n_distinct(year[modelled]),
               .groups = "drop") %>%
-    group_by(paper, country_name) %>%
-    filter(n() > 1) %>%
+    group_by(paper) %>%
     mutate(best = !dominated(tibble(numbers_vary, places, years))) %>%
     arrange(!best, desc(modelled_records), match(database, database_order),
             .by_group = TRUE) %>%
@@ -468,6 +469,7 @@ paper_versions <- function(records, modelled, database_order) {
                                  years[best]) > 1,
            reason = case_when(
              rank > 1 ~ NA_character_,
+             n() == 1 ~ "the only version",
              conflict ~ "conflict: decide by hand",
              sum(best) == 1 ~ "best on numbers tested, places and years",
              modelled_records > lead(modelled_records) ~
@@ -490,18 +492,17 @@ paper_versions <- function(records, modelled, database_order) {
 # `kept` gives each paper's kept database (`kept_database`).
 unmatched_in_kept <- function(records, kept, copies, tolerance = 10,
                               max_km = 10, name_km = 100) {
-  records <- inner_join(records, kept, by = c("paper", "country_name"))
+  records <- inner_join(records, kept, by = "paper")
   kept_records <- filter(records, database == kept_database)
   kept_tests <- kept_records %>%
-    select(paper, country_name, insecticide_type, concentration,
+    select(paper, insecticide_type, concentration,
            site_k = site, latitude_k = latitude, longitude_k = longitude,
            year_start_k = year_start, year_end_k = year_end,
            mortality_k = mortality_adjusted)
   others <- filter(records, database != kept_database)
   same_test <- others %>%
     inner_join(kept_tests,
-               by = c("paper", "country_name", "insecticide_type",
-                      "concentration"),
+               by = c("paper", "insecticide_type", "concentration"),
                relationship = "many-to-many") %>%
     filter(pmax(year_start, year_start_k) <= pmin(year_end, year_end_k),
            abs(mortality_adjusted - mortality_k) <= tolerance) %>%
@@ -514,7 +515,7 @@ unmatched_in_kept <- function(records, kept, copies, tolerance = 10,
     pull(record)
   others %>%
     filter(!record %in% c(same_test, exact)) %>%
-    select(record, paper, country_name, database)
+    select(record, paper, database)
 }
 
 # ---- country labels ----
