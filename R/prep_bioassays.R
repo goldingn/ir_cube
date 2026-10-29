@@ -17,11 +17,9 @@ source("R/bioassay_subset.R")
 # ---- read the databases ----
 
 # The 20261005 MTM discriminating concentration download fills missing values
-# of MORTALITY_ADJUSTED with 0: it has no missing values, and all 306 records
-# missing in the 20251031 download are exactly 0, 87 of them labelled
-# susceptible. The papers checked report nonzero mortality for these (#27). So
-# we drop them, by ID against the 20251031 download; the 232 zeros already in
-# that download are kept.
+# of MORTALITY_ADJUSTED with 0, where the papers checked report nonzero
+# mortality (#27). So we drop the records missing it in the 20251031 download,
+# by ID; the zeros already in that download are kept.
 mtm_filled_mortality_ids <- read_xlsx(
   "data/raw/MTM_DISCRIMINATING_CONCENTRATION_BIOASSAY_20251031.xlsx",
   sheet = "Data", col_types = "text") %>%
@@ -91,12 +89,9 @@ read_vector_atlas <- function() {
 }
 
 # each source: its database, how to read it, its own filters, and its columns.
-# Sources are listed in order of preference, which chooses a paper's version
-# where versions tie (below) and the copy of a bioassay to keep. The IR Mapper
-# extracts come first as the analysis-ready datasets of Moyes et al. (2019),
-# abstracted and checked to one standard; where a test is in three or more
-# databases, they are the least often the one database that disagrees with the
-# rest (see the supplement).
+# Sources are listed in order of preference (supplement step 1), which chooses
+# a paper's version where versions tie (below) and the copy of a bioassay to
+# keep.
 sources <- list(
   ir_mapper_extract("mapper_dis_species",
                     "data/raw/2_standard-WHO-susc-test_species.csv",
@@ -223,7 +218,7 @@ bioassays <- lapply(sources, read_bioassay_source) %>%
     label = coalesce(citation_author_year(citation), citation),
     is_paper = is_paper_citation(citation),
     # the years a test ran: one year where no end year is given (as in MTM),
-    # or where the end year is before the start (3 records)
+    # or where the end year is before the start
     year_end = if_else(is.na(year_end) | year_end < year_start, year_start,
                        year_end),
     mosquito_number = round(mosquito_number),
@@ -286,7 +281,11 @@ bioassays <- bioassays %>%
                  !is.na(insecticide_type),
                "missing a field") %>%
   keep_records(species %in% gambiae_complex_species,
-               "not An. gambiae complex")
+               "not An. gambiae complex") %>%
+  # a location given only to whole degrees (+/- 55 km) is too coarse for the
+  # models' 5 km pixels (supplement step 3)
+  keep_records(latitude != round(latitude) | longitude != round(longitude),
+               "located only to whole degrees")
 
 # the country labels must agree with the coordinates (supplement step 3); see
 # check_country_labels()
@@ -299,14 +298,9 @@ bioassays %>%
   filter(action != "keep") %>%
   write.csv("outputs/review/bioassay_country_relabels.csv", row.names = FALSE)
 bioassays <- bioassays %>%
-  mutate(
-    country_name = if_else(country_check$action == "relabel",
-                           country_check$country_geometry, country_name),
-    longitude = if_else(country_check$action == "move",
-                        country_check$new_longitude, longitude),
-    latitude = if_else(country_check$action == "move",
-                       country_check$new_latitude, latitude)
-  ) %>%
+  mutate(country_name = if_else(country_check$action == "relabel",
+                                country_check$country_geometry,
+                                country_name)) %>%
   keep_records(country_check$action != "drop", "far from its country") %>%
   left_join(country_region_lookup(), by = "country_name")
 
@@ -377,28 +371,16 @@ bioassays <- bioassays %>%
   select(-test, -copies) %>%
   keep_records(!repeated, "paper repeated in a download")
 
-# The databases hold many of the same bioassays, in three ways, removed in
-# this order:
-# 1. within one version (a database's records of one paper, or of one other
-#    citation): one test in two downloads of the database, or a sum of the
-#    version's own species-level records;
-# 2. one paper in two or more databases: we keep one database's version of
-#    the paper, whole;
-# 3. one test under two citations, e.g. a paper and a report that includes its
-#    data, in one database or two: matched record by record.
-# So a version of a paper is chosen before any of its records is matched with
-# another citation's, and is never changed by another version of the same
-# paper.
+# Copies are removed in three stages (supplement steps 6 to 8): within one
+# version (a database's records of one paper, or of one other citation); one
+# paper in two or more databases, keeping one database's whole version; and one
+# test under two citations, record by record. So a version of a paper is chosen
+# before any of its records is matched with another citation's.
 #
-# Copies have the same country, years, insecticide, concentration and result
-# (agreeing_pairs()), but not always the same coordinates: the databases
-# georeference sites differently, and copies in different databases are often
-# tens of km apart. So copies are looked for within max_km of each other in
-# different databases, and within max_km_within in the same database.
-#
-# The distances are a choice. Matching on the percentage alone, where a number
-# of mosquitoes is missing, is less specific, so its distance is shorter.
-# Within a database, copies are mostly at the same coordinates.
+# Copies (agreeing_pairs()) are looked for within max_km of each other in
+# different databases, as the databases georeference sites differently, and
+# within max_km_within in the same database. Matching on the percentage alone
+# is less specific, so its distance is shorter.
 max_km <- c(count = 100, percent = 50, misscaled = 100)
 max_km_within <- 10
 
@@ -473,18 +455,11 @@ version_records <- filter(bioassays,
 
 # ---- 2. one version of each paper ----
 
-# Many papers are in two or more databases, each database's version extracted
-# separately: different sites and years, numbers tested, or errors. Matching
-# copies record by record mixes these versions, e.g. one database's site with
-# another's number tested, and an error in one version (e.g. every test
-# entered as 100% mortality) is kept where its records don't match the
-# others'. So for each paper (a citation resolved to a paper, above) in two
-# or more databases, we keep one database's whole version and drop the
-# others.
-#
-# The version kept is the best on its numbers tested, places and years, then
-# the one with most records the model uses (subset_modelled_bioassays()), then
-# the first in the order of databases of the sources (paper_versions()).
+# For each paper in two or more databases, we keep one database's whole
+# version (supplement step 7): the best on its numbers tested, places and
+# years, then the one with most records the model uses
+# (subset_modelled_bioassays()), then the first in the order of databases of
+# the sources (paper_versions()).
 database_order <- unique(map_chr(sources, "database"))
 modelled <- version_records %>%
   mutate(year = (year_start + year_end) %/% 2) %>%
@@ -492,31 +467,14 @@ modelled <- version_records %>%
   pull(record)
 versions <- paper_versions(version_records, modelled, database_order)
 
-# Dropping a version loses nothing if the kept version holds its tests with
-# the same results. So each record the model uses in a dropped version is
-# checked against the kept version (unmatched_in_kept()): it is matched if the
-# kept version has the same test (insecticide and concentration, a site within
-# 10 km or of the same name within 100 km, and overlapping years) with a
-# mortality within 10 percentage points (about two standard errors for a test
-# of 100 mosquitoes at 50% mortality), or has a record agreeing with it exactly
-# (the same number tested and number dead) within the distances used for copies
-# between databases, as databases place one site differently (e.g. 20 km
-# apart). A dropped version with 5 or more records unmatched either
-# holds tests the kept version lacks or disagrees with it, and the data can't
-# say which version is right, so the paper is flagged for review, as is a
-# paper whose versions conflict (paper_versions()). Fewer than 5 unmatched
-# records make little difference to the models.
-#
-# A record of more than 500 mosquitoes (five times a WHO tube test) has the
-# most weight in the models, and is often a total entered as one test. A paper
-# is flagged for review where the version kept has such records and another
-# version has none, or where it has only one version (supplement step 7).
-#
-# A reviewer records the version to keep in review/bioassay_paper_decisions.csv:
-# a database, or "none" to drop the paper, where no version is usable (e.g.
-# every version's coordinates are wrong). Every flagged paper needs a
-# decision, so the prep warns of any without one, and keeps the rule's version
-# meanwhile.
+# A paper is flagged for manual review (supplement step 7) where its versions
+# conflict (paper_versions()), where a dropped version has 5 or more modelled
+# records the kept version doesn't match (unmatched_in_kept()), or where the
+# version kept has records of more than 500 mosquitoes tested and another
+# version has none, or it has only one version. The reviewer records the
+# version to keep in review/bioassay_paper_decisions.csv: a database, or
+# "none" to drop the paper. The prep warns of any flagged paper without a
+# decision, and keeps the rule's version meanwhile.
 unmatched <- unmatched_in_kept(
   filter(version_records, is_paper, record %in% modelled),
   versions %>%
@@ -577,15 +535,11 @@ dropped_versions <- setdiff(dropped_versions, dropped_papers)
 
 # Among the records left (the kept version of each paper, and the records
 # whose citation isn't a paper), copies under different citations, in one
-# database or two, are paired one-to-one: a record pairs with at most one
-# record of each other citation in each database (one_to_one()). Two
-# citations whose copies include at least two results between 0% and 100%
-# share one dataset (e.g. a paper and a report that includes its data), and
-# all their copies are copies. Otherwise their copies are mostly at 0% or 100%,
-# which separate tests often share: where two citations have 5 or more such
-# copies, each is decided by hand; fewer make little difference to the
-# models, and are taken as copies, as about three quarters of those decided by
-# hand in October 2026 were.
+# database or two, are paired one-to-one (one_to_one()). Two citations whose
+# copies include at least two results between 0% and 100% share one dataset,
+# and all their copies are copies. Otherwise, where two citations have 5 or
+# more copies, each is decided by manual review, and fewer are taken as copies
+# (supplement step 8).
 left <- setdiff(version_records$record, c(dropped_versions, dropped_papers))
 copies <- pairs %>%
   filter(!same_version, agreement != "misscaled", a %in% left,

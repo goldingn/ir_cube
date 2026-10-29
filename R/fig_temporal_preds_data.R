@@ -19,7 +19,6 @@ source("R/two_stage_predictions.R")
 # the modelled data, as R/fit_model.R builds them
 baseline_year <- 1995
 invisible(list2env(modelled_bioassays(baseline_year), environment()))
-final_data_year <- max(df$year)
 years_predict <- baseline_year:final_data_year
 
 # set colours

@@ -150,13 +150,6 @@ paper_link <- function(link, citation) {
            url, search)
 }
 
-# the number of decimal places a coordinate is given to, up to 6
-decimal_places <- function(x) {
-  places <- rep(6L, length(x))
-  for (d in 5:0) places[abs(x * 10 ^ d - round(x * 10 ^ d)) < 1e-7] <- d
-  places
-}
-
 # the great-circle distance in km between points (longitude, latitude) and
 # (longitude_b, latitude_b)
 km_between <- function(longitude, latitude, longitude_b, latitude_b) {
@@ -256,9 +249,8 @@ agreeing_pairs <- function(records, max_km, max_km_within) {
 }
 
 # Whether two site names are the same, ignoring case, accents and punctuation.
-# Similar names are not taken as the same: in October 2026, names differing in
-# spelling, or one within the other, matched few records that nothing else
-# matched, and some were different places (e.g. Kawama and Kasama in Zambia).
+# Similar names are not taken as the same, as some are different places (e.g.
+# Kawama and Kasama in Zambia).
 same_site_name <- function(x, y) {
   kx <- coalesce(name_key(x), "")
   ky <- coalesce(name_key(y), "")
@@ -293,8 +285,7 @@ one_to_one <- function(pairs, between = c("database_a", "database_b")) {
 # holds the tests. The pooled records: those whose number tested equals the sum
 # over two or more records of one study at one site (to 0.01 degrees), year
 # and insecticide in another database, within 25 km, and whose mortality is
-# within 5 percentage points of theirs pooled (see the supplement for how
-# these were chosen).
+# within 5 percentage points of theirs pooled (supplement step 8).
 pooled_copies <- function(records) {
   tests <- records %>%
     filter(n_recorded) %>%
@@ -327,9 +318,7 @@ pooled_copies <- function(records) {
 # extracts' species and complex files. The
 # complex-level records whose died and mosquito_number equal exactly the sums
 # over the version's species-level records of one source at the same pixel,
-# year, insecticide and concentration. In October 2026, comparing against
-# species-level records a year earlier or later found no such matches, so
-# these are not coincidences. See issue #53.
+# year, insecticide and concentration. See issue #53.
 aggregated_copies <- function(records) {
   species_sums <- records %>%
     filter(species != "gambiae complex") %>%
@@ -520,40 +509,19 @@ unmatched_in_kept <- function(records, kept, copies, tolerance = 10,
 
 # ---- country labels ----
 
-# check the country labels against the coordinates. The model takes each
-# pixel's country (and so its initial condition) from this label, so the label
-# and the pixel have to agree. See issue #13. Three rules, in order:
-#
-# 1. A record at rounded coordinates that falls outside its labelled country,
-# but whose rounding box (the area the rounding implies) overlaps that country,
-# is moved into it: to the pixel of the labelled country nearest the recorded
-# point within the box, or failing that the nearest pixel of that country
-# anywhere. Its coordinates become that pixel's centre, so the model puts it
-# there. "Rounded" is at most one decimal place in both coordinates, a box of
-# +/- 0.5 or 0.05 degrees. In practice only whole degrees trigger it: 76 records
-# (6 locations) are at whole degrees and 256 at one decimal place, and the only
-# rounded records outside their country are 47 in Rwanda at (29, -2), (29, -3)
-# and (30, -1), 16-36 km into DR Congo and Uganda. Two decimals is +/- 0.5 km,
-# well inside the tolerance of rule 2.
-#
-# 2. Otherwise a label is kept if the point is within country_tolerance_km of
-# the labelled country, and else relabelled to the country it lies in. Of the
-# 148 other records in a neighbouring country's polygon, 139 are within 3.5 km
-# of their labelled country's border (GADM generalisation and coordinate
-# rounding) and 9 are at 7.8 km or more, with nothing in between.
-#
-# 3. Records outside every polygon take their nearest country if within the
-# tolerance (106 of 126, all within 4 km of their label) and are dropped
-# otherwise (20 records 40 km offshore of Madagascar, outside the mask).
-#
+# check the country labels against the coordinates (supplement step 3). The
+# model takes each pixel's country (and so its initial condition) from this
+# label, so the label and the pixel have to agree. See issue #13. A label is
+# kept if the point is within country_tolerance_km of the labelled country, and
+# else relabelled to the country it lies in. Records outside every polygon take
+# their nearest country if within the tolerance and are dropped otherwise.
 # Records labelled with a country that has no mask cells, and so no border
-# polygon (8 in Cabo Verde), are left alone.
+# polygon (Cabo Verde), are left alone.
 #
 # Returns, for each of `records`, the country label, the country of its
-# coordinates, the action to take and any new coordinates.
+# coordinates and the action to take.
 check_country_labels <- function(records, country_tolerance_km = 5) {
   country_borders <- readRDS("data/clean/country_borders.RDS")
-  country_raster <- rast("data/clean/country_raster.tif")
 
   record_points <- records %>%
     st_as_sf(coords = c("longitude", "latitude"),
@@ -569,84 +537,18 @@ check_country_labels <- function(records, country_tolerance_km = 5) {
   km_from_nearest <- as.numeric(st_distance(record_points,
                                             country_borders[nearest_index, ],
                                             by_element = TRUE)) / 1000
-  country_geometry <- country_borders$country_name[
-    ifelse(is.na(polygon_index), nearest_index, polygon_index)]
 
-  # half-width of the rounding box in degrees, from the number of decimal places
-  # of the less precise coordinate; NA if either has more than one
-  latitude_places <- decimal_places(records$latitude)
-  longitude_places <- decimal_places(records$longitude)
-  box_half_width <- if_else(
-    pmax(latitude_places, longitude_places) <= 1,
-    0.5 * 10 ^ -pmin(latitude_places, longitude_places), NA_real_)
-
-  box_overlaps_label <- rep(FALSE, nrow(records))
-  candidates <- which(!is.na(box_half_width) & !is.na(label_index) &
-                        km_from_label > 0)
-  for (i in candidates) {
-    box <- st_as_sfc(st_bbox(c(
-      xmin = records$longitude[i] - box_half_width[i],
-      xmax = records$longitude[i] + box_half_width[i],
-      ymin = records$latitude[i] - box_half_width[i],
-      ymax = records$latitude[i] + box_half_width[i]),
-      crs = st_crs(country_borders)))
-    box_overlaps_label[i] <- lengths(st_intersects(
-      box, country_borders[label_index[i], ])) > 0
-  }
-
-  # the pixel of the labelled country to move each rounded record to, per
-  # location
-  country_cells <- data.frame(cell = cells(country_raster)) %>%
-    mutate(country_name = as.character(
-             terra::extract(country_raster, cell)$country_name)) %>%
-    bind_cols(as.data.frame(xyFromCell(country_raster, .$cell)))
-  move_to <- records %>%
-    mutate(half_width = box_half_width) %>%
-    filter(box_overlaps_label) %>%
-    distinct(longitude, latitude, country_name, half_width)
-  move_to$new_longitude <- NA_real_
-  move_to$new_latitude <- NA_real_
-  move_to$within_box <- NA
-  for (j in seq_len(nrow(move_to))) {
-    options <- country_cells %>%
-      filter(country_name == move_to$country_name[j])
-    in_box <- abs(options$x - move_to$longitude[j]) <= move_to$half_width[j] &
-      abs(options$y - move_to$latitude[j]) <= move_to$half_width[j]
-    move_to$within_box[j] <- any(in_box)
-    if (any(in_box)) {
-      options <- options[in_box, ]
-    }
-    km <- as.numeric(st_distance(
-      st_as_sf(move_to[j, ], coords = c("longitude", "latitude"),
-               crs = st_crs(country_borders)),
-      st_as_sf(options, coords = c("x", "y"),
-               crs = st_crs(country_borders)))) / 1000
-    move_to$new_longitude[j] <- options$x[which.min(km)]
-    move_to$new_latitude[j] <- options$y[which.min(km)]
-  }
-  move_index <- match(paste(records$longitude,
-                            records$latitude,
-                            records$country_name),
-                      paste(move_to$longitude, move_to$latitude,
-                            move_to$country_name))
-  move_index[!box_overlaps_label] <- NA
-
-  country_check <- tibble(
+  tibble(
     country_label = records$country_name,
-    country_geometry = country_geometry,
+    country_geometry = country_borders$country_name[
+      ifelse(is.na(polygon_index), nearest_index, polygon_index)],
     km_from_label = km_from_label,
     km_outside_polygons = ifelse(is.na(polygon_index), km_from_nearest, 0),
-    new_longitude = move_to$new_longitude[move_index],
-    new_latitude = move_to$new_latitude[move_index],
-    new_pixel_within_box = move_to$within_box[move_index],
     action = case_when(
       is.na(label_index) ~ "keep",
-      box_overlaps_label ~ "move",
       km_from_label <= country_tolerance_km ~ "keep",
       km_outside_polygons <= country_tolerance_km ~ "relabel",
       .default = "drop"
     )
   )
-
-  country_check
 }

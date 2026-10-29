@@ -785,6 +785,8 @@ if (sys.nframe() == 0) {
   # a citation whose link leads to a different paper than the one found another
   # way is a conflict, for manual review, with both papers
   found <- bind_rows(resolved, later)
+  # nothing left to resolve: no rows, but the table's columns
+  if (!nrow(found)) found <- done[0, ]
   conflicts <- parallel::mclapply(seq_len(nrow(found)), function(i) {
     f <- found[i, ]
     if (f$method %in% c("unresolved", "ambiguous") || grepl("^(doi|pubmed id|pmc id)", f$method)) return(NULL)

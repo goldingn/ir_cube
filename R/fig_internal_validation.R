@@ -20,7 +20,6 @@ source("R/two_stage_predictions.R")
 # the modelled data, as R/fit_model.R builds them
 baseline_year <- 1995
 invisible(list2env(modelled_bioassays(baseline_year), environment()))
-final_data_year <- max(df$year)
 
 # the covariates at the data cells, on their own scales (R/model_covariates.R)
 all_extract <- covariate_extract(unique_cells, baseline_year, final_data_year,

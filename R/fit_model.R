@@ -23,12 +23,9 @@ baseline_year <- 1995
 # places/times, and alpha-cypermethrin (914 unique) because of its use in LLINs,
 # each at its modal concentration, from the baseline year and inside the mask,
 # with indices to the classes, types, regions, countries and cells, and the
-# class of each type (R/bioassay_subset.R)
+# class of each type, and the final year of data (R/bioassay_subset.R)
 list2env(modelled_bioassays(baseline_year), environment())
 years <- baseline_year - 1 + sort(unique(df$year_id))
-
-# the final year of data
-final_data_year <- max(df$year)
 
 # the model terms (R/dynamical_model.R), or an R expression for them in
 # IR_CUBE_MODEL_OPTIONS (docker/run_pod_job.sh)

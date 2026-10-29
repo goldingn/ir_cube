@@ -56,14 +56,17 @@ subset_modelled_bioassays <- function(ir_africa,
     )
 }
 
-# The modelled bioassays and their indices (index_bioassays()), built as
-# R/fit_model.R builds them, for scripts that need the data but not the fit
+# The modelled bioassays, their indices (index_bioassays()) and the last year
+# of data (final_data_year), built as R/fit_model.R builds them, for scripts
+# that need the data but not the fit
 modelled_bioassays <- function(baseline_year = 1995) {
   df <- subset_modelled_bioassays(
     readRDS("data/clean/all_gambiae_complex_data.RDS"),
     terra::rast("data/clean/raster_mask.tif"),
     baseline_year = baseline_year)
-  index_bioassays(df)
+  out <- index_bioassays(df)
+  out$final_data_year <- max(df$year)
+  out
 }
 
 # The indices of the modelled bioassays `df` (subset_modelled_bioassays()), as

@@ -30,7 +30,6 @@ baseline_year <- 1995
 # the modelled subset and its indexing, and the final year of data, as in
 # fit_model.R (R/bioassay_subset.R)
 list2env(modelled_bioassays(baseline_year), environment())
-final_data_year <- max(df$year)
 years <- baseline_year - 1 + sort(unique(df$year_id))
 
 # Define the training and test folds for: spatial extrapolation (country
