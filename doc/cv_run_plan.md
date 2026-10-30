@@ -496,7 +496,7 @@ name keeps the plain experiment name, so the origins sit together in
   training year at all — and the old code then took `sort(...)[n]` of a vector
   of `Inf`, giving a threshold of `Inf`, and selected the *entire* training set:
   a global mean wearing a nearest-neighbour label, silently. `n_years_prior` is
-  now the window length, and `predict_null_fixed_nn_counts()` stops rather than
+  now the window length, and `nearest_bioassay()` stops rather than
   falling back. The three-year fold escaped this by one year, so its result is
   unaffected. The nearest-neighbour null is no longer tuned at all: it is
   reported at one neighbour, as a practice baseline.

@@ -121,10 +121,11 @@ time_panels <- c("D", "E")
 
 # scores can fall below zero: the axis runs down to the next 10 below the
 # lowest interval
-floor_of <- function(panels) {
-  10 * floor(min(c(bars$lower[bars$panel %in% panels], 0), na.rm = TRUE) / 10)
+axis_floor <- function(lower) {
+  10 * floor(min(c(lower, 0), na.rm = TRUE) / 10)
 }
-level_floor <- floor_of(c(space_panels, time_panels))
+level_floor <- axis_floor(bars$lower[bars$panel %in%
+                                       c(space_panels, time_panels)])
 level_title <- "% of variance explained"
 
 space_row <- skill_row(filter(bars, panel %in% space_panels), level_title,
@@ -199,13 +200,13 @@ pooled_change <- pooled_panel(
 stopifnot(nrow(pooled_level) == 5, nrow(pooled_change) == 5)
 
 pooled_row <- function(data, y_title) {
-  limits <- c(10 * floor(min(c(data$lower, 0)) / 10), 100)
+  limits <- c(axis_floor(data$lower), 100)
   skill_row(data, y_title, limits) +
     key_plot(filter(data, bar == "two_stage"), limits, gap = 0.4) +
     plot_layout(widths = c(1, 0.45))
 }
 pooled_floors <- sapply(list(pooled_level, pooled_change), function(data) {
-  10 * floor(min(c(data$lower, 0)) / 10)
+  axis_floor(data$lower)
 })
 pooled_figure <- pooled_row(pooled_level, level_title) /
   pooled_row(pooled_change, "skill against no change (%)") +

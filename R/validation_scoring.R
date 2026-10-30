@@ -87,11 +87,6 @@ with_fold_stream <- function(file, use, expr) {
   expr
 }
 
-# a seed from a string: a polynomial string hash, exact in double precision
-string_seed <- function(key) {
-  Reduce(function(h, x) (h * 31 + x) %% 2147483647, utf8ToInt(key), 0)
-}
-
 
 # per record ----------------------------------------------------------------------
 
@@ -121,6 +116,9 @@ string_seed <- function(key) {
 #   cdf_below_map, pmf_at_map
 #              the two-stage model's predictive distribution without u, p and
 #              sy, for its coverage without them; NA for every other model
+#   nearest_km, nearest_year
+#              the nearest neighbour null's chosen bioassay (nn_null_draws()):
+#              its distance and year; NA for every other model
 score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
 
   fold <- readRDS(file)
@@ -205,6 +203,9 @@ score_fold <- function(file, rho_source, n_rep = n_pit_reps) {
       pmf_at_map = without_noise$pmf_at,
       .after = predicted
     )
+  # the nearest neighbour null's chosen bioassay: distance (km) and year
+  scores$nearest_km <- fold$nearest_km %||% NA_real_
+  scores$nearest_year <- fold$nearest_year %||% NA_real_
 
   list(scores = scores,
        pit = pit,

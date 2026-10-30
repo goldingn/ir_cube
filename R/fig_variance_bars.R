@@ -35,7 +35,6 @@ bar_colours <- c(
   two_stage = "#C51B7D")
 bar_labels <- c(local = "Local\nbioassay", nearest = "Nearest\nbioassay",
                 dynamical = "Mechanistic\nonly", two_stage = "Full\nmodel")
-bioassay_bars <- c("local", "nearest")
 
 noise_fill <- "#F7F7F7"
 remainder_fill <- "#DEDEDE"

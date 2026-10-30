@@ -27,13 +27,12 @@
 # is worth (n_star_cv() in R/validation_skill.R). Also the same bars per
 # insecticide for B and C, for the per-insecticide figure and the
 # supplementary n*_CV table, and the median over held-out assays of the
-# distance to the nearest training assay the nearest bar could use, and the
-# years from it: same insecticide, in its year window (distance_nearest_null
-# and years_nearest_null, R/validation_geometry.R), for the panel titles.
+# distance to the bioassay the nearest bar used, and the years from it
+# (nearest_km and nearest_year in outputs/cv_scores.csv), for the panel
+# titles.
 #
-# Reads outputs/cv_scores.csv (R/validation_metrics.R),
-# outputs/full_fit_maps_at_assays.csv (R/full_fit_maps_at_assays.R) and
-# outputs/cv_geometry.csv (R/validation_geometry.R).
+# Reads outputs/cv_scores.csv (R/validation_metrics.R) and
+# outputs/full_fit_maps_at_assays.csv (R/full_fit_maps_at_assays.R).
 # Writes outputs/cv_level_skill.csv,
 # outputs/cv_level_skill_by_insecticide.csv and outputs/cv_n_star.csv (the
 # supplementary table: n*_CV [95% interval] of the nearest bioassay and the
@@ -67,8 +66,12 @@ held_out <- function(experiment) {
     stopifnot(identical(record_key(rows), record_key(reference)),
               identical(rows$fold, reference$fold))
     out[[bar]] <- rows$map
+    if (bar == "nearest") {
+      out$nearest_km <- rows$nearest_km
+      out$nearest_years <- rows$year - rows$nearest_year
+    }
   }
-  stopifnot(!anyNA(out[names(models)]))
+  stopifnot(!anyNA(out[c(names(models), "nearest_km", "nearest_years")]))
   out
 }
 
@@ -133,28 +136,17 @@ level <- bind_rows(
 
 # distances to the training data ----------------------------------------------------
 
-# per held-out assay, the distance and years to the nearest bioassay at its
-# pixel-year-insecticide in its fold; their medians
-geometry <- read.csv("outputs/cv_geometry.csv",
-                     colClasses = c(fold = "character"))
-nearest_medians <- function(data, experiment) {
-  nearest <- data %>%
-    select(fold, cell, year, insecticide_type) %>%
-    left_join(geometry %>%
-                filter(.data$experiment == !!experiment) %>%
-                select(fold, cell, year, insecticide_type,
-                       distance_nearest_null, years_nearest_null),
-              by = c("fold", "cell", "year", "insecticide_type"),
-              relationship = "many-to-one")
-  stopifnot(!anyNA(nearest$distance_nearest_null))
-  tibble(median_km = median(nearest$distance_nearest_null),
-         median_years = median(nearest$years_nearest_null))
+# the medians over held-out assays of the distance and years to the bioassay
+# the nearest bar used
+nearest_medians <- function(data) {
+  tibble(median_km = median(data$nearest_km),
+         median_years = median(data$nearest_years))
 }
 distances <- bind_rows(
-  B = nearest_medians(interpolation, experiments[["interpolation"]]),
-  C = nearest_medians(extrapolation, experiments[["extrapolation"]]),
-  D = nearest_medians(forecast_2014, experiments[["forecast_2014"]]),
-  E = nearest_medians(forecast_2018, experiments[["forecast_2018"]]),
+  B = nearest_medians(interpolation),
+  C = nearest_medians(extrapolation),
+  D = nearest_medians(forecast_2014),
+  E = nearest_medians(forecast_2018),
   .id = "panel")
 
 level <- level %>% left_join(distances, by = "panel")
