@@ -76,8 +76,7 @@ read_assay_draws <- function(fold_file) {
 # stream of its own per fold and per use, seeded from the fold's file name and
 # the use, and leaves the main stream where it was: adding a model then changes
 # no number for the others, and its folds do not share uniforms.
-main_stream_models <- c("dynamical", "intercept", "nearest_neighbour",
-                        "nearest_neighbour_oracle")
+main_stream_models <- c("dynamical", "intercept", "nearest_neighbour")
 
 with_fold_stream <- function(file, use, expr) {
   if (sub("__.*$", "", basename(file)) %in% main_stream_models) return(expr)

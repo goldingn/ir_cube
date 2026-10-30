@@ -16,13 +16,6 @@
 # nominal coverage by inflating its rho to 0.45 against an external estimate of
 # 0.12-0.22 (#12 review).
 
-# approximate non-zero and non-one proportions by applying the empirical logit
-# transform to the data and then the inverse logit to provide a proportion
-emplog_prop <- function(died, mosquito_number) {
-  emplog <- log((died + 0.5) / (mosquito_number - died + 0.5))
-  plogis(emplog)
-}
-
 # the nearest neighbour null, and predictive distributions for the nulls -----
 
 # The year the nearest neighbour null's window ends at, for a record of `year`.
@@ -52,9 +45,7 @@ nn_anchor_year <- function(year, training_years) {
 #
 # Several neighbour counts at once. Neither the distance matrix nor the
 # per-record ordering of those distances depends on k, so both are computed once
-# and every k is read off the same cumulative sums. nn_oracle_draws() used to
-# call this once per candidate k and pay for the full distance matrix and a sort
-# per record fifteen times over (#12 review).
+# and every k is read off the same cumulative sums.
 #
 # `k_values` is a vector; the returned matrices have one row per held-out record
 # and one column per element of it, in that order.
@@ -220,18 +211,10 @@ intercept_null_draws <- function(training_data, test_data, n_draws = 1000) {
 # person would do without a model: read a site's value off the nearby recent
 # surveys. Tuning it separately for each experiment would build a series of new
 # models to compare against the one model under analysis, so it is not tuned at
-# all. Two specifications are reported instead, and neither involves a chosen
-# value:
-#
-#   the practice baseline - `n_neighbours = 1`, `n_years_prior = 1`: the single
-#     nearest record in the most recent two years available at prediction time.
-#     Short recency is justified a priori, since anyone running this
-#     surveillance knows resistance is moving fast, and the k-curves agree.
-#
-#   the oracle bound - nn_oracle_draws() below: the same method at whichever
-#     number of neighbours minimises its own error on the held-out records. It
-#     answers a different question, how well any such rule could have done in
-#     this test, and a bound is properly per-test.
+# all: it is the practice baseline, `n_neighbours = 1`, `n_years_prior = 1`, the
+# single nearest record in the most recent two years available at prediction
+# time. Short recency is justified a priori, since anyone running this
+# surveillance knows resistance is moving fast, and the k-curves agree.
 #
 # This replaces a tuned `n_neighbours` read from outputs/optimal_nn.csv. That
 # was chosen on an internal test set of 100 records sampled at random from the
@@ -260,64 +243,5 @@ nn_null_draws <- function(training_data, test_data, n_neighbours = 1,
 
   list(p_draws = p_draws,
        test_df = test_data)
-
-}
-
-
-# The oracle bound: the nearest neighbour null at whichever number of
-# neighbours minimises its own mean squared error on the held-out records.
-#
-# This is deliberately given hindsight the dynamical model is not given, so that
-# no choice of neighbour count can be said to have handicapped the baseline. The
-# selection is one scalar over thousands of records, so the optimism it buys is
-# small, and it runs in the conservative direction for any claim that the
-# dynamical model beats the null.
-#
-# Minimised on mean squared error because that is what the comparison is
-# reported on - excess MSE and variance explained - so the bound is a bound on
-# the statistic actually quoted. The coverage and CRPS of the returned fold are
-# therefore at the MSE-optimal k, not at their own optima.
-nn_oracle_draws <- function(training_data, test_data,
-                            n_years_prior = 1, n_draws = 1000,
-                            k_grid = c(1, 2, 3, 5, 8, 12, 20, 30, 50, 80, 120,
-                                       200, 300, 500, 800)) {
-
-  observed <- test_data$died / test_data$mosquito_number
-
-  # one pass over the grid: the distances and their ordering are shared by every
-  # candidate k, and the winning k's counts are already in hand, so no further
-  # neighbour search is needed to draw from it
-  counts <- nn_counts_grid(
-    latitude = test_data$latitude,
-    longitude = test_data$longitude,
-    year = test_data$year,
-    insecticide_type = test_data$insecticide_type,
-    training_data = training_data,
-    k_values = k_grid,
-    n_years_prior = n_years_prior
-  )
-
-  predicted <- emplog_prop(counts$total_died, counts$total_tested)
-  # mean() per column rather than colMeans(): the two accumulate in different
-  # orders and so can differ in the last bits, and these numbers are compared
-  # against the per-k version this replaced
-  mse <- apply((observed - predicted) ^ 2, 2, mean)
-
-  best_index <- which.min(mse)
-  best <- k_grid[best_index]
-  if (best == max(k_grid)) {
-    warning("the oracle neighbour count is at the top of the grid (", best,
-            "); widen k_grid so the minimum is interior")
-  }
-
-  p_draws <- pooled_count_draws(counts$total_died[, best_index],
-                                counts$total_tested[, best_index],
-                                n_draws)
-
-  list(p_draws = p_draws,
-       test_df = test_data,
-       n_neighbours = best,
-       k_grid = k_grid,
-       k_mse = mse)
 
 }

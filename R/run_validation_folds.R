@@ -58,10 +58,9 @@ save_fold <- function(fit, model, experiment, fold, label = experiment) {
 # where it returned numeric(0) and reduced the null to Beta(0.5, 0.5) without
 # erroring. Both problems go away with the table (#12).
 #
-# In its place, two specifications, neither of them a chosen value: the practice
-# baseline at one neighbour and the most recent two available years, and the
-# oracle bound at whichever neighbour count minimises the null's own error on
-# the held-out records. See nn_null_draws() and nn_oracle_draws().
+# In its place, one specification that is not a chosen value: the practice
+# baseline at one neighbour and the most recent two available years. See
+# nn_null_draws().
 
 # The folds to fit: the sub-national block folds (the test of spatial skill),
 # the interpolation fold, and the two five-year forecast origins. The six
@@ -138,22 +137,6 @@ for (fold in folds) {
       label = fold$label
     )
   }
-
-  if (file.exists(null_file("nearest_neighbour_oracle"))) next
-
-  oracle <- nn_oracle_draws(fold$training,
-                            fold$test,
-                            n_years_prior = 1,
-                            n_draws = n_draws)
-  cat(sprintf("  oracle neighbour count for %s / %s: %i\n",
-              fold$experiment, fold$fold, oracle$n_neighbours))
-  save_fold(
-    oracle,
-    model = "nearest_neighbour_oracle",
-    experiment = fold$experiment,
-    fold = fold$fold,
-    label = fold$label
-  )
 
 }
 
